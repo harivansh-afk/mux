@@ -27,20 +27,16 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         self.runtime = runtime
         super.init()
 
-        let window = NSWindow(
+        // Borderless: no titlebar, no traffic lights, square corners.
+        // Edge-resizing works via .resizable; dragging via background.
+        let window = MuxWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 680),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.borderless, .resizable],
             backing: .buffered,
             defer: false)
         window.title = "mux"
-        // Chromeless: no visible titlebar, no traffic lights. The window
-        // stays resizable from edges and draggable by background.
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.standardWindowButton(.closeButton)?.isHidden = true
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        window.standardWindowButton(.zoomButton)?.isHidden = true
         window.isMovableByWindowBackground = true
+        window.hasShadow = true
         window.center()
         window.tabbingMode = .disallowed
         window.delegate = self

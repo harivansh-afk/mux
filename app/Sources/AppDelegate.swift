@@ -107,6 +107,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if controllers.isEmpty { newWindow(nil) }
     }
 
+    @objc func closeKeyWindow(_ sender: Any?) {
+        NSApp.keyWindow?.close()
+    }
+
     // MARK: - Clipboard menu actions
 
     @objc func copyFromPane(_ sender: Any?) {
@@ -142,7 +146,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenuItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "n")
-        fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "W")
+        // performClose requires .closable in the style mask; borderless
+        // windows need a direct close.
+        fileMenu.addItem(withTitle: "Close Window", action: #selector(closeKeyWindow(_:)), keyEquivalent: "W")
         fileMenuItem.submenu = fileMenu
         main.addItem(fileMenuItem)
 
