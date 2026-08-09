@@ -14,7 +14,6 @@ let package = Package(
         .executableTarget(
             name: "Mux",
             dependencies: ["GhosttyKit"],
-            path: "Sources",
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("Metal"),
