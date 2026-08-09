@@ -29,10 +29,27 @@ final class PrefixEngine {
     /// the one we set even if key windows change mid-mode.
     private weak var indicatorController: MuxWindowController?
 
-    private static let prefixHint =
-        "PREFIX   ' split right   - split down   h/j/k/l focus   z zoom   x close   c window   r resize"
-    private static let resizeHint =
-        "RESIZE   h/j/k/l adjust   esc done"
+    /// herdr's overlay span grammar: badge, then key/description pairs.
+    /// Labels for splits ("split│"/"split─") come from herdr's navigate
+    /// overlay.
+    private static let prefixSegments: [ModeBarSegment] = [
+        .badge("PREFIX"),
+        .key("esc"), .dim(" cancel  "),
+        .key("ctrl+b"), .dim(" send prefix  "),
+        .key("'"), .dim(" split│  "),
+        .key("-"), .dim(" split─  "),
+        .key("h/j/k/l"), .dim(" focus  "),
+        .key("z"), .dim(" zoom  "),
+        .key("x"), .dim(" close  "),
+        .key("c"), .dim(" window  "),
+        .key("r"), .dim(" resize"),
+    ]
+
+    private static let resizeSegments: [ModeBarSegment] = [
+        .badge("RESIZE"),
+        .key("h/j/k/l"), .dim(" resize  "),
+        .key("esc/enter"), .dim(" done"),
+    ]
 
     /// Resolves the controller of the key window.
     private var controller: MuxWindowController? {
@@ -60,10 +77,10 @@ final class PrefixEngine {
             break
         case .prefix:
             indicatorController = controller
-            indicatorController?.setModeIndicator(Self.prefixHint)
+            indicatorController?.setModeIndicator(Self.prefixSegments)
         case .resize:
             indicatorController = controller
-            indicatorController?.setModeIndicator(Self.resizeHint)
+            indicatorController?.setModeIndicator(Self.resizeSegments)
         }
     }
 

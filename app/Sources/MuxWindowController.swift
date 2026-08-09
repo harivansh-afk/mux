@@ -11,41 +11,6 @@ final class PaneContainerView: NSView {
     }
 }
 
-/// Thin status strip shown at the bottom while a prefix/resize mode is
-/// active. The multiplexer's only piece of chrome, and it earns its keep
-/// by disappearing.
-final class ModeBarView: NSView {
-    static let height: CGFloat = 24
-    private let label = NSTextField(labelWithString: "")
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor(calibratedWhite: 0.07, alpha: 1).cgColor
-        label.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
-        label.textColor = NSColor(calibratedRed: 0.85, green: 0.65, blue: 0.34, alpha: 1)
-        label.lineBreakMode = .byTruncatingTail
-        addSubview(label)
-    }
-
-    required init?(coder: NSCoder) { fatalError("not supported") }
-
-    var text: String = "" {
-        didSet {
-            label.stringValue = text
-            needsLayout = true
-        }
-    }
-
-    override func layout() {
-        super.layout()
-        label.sizeToFit()
-        label.frame.origin = NSPoint(
-            x: 12, y: (bounds.height - label.frame.height) / 2)
-        label.frame.size.width = min(label.frame.width, bounds.width - 24)
-    }
-}
-
 /// One window = one workspace = one split tree of panes.
 final class MuxWindowController: NSObject, NSWindowDelegate {
     let runtime: GhosttyRuntime
@@ -258,30 +223,34 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - Layout
 
-    /// Show or hide the bottom mode bar. nil hides it.
-    func setModeIndicator(_ text: String?) {
-        if let text {
-            modeBar.text = text
+    /// Show or hide the mode overlay. nil hides it. Like herdr, the bar is
+    /// an overlay on the bottom row: panes never reflow for it.
+    func setModeIndicator(_ segments: [ModeBarSegment]?) {
+        if let segments {
+            modeBar.render(segments)
             modeBar.isHidden = false
+            // Keep the overlay above any panes added since last time.
+            modeBar.removeFromSuperview()
+            container.addSubview(modeBar)
+            positionModeBar()
         } else {
             modeBar.isHidden = true
         }
-        layoutPanes()
+    }
+
+    private func positionModeBar() {
+        let bounds = container.bounds
+        modeBar.frame = NSRect(
+            x: 0, y: bounds.height - ModeBarView.height,
+            width: bounds.width, height: ModeBarView.height)
     }
 
     func layoutPanes() {
         guard let tree else { return }
-        var bounds = container.bounds
+        let bounds = container.bounds
         guard bounds.width > 1, bounds.height > 1 else { return }
 
-        // Reserve the bottom strip while the mode bar is visible
-        // (container is flipped: y grows downward).
-        if !modeBar.isHidden {
-            modeBar.frame = NSRect(
-                x: 0, y: bounds.height - ModeBarView.height,
-                width: bounds.width, height: ModeBarView.height)
-            bounds.size.height -= ModeBarView.height
-        }
+        if !modeBar.isHidden { positionModeBar() }
 
         if let zoomedID, let zoomed = panes[zoomedID] {
             for (_, pane) in panes {
