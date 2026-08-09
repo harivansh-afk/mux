@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Assemble Mux.app from the SwiftPM build (run on the Mac).
+# Usage: scripts/make-app.sh [debug|release]
+set -euo pipefail
+
+CONFIG="${1:-debug}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APPDIR="$ROOT/app"
+GHOSTTY_SRC="${GHOSTTY_SRC:-$HOME/src/ghostty}"
+
+cd "$APPDIR"
+swift build -c "$CONFIG"
+
+BIN="$(swift build -c "$CONFIG" --show-bin-path)/Mux"
+BUNDLE="$APPDIR/.build/Mux.app"
+
+rm -rf "$BUNDLE"
+mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+cp "$BIN" "$BUNDLE/Contents/MacOS/Mux"
+
+# Ghostty runtime resources (terminfo, shell integration, themes).
+if [ -d "$GHOSTTY_SRC/zig-out/share/ghostty" ]; then
+  cp -R "$GHOSTTY_SRC/zig-out/share/ghostty" "$BUNDLE/Contents/Resources/ghostty"
+else
+  echo "warning: $GHOSTTY_SRC/zig-out/share/ghostty not found; run zig build in the ghostty checkout" >&2
+fi
+
+cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>sh.harivan.mux</string>
+  <key>CFBundleName</key><string>mux</string>
+  <key>CFBundleExecutable</key><string>Mux</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+</dict>
+</plist>
+PLIST
+
+codesign --force --sign - "$BUNDLE" 2>/dev/null || true
+echo "built: $BUNDLE"
