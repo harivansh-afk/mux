@@ -26,24 +26,34 @@ struct Palette {
     let dim: NSColor
     /// Primary text.
     let text: NSColor
-    /// Pane separator lines. Dark in light mode by request.
+    /// Pane separator lines. Derived from the terminal background exactly
+    /// like ghostty's default `split-divider-color` (Ghostty.Config.swift
+    /// splitDividerColor): darken a light background by 0.08, a dark one
+    /// by 0.4. Subtle in light mode, subtle in dark mode, always adjacent
+    /// to the background it separates.
     let divider: NSColor
 
-    static let dark = Palette(
-        panelBg: NSColor(hex: 0x101010),
-        accent: NSColor(hex: 0xEBDBB2),
-        accentContrast: NSColor(hex: 0x101010),
-        dim: NSColor(hex: 0x504945),
-        text: NSColor(hex: 0xD4BE98),
-        divider: NSColor(hex: 0x504945))
+    static let dark: Palette = {
+        let bg = NSColor(hex: 0x101010)
+        return Palette(
+            panelBg: bg,
+            accent: NSColor(hex: 0xEBDBB2),
+            accentContrast: bg,
+            dim: NSColor(hex: 0x504945),
+            text: NSColor(hex: 0xD4BE98),
+            divider: bg.ghosttyDividerColor)
+    }()
 
-    static let light = Palette(
-        panelBg: NSColor(hex: 0xE7E7E7),
-        accent: NSColor(hex: 0x3C3836),
-        accentContrast: NSColor(hex: 0xE7E7E7),
-        dim: NSColor(hex: 0xA89984),
-        text: NSColor(hex: 0x3C3836),
-        divider: NSColor(hex: 0x3C3836))
+    static let light: Palette = {
+        let bg = NSColor(hex: 0xE7E7E7)
+        return Palette(
+            panelBg: bg,
+            accent: NSColor(hex: 0x3C3836),
+            accentContrast: bg,
+            dim: NSColor(hex: 0xA89984),
+            text: NSColor(hex: 0x3C3836),
+            divider: bg.ghosttyDividerColor)
+    }()
 }
 
 extension NSColor {
@@ -53,6 +63,34 @@ extension NSColor {
             green: CGFloat((hex >> 8) & 0xFF) / 255.0,
             blue: CGFloat(hex & 0xFF) / 255.0,
             alpha: 1.0)
+    }
+
+    // Ported 1:1 from ghostty macos/Sources/Helpers/Extensions/
+    // OSColor+Extension.swift (MIT).
+
+    var luminance: Double {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard let rgb = usingColorSpace(.sRGB) else { return 0 }
+        rgb.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return (0.299 * r) + (0.587 * g) + (0.114 * b)
+    }
+
+    var isLightColor: Bool { luminance > 0.5 }
+
+    func darken(by amount: CGFloat) -> NSColor {
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard let hsb = usingColorSpace(.sRGB) else { return self }
+        hsb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        return NSColor(
+            hue: h,
+            saturation: s,
+            brightness: min(b * (1 - amount), 1),
+            alpha: a)
+    }
+
+    /// ghostty's default `split-divider-color` (Ghostty.Config.swift).
+    var ghosttyDividerColor: NSColor {
+        isLightColor ? darken(by: 0.08) : darken(by: 0.4)
     }
 }
 
