@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         GhosttyRuntime.shared = runtime
         self.runtime = runtime
 
+        ThemeManager.shared.start()
         prefixEngine.install()
 
         if let snapshot = SnapshotStore.load(), !snapshot.windows.isEmpty {

@@ -80,10 +80,16 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         window.tabbingMode = .disallowed
         window.delegate = self
         container.controller = self
+        container.wantsLayer = true
         window.contentView = container
         container.addSubview(modeBar)
         modeBar.isHidden = true
         self.window = window
+
+        applyTheme()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(themeDidChange),
+            name: .muxThemeDidChange, object: nil)
     }
 
     // MARK: - Pane lifecycle
@@ -294,6 +300,20 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
                 pane.isHidden = true
             }
         }
+    }
+
+    // MARK: - Theme
+
+    @objc private func themeDidChange() {
+        applyTheme()
+    }
+
+    /// The divider lines between panes are the container background showing
+    /// through the layout gaps; theming the container themes the dividers.
+    private func applyTheme() {
+        let palette = ThemeManager.shared.palette
+        container.layer?.backgroundColor = palette.divider.cgColor
+        window.backgroundColor = palette.divider
     }
 
     // MARK: - Window delegate
