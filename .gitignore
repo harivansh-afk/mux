@@ -1,0 +1,7 @@
+/target
+app/GhosttyKit/GhosttyKit.xcframework/
+app/GhosttyKit/*.zip
+app/GhosttyKit/*.tar.gz
+app/GhosttyKit/resources/
+*.xcuserdata/
+.DS_Store

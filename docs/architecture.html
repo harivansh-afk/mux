@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mux - architecture</title>
+<style>
+  :root {
+    --bg: #101014;
+    --panel: #17171d;
+    --panel2: #1d1d25;
+    --border: #2a2a35;
+    --fg: #d6d6dd;
+    --dim: #8b8b98;
+    --accent: #d8a657;      /* gruvbox-ish yellow */
+    --green: #a9b665;
+    --blue: #7daea3;
+    --red: #ea6962;
+    --purple: #d3869b;
+    --mono: "Berkeley Mono", "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--fg);
+    font-family: var(--mono);
+    font-size: 14px; line-height: 1.65;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 48px 32px 120px; }
+  h1 { font-size: 28px; letter-spacing: -0.5px; margin: 0 0 4px; }
+  h1 .dim { color: var(--dim); font-weight: 400; }
+  .subtitle { color: var(--dim); margin-bottom: 40px; }
+  h2 {
+    font-size: 16px; text-transform: uppercase; letter-spacing: 2px;
+    color: var(--accent); margin: 56px 0 16px; padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  h3 { font-size: 14px; color: var(--fg); margin: 28px 0 8px; }
+  p { margin: 10px 0; }
+  a { color: var(--blue); }
+  code, .k {
+    background: var(--panel2); padding: 1px 6px; border-radius: 4px;
+    font-size: 13px; color: var(--green);
+  }
+  pre {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px 20px; overflow-x: auto; font-size: 12.5px; line-height: 1.55;
+    color: var(--fg);
+  }
+  pre .c { color: var(--dim); }
+  pre .a { color: var(--accent); }
+  pre .g { color: var(--green); }
+  pre .b { color: var(--blue); }
+  pre .r { color: var(--red); }
+  pre .p { color: var(--purple); }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 12px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--panel); color: var(--accent); font-weight: 600; }
+  td { background: var(--panel2); }
+  .pill {
+    display: inline-block; padding: 0 8px; border-radius: 10px; font-size: 11px;
+    border: 1px solid var(--border); color: var(--dim); margin-right: 6px;
+  }
+  .pill.now { color: var(--green); border-color: var(--green); }
+  .pill.later { color: var(--blue); border-color: var(--blue); }
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--panel);
+    padding: 12px 18px; margin: 18px 0; border-radius: 0 8px 8px 0;
+  }
+  .callout.danger { border-left-color: var(--red); }
+  .callout.good { border-left-color: var(--green); }
+  .callout b:first-child { color: var(--accent); }
+  .callout.danger b:first-child { color: var(--red); }
+  .callout.good b:first-child { color: var(--green); }
+  ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+  .kbd {
+    background: var(--panel2); border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 5px; padding: 0 6px; font-size: 12px; color: var(--fg);
+  }
+</style>
+</head>
+<body>
+<main>
+
+<h1>mux <span class="dim">/ indexable/mux</span></h1>
+<p class="subtitle">A macOS-native terminal multiplexer on libghostty that speaks the ix shell protocol.
+Every pane is a GhosttyKit Metal surface; any pane can transparently be a session on an ix VM,
+a plain Linux box running <code>muxd</code>, or the Mac itself. No web layer, no sidebar, no chrome.</p>
+
+<h2>0. The one-paragraph thesis</h2>
+<p>
+ix already contains both halves of this product, unconnected: <b>Stack A</b> (<code>ix shell</code> /
+<code>ix-console</code>) is a remote shell protocol with a server-side headless ghostty that can hand a
+reattaching client its exact screen back; <b>Stack B</b> (ix-term) is a local multiplexer with zero remote
+support, rendered through a web stack. mux is the composition: Stack B's job done natively on macOS
+(GhosttyKit surfaces + a Swift split tree), with Stack A as the pane transport - and Stack A's server
+forked into <code>muxd</code> so the same protocol works on any Linux box, not just ix VMs.
+The wire protocol becomes an open API for "give me a terminal on that machine."
+</p>
+
+<h2>1. System diagram</h2>
+<pre>
+<span class="c">┌─ Mac ──────────────────────────────────────────────────────────────────┐</span>
+<span class="c">│</span>  <span class="a">Mux.app</span> (Swift/AppKit)                                                <span class="c">│</span>
+<span class="c">│</span>  ├─ <span class="g">SplitTree</span>        BSP tiling, prefix modes, layout snapshots        <span class="c">│</span>
+<span class="c">│</span>  ├─ <span class="g">SurfaceView</span>      NSView per pane; libghostty renders Metal into it <span class="c">│</span>
+<span class="c">│</span>  └─ <span class="g">GhosttyKit</span>       exec backend: every pane runs one local command   <span class="c">│</span>
+<span class="c">│</span>         <span class="c">│ fork/exec against a real PTY (libghostty never knows)</span>        <span class="c">│</span>
+<span class="c">│</span>         <span class="b">▼</span>                                                              <span class="c">│</span>
+<span class="c">│</span>  <span class="b">mux-attach</span> (Rust, tiny)   stdio ⇄ lane-framed protocol relay          <span class="c">│</span>
+<span class="c">│</span>         <span class="c">│</span>                                                              <span class="c">│</span>
+<span class="c">│</span>         <span class="c">├──────────────┐──────────────────┐</span>                            <span class="c">│</span>
+<span class="c">│</span>         <span class="b">▼</span> unix socket <span class="c">│</span>                  <span class="c">│</span>                            <span class="c">│</span>
+<span class="c">│</span>  <span class="p">muxd</span> (local)         <span class="c">│</span>                  <span class="c">│</span>                            <span class="c">│</span>
+<span class="c">└──────────────────────<span class="c">│</span>──────────────────<span class="c">│</span>────────────────────────────┘</span>
+                        <span class="b">▼</span> TCP over        <span class="b">▼</span> QUIC/WebTransport
+                          tailscale/ssh      + connect token (ix native)
+                 <span class="p">muxd</span> (linux box)       <span class="p">ix-agent → ix-console</span> (ix VM)
+
+<span class="c">muxd = ix-console fork: session manager + PTY + headless ghostty-vt.</span>
+<span class="c">Same lane framing, same message types everywhere. Three targets, one protocol.</span>
+</pre>
+
+<div class="callout good">
+<b>The unifying move:</b> every pane - including local ones - is a <code>muxd</code> session.
+Mux.app is a pure client. Quit the app, reopen it: layout comes from the client snapshot,
+screen contents come back from each daemon's reattach replay. Detach/attach semantics are
+uniform whether the session lives on the Mac, a Linux box, or an ix VM.
+</div>
+
+<h2>2. The wire protocol (forked, not invented)</h2>
+<p>Source of truth: <code>ix/crates/ix/rpc/src/session/shell.rs</code> (683 lines - the whole contract).
+Framing from <code>ix/crates/rpc/transport/src/frame.rs</code> (~300 lines needed of 8,051).</p>
+
+<pre>
+<span class="c">frame:</span>   [u32 LE length][u8 lane][payload]
+
+<span class="c">lanes in:</span>   0 <span class="g">input</span> (raw PTY bytes)   1 <span class="g">control</span> (codec values)
+<span class="c">lanes out:</span>  0 <span class="g">opened</span>                  1 <span class="g">output</span> (raw PTY bytes)   2 <span class="g">events</span>
+
+<span class="c">handshake/control types (7, tiny, hand-rolled encoder ~200 lines):</span>
+<span class="a">Request</span>       { vm_id, cols, rows, term, mode, env }
+<span class="a">Mode</span>          Create { command, default_shell } | Attach { session } | Peek { session } | List
+<span class="a">ClientControl</span> Resize { cols, rows } | Close
+<span class="a">OpenSuccess</span>   Attached { session } | Listed { sessions }
+<span class="a">ServerEvent</span>   Exit { code } | Detached
+<span class="a">SessionInfo</span>   { id, command, attached, exited }
+</pre>
+
+<p><b>PTY bytes travel only on raw byte lanes.</b> The encoded values are handshake, control and
+status metadata. That is why this protocol is so forkable: the bulk of the wire is opaque bytes,
+and the seven control types are trivial to encode without ix's 6,000-line nightly-only
+<code>codec</code> crate (append-only <code>#[wire(N)]</code> slot table - we reimplement just enough,
+keeping byte-for-byte wire compat).</p>
+
+<h3>Why this is not ix-VM-exclusive</h3>
+<p>All the VM-specific machinery (QUIC ingress routing by DCID, Ed25519 JWT capability tokens,
+per-boot pinned TLS certs) is the <b>outer transport</b> between the ix CLI and <code>ix-agent</code>.
+The inner hop - ix-agent to ix-console - is <b>plain TCP on 127.0.0.1:5001 with the same lane framing
+and a single bearer token</b> read from <code>/run/ix/console-token</code>. So:</p>
+<table>
+<tr><th>Target</th><th>Transport</th><th>Auth</th><th>Server</th></tr>
+<tr><td>Mac (local panes)</td><td>Unix socket</td><td>filesystem perms</td><td>muxd</td></tr>
+<tr><td>Linux box</td><td>TCP over tailscale (or ssh -L)</td><td>bearer token file</td><td>muxd (ix-console fork)</td></tr>
+<tr><td>ix VM (v1)</td><td>whatever <code>ix shell</code> does</td><td>ix connect token</td><td>unmodified ix-console</td></tr>
+<tr><td>ix VM (v2)</td><td>QUIC/WebTransport, native client</td><td>connect token JWT + pinned cert</td><td>unmodified ix-console</td></tr>
+</table>
+<p>ix VMs work on day one with zero protocol code: the pane's relay command is literally
+<code>ix shell &lt;vm&gt;</code>. The native QUIC client is a later refinement, not a prerequisite.</p>
+
+<h2>3. Components</h2>
+
+<h3>Mux.app <span class="pill">Swift / AppKit</span> <span class="pill">the only UI</span></h3>
+<ul>
+<li><b>GhosttyKit</b> (libghostty full embedding API, MIT): hand it an NSView, it renders Metal via its
+own IOSurface-backed layer and render thread. We never touch Metal, fonts, or VT parsing for display.
+~4,800 lines of ghostty's own Swift glue (<code>SurfaceView_AppKit.swift</code>, <code>Ghostty.App.swift</code>)
+to adapt, not write.</li>
+<li><b>Tiling</b>: adapted from ghostty's MIT <code>SplitTree.swift</code> (1,413 lines, already
+<code>Codable</code>): indirect enum <code>.leaf(view)</code> / <code>.split{direction, ratio, left, right}</code>,
+<code>Path</code> addressing, <code>Spatial</code> CGRect mapping for directional focus, a zoomed node.
+Core ghostty has zero split logic - tiling is entirely ours, which is what we want.</li>
+<li><b>Prefix engine</b>: herdr's model - prefix is a <i>mode</i> among modes
+(<code>normal / prefix / navigate / resize / copy</code>), not a chord table. Bindings declare their
+own context (<code>"prefix+n"</code> vs <code>"ctrl+alt+n"</code>). Implemented as a local NSEvent
+monitor ahead of the focused surface. Includes the nvim-mux held-ctrl aliasing
+(<span class="kbd">C-b C-n</span> ≡ <span class="kbd">C-b n</span>) and edge-fallback pane motion.</li>
+<li><b>Layout snapshots</b>: versioned JSON, herdr-style. Restore layout and identity, not pixels.</li>
+</ul>
+
+<h3>muxd <span class="pill">Rust</span> <span class="pill">ix-console fork</span></h3>
+<p>Fork of <code>ix/crates/vm/guest/console/agent</code> - keep ~2,500 of 4,289 LOC:</p>
+<ul>
+<li><b>Keep</b>: <code>manager.rs</code> (session table, 64 max, <code>Arc</code>-identity attach tokens),
+<code>session.rs</code>, <code>pty*.rs</code> (AsyncFd-based, no spawn_blocking), <code>attach.rs</code>,
+<code>migrate.rs</code> (SCM_RIGHTS live-PTY handoff to a successor process: daemon upgrades without
+killing sessions), the <code>ghostty-vt</code> crate (headless VT + <code>render_reattach</code>).</li>
+<li><b>Drop</b>: <code>service-init</code> (OTel/Prometheus/Sentry/axum - replace with
+<code>tracing_subscriber::fmt()</code>), <code>vm-guest-*</code> crates, guest passwd/PATH assumptions.</li>
+<li><b>Fix in the fork</b>: the attach race (screen dump rendered <i>before</i> the client channel is
+installed; bytes in the window are lost - upstream has a test proving it:
+<code>missed_output_causes_divergence</code>). Also: make <code>migrate.rs</code> carry a screen snapshot
+across restarts (upstream builds a fresh empty Terminal and loses scrollback).</li>
+<li><b>Listen on</b>: unix socket (local) or TCP loopback/tailscale (remote), bearer token file,
+re-read per connection.</li>
+</ul>
+
+<h3>mux-attach <span class="pill">Rust</span> <span class="pill">~500 LOC</span></h3>
+<p>The bridge that makes remote panes possible without forking ghostty: libghostty's only IO backend
+is <code>exec</code> (a closed Zig enum with one variant; no <code>ghostty_surface_write</code> exists).
+So each pane's command is <code>mux-attach &lt;target&gt;</code>: raw-mode stdio on one side, lane-framed
+protocol on the other. SIGWINCH → <code>ClientControl::Resize</code>. libghostty forks it against a real
+PTY and gets correct key encoding, resize, and rendering for free.</p>
+<p>Steal from <code>ix shell</code>'s client (<code>interactive/terminal.rs</code>): the
+<code>RawModeGuard</code> reset string, detach keys (<span class="kbd">C-]</span>,
+<span class="kbd">C-a d</span>) with chunk-boundary-safe state, resize polling (200ms, because SIGWINCH
+coalesces during drags), the OSC 52/7717 relay scanner with its 2 MiB cap and open-rate gate.</p>
+
+<h3>mux-proto <span class="pill">Rust</span> <span class="pill">~800 LOC</span></h3>
+<p>Lane framing + the seven control types + a minimal slot-table encoder, wire-compatible with ix.
+Golden-byte tests against captures from a real ix VM keep us honest.</p>
+
+<h2>4. Tiling: exactly how it works</h2>
+<pre>
+<span class="c">// state (Swift) - adapted from ghostty's SplitTree, Codable</span>
+<span class="a">enum</span> Node {
+  <span class="a">case</span> leaf(PaneView)                       <span class="c">// NSView hosting a ghostty surface</span>
+  <span class="a">case</span> split(direction: .horizontal|.vertical, ratio: Double, left: Node, right: Node)
+}
+<span class="c">// per workspace: root Node + zoomed: Path? + focused: Path</span>
+</pre>
+<ol>
+<li><b>Split</b> (<span class="kbd">C-b '</span> / <span class="kbd">C-b -</span>): replace the focused leaf with
+<code>.split(leaf, newPane)</code> at ratio 0.5. Layout pass walks the tree, assigns each leaf a CGRect,
+calls <code>ghostty_surface_set_size</code>. The surface's relay gets SIGWINCH; the daemon gets
+<code>Resize</code>; the remote PTY gets <code>TIOCSWINSZ</code>. One resize path end to end.</li>
+<li><b>Focus</b> (<span class="kbd">C-b h/j/k/l</span>): Spatial pass maps nodes to rects, picks the nearest
+rect in the direction, with tmux-style edge fallback (at the left edge, <span class="kbd">h</span> wraps
+to the rightmost).</li>
+<li><b>Zoom</b> (<span class="kbd">C-b z</span>): set <code>zoomed = focusedPath</code>; layout renders one
+leaf full-bleed. Tree untouched.</li>
+<li><b>Resize mode</b> (<span class="kbd">C-b r</span>): h/j/k/l nudge the enclosing split's ratio;
+esc exits. Drag on divider does the same via SwiftUI.</li>
+<li><b>Persistence</b>: the tree is Codable; snapshot per workspace. Subagent spiral heuristic from
+<code>subagent-pane.sh</code> (first split right at 0.38, then alternate off the previous pane at 0.5)
+comes along as the programmatic-split policy.</li>
+</ol>
+
+<h2>5. State: who owns what</h2>
+<table>
+<tr><th>Plane</th><th>Owner</th><th>Contents</th><th>Mechanism</th></tr>
+<tr><td><b>Layout + identity</b></td><td>Mux.app</td><td>workspaces, BSP trees, per-pane {target host,
+session id, cwd, launch argv, label, agent session ref}, stable never-reused IDs</td>
+<td>versioned JSON in <code>~/Library/Application Support/mux/</code>, autosaved on mutation
+(herdr's <code>SessionSnapshot</code> model, including the resume-agents trick)</td></tr>
+<tr><td><b>Terminal content</b></td><td>each muxd / ix-console</td><td>live PTY, child process,
+headless ghostty-vt grid + scrollback</td><td>survives client disconnect by construction; reattach
+replays <code>render_screen_bytes()</code> - scrollback with per-cell SGR, all DEC modes, tabstops,
+cursor pending-wrap, deliberately not the palette</td></tr>
+<tr><td><b>Window frames</b></td><td>Mux.app</td><td>NSWindow frames, screen, ghostty font size</td>
+<td>same JSON; macOS state restoration as backup</td></tr>
+</table>
+<div class="callout">
+<b>Two VTs in the path, one owner of truth.</b> The daemon's headless ghostty-vt is the source of
+truth; the app-side libghostty surface is a renderer being replayed into. This is tmux-inside-ssh,
+done deliberately: pane scrollback belongs to the daemon, the client treats the reattach replay as
+content. Later upgrade path: the brand-new GHOSTSNP binary snapshot format (libghostty-vt, merged
+2026-07/08, incremental decoder, READY marker for instant first paint) replaces the VT replay once
+it has a compat guarantee - Mitchell has said upstream is building reconnectable terminals on it.
+</div>
+
+<h2>6. Repo layout</h2>
+<pre>
+mux/
+├── README.md
+├── docs/architecture.html          <span class="c">← this file</span>
+├── app/                            <span class="c">Mux.app - Swift, builds on the Mac</span>
+│   ├── Mux.xcodeproj
+│   ├── Sources/
+│   │   ├── App/                    <span class="c">lifecycle, ghostty_app_t wrapper, action_cb dispatch</span>
+│   │   ├── Surface/                <span class="c">SurfaceView glue (adapted from ghostty, MIT)</span>
+│   │   ├── Tiling/                 <span class="c">SplitTree, Spatial, prefix + modes, keybindings</span>
+│   │   └── State/                  <span class="c">layout snapshots, restore orchestration</span>
+│   └── GhosttyKit/                 <span class="c">module.modulemap; xcframework fetched, not vendored</span>
+├── crates/                         <span class="c">Rust workspace - builds anywhere, tests on spark</span>
+│   ├── mux-proto/                  <span class="c">lane framing + control types + mini codec</span>
+│   ├── muxd/                       <span class="c">ix-console fork: sessions, PTY, reattach, migrate</span>
+│   ├── mux-attach/                 <span class="c">stdio relay (the pane command)</span>
+│   └── ghostty-vt/                 <span class="c">headless VT + render_reattach (zig shim, from ix)</span>
+├── scripts/fetch-ghosttykit.sh     <span class="c">muxy-style: prebuilt xcframework + resources from CI</span>
+└── justfile
+</pre>
+<p>Prebuilt GhosttyKit (the muxy pattern): a CI job builds <code>GhosttyKit.xcframework</code> +
+resources tarball from pinned upstream; the app repo downloads release assets. No Zig toolchain on
+dev machines. Zig 0.16 only in that CI job. Everything MIT end to end.</p>
+
+<h2>7. Milestones</h2>
+<table>
+<tr><th></th><th>Deliverable</th><th>Proof</th></tr>
+<tr><td><b>M0</b> <span class="pill now">now</span></td><td>Repo, this doc, Rust workspace skeleton,
+GhosttyKit fetch script</td><td><code>cargo test</code> green on spark</td></tr>
+<tr><td><b>M1</b> <span class="pill now">first light</span></td><td>Local-only Mux.app: GhosttyKit panes,
+SplitTree, prefix keys, layout persist/restore. Panes are plain local exec - no daemon yet.</td>
+<td>Daily-drivable terminal with splits on the Mac</td></tr>
+<tr><td><b>M2</b> <span class="pill later"></span></td><td>muxd + mux-attach on localhost: every pane a
+session; detach/reattach; app restart restores screens; daemon self-upgrade via SCM_RIGHTS handoff</td>
+<td>kill Mux.app mid-<code>htop</code>, reopen, htop still there</td></tr>
+<tr><td><b>M3</b> <span class="pill later"></span></td><td>Remote: muxd on spark over tailscale;
+ix VMs via <code>ix shell</code> relay command</td><td>one window, three panes: mac zsh, spark nvim,
+ix VM build - visually indistinguishable</td></tr>
+<tr><td><b>M4</b> <span class="pill later"></span></td><td>Native ix protocol client in mux-attach
+(QUIC + connect token); wire-compat golden tests</td><td>attach to an ix VM with no ix CLI installed</td></tr>
+<tr><td><b>M5</b> <span class="pill later"></span></td><td>Taste: agent identity + lifecycle states on
+panes, workspace-scoped env, <code>mux</code> JSON CLI (HERDR_ENV-style coords in every pane),
+subagent spiral, mosh-style predictive echo (port <code>crates/term/predict</code>, 1,107 LOC,
+already written), GHOSTSNP snapshots</td><td>subagent-pane.sh ports over with a 5-line diff</td></tr>
+</table>
+
+<h2>8. What we steal, from where</h2>
+<table>
+<tr><th>Thing</th><th>From</th><th>Why it is the hard-won part</th></tr>
+<tr><td><code>render_screen_bytes</code> / renderReattach</td><td>ix <code>ghostty-vt</code> (~180 lines Zig + 1,010 test LOC)</td>
+<td>Screen-to-VT serialization with the cursor-homing, DECOM, pending-wrap ordering hazards already
+found, plus taste: never replays the palette, never emits bare <code>\n</code></td></tr>
+<tr><td>Session manager + PTY layer + migrate</td><td>ix-console</td><td>AsyncFd PTY IO (matters on
+small hosts), slow-client disconnect-not-drop policy, live-fd daemon upgrades</td></tr>
+<tr><td>Lane framing + shell types</td><td>ix rpc</td><td>wire compat = ix VMs are an open API</td></tr>
+<tr><td>SplitTree + surface glue</td><td>ghostty macOS app (MIT)</td><td>1,413-line Codable BSP tree
+with spatial focus; 4,800 lines of embedding glue</td></tr>
+<tr><td>Prefix-as-mode, binding contexts, three command shapes (shell/pane/popup)</td><td>herdr</td>
+<td>the interaction model you already live in; config carries over as deltas</td></tr>
+<tr><td>Snapshot split: layout+identity always, pixels opt-in; agent session refs</td><td>herdr persist</td>
+<td>correct cost boundary; restore resurrects conversations, not just shells</td></tr>
+<tr><td>Held-ctrl aliasing, edge-fallback motion, view roles</td><td>nvim mux</td><td>papercuts already
+sanded</td></tr>
+<tr><td>Frame-clock discipline (8ms cadence, flood-proof drain), seat-based resize</td><td>ix-term
+<code>vt.rs</code></td><td>two hard-won regressions with named tests; only relevant if we ever
+server-render, but the resize-seat idea applies to multi-client muxd now</td></tr>
+<tr><td>RawModeGuard, detach keys, OSC relay gate, resize polling</td><td><code>ix shell</code> client</td>
+<td>the ssh-like edge cases, pre-debugged</td></tr>
+<tr><td>Prebuilt-xcframework CI pattern</td><td>muxy</td><td>no Zig on dev machines, tiny fork surface</td></tr>
+</table>
+
+<h2>9. Risks, honestly</h2>
+<ul>
+<li><b>libghostty embedding API is explicitly unstable</b> ("not supported as a general purpose
+embedding API"). Mitigation: pin a commit, prebuilt-artifact CI, 100+ apps ship on it anyway.</li>
+<li><b>ix wire compat is a moving target</b>: no version field on the framing; compat rides on
+append-only slots. Mitigation: golden-byte tests against a live VM in CI; v1 uses <code>ix shell</code>
+as the relay so breakage is contained to M4.</li>
+<li><b>Two-VT scrollback semantics</b>: daemon owns truth, client scrollback is a replay artifact.
+Acceptable (it is tmux's model); GHOSTSNP later makes it exact.</li>
+<li><b>Crowded space</b> (muxy, agterm, cmux, forge...). The differentiator is not "multiplexer on
+libghostty" - it is native ix protocol + daemon-owned sessions on every target + the herdr agent
+model. Nobody else has the protocol.</li>
+<li><b>Known upstream bug inherited</b>: ix#10126 same-node QUIC hairpin (the ~52s workaround that
+plausibly killed herdr-ix-space #408). mux's muxd path does not touch QUIC; the ix-VM path inherits
+it until upstream fixes it. Scope it out of the demo path.</li>
+</ul>
+
+<h2>10. Decisions taken (defaults, revisit if wrong)</h2>
+<ul>
+<li>Swift + AppKit (not SwiftUI-first): window/NSView control matters more than declarative UI here;
+SwiftUI only for the divider/resize affordances, as ghostty does.</li>
+<li>Local panes go through local muxd from M2 on (uniformity beats one fewer process; the relay adds
+one PTY + a few MB per pane).</li>
+<li>Daemon-owned scrollback; client replay is content, not truth.</li>
+<li>BSP tree with ratios (herdr/ghostty model), not dwindle autolayout (ix-term's term-tile stays
+available in-tree as an option later).</li>
+<li>jj for VCS, colocated git for pushing to the forge.</li>
+<li>Config: TOML, delta-only with annotated defaults via <code>mux --default-config</code>
+(herdr's convention).</li>
+</ul>
+
+</main>
+</body>
+</html>
