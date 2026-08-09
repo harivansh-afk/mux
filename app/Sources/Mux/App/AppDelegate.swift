@@ -148,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "n")
         // performClose requires .closable in the style mask; borderless
         // windows need a direct close.
-        fileMenu.addItem(withTitle: "Close Window", action: #selector(closeKeyWindow(_:)), keyEquivalent: "W")
+        fileMenu.addItem(withTitle: "Close Window", action: #selector(closeKeyWindow(_:)), keyEquivalent: "w")
         fileMenuItem.submenu = fileMenu
         main.addItem(fileMenuItem)
 
