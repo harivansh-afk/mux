@@ -1,10 +1,14 @@
 import AppKit
 
-/// herdr's mode overlay, 1:1 (src/ui/menus.rs render_prefix_overlay):
-/// a single row laid OVER the bottom of the terminal area - panes do not
-/// reflow - containing a badge (" PREFIX ", bold accent-contrast text on
-/// the accent color) followed by key/description span pairs: keys bold in
-/// accent, descriptions in the dim overlay color, all on panel_bg.
+/// herdr's mode overlay (src/ui/menus.rs render_prefix_overlay): a single
+/// row laid OVER the bottom of the terminal area - panes do not reflow -
+/// containing a badge (" PREFIX ", bold accent-contrast text on the accent
+/// color) followed by key/description span pairs: keys bold in accent,
+/// descriptions in the dim overlay color, all on panel_bg.
+///
+/// Unlike a full-width status strip, the bar is a content-sized box floating
+/// at the bottom-left, inset by the same margin from the left and bottom
+/// edges of the terminal area; everything outside the box stays transparent.
 struct ModeBarSegment {
     enum Kind {
         case badge
@@ -23,6 +27,19 @@ struct ModeBarSegment {
 final class ModeBarView: NSView {
     /// One terminal-ish row.
     static let height: CGFloat = 22
+    /// Equal inset from the left and bottom edges of the terminal area,
+    /// so the box sits concentric with the corner.
+    static let margin: CGFloat = 4
+    /// Horizontal padding between the box edge and the text. Matches the
+    /// vertical slack around the text ((height - line height) / 2), so the
+    /// visible badge sits concentric with the window corner: the box bg is
+    /// the terminal bg, so the badge IS the visual edge of the bar.
+    static let padding: CGFloat = 4
+
+    /// Content-sized width for the current segments.
+    var desiredWidth: CGFloat {
+        label.attributedStringValue.size().width + Self.padding * 2
+    }
 
     private let label = NSTextField(labelWithString: "")
     private var segments: [ModeBarSegment] = []
@@ -91,9 +108,9 @@ final class ModeBarView: NSView {
         super.layout()
         label.sizeToFit()
         label.frame = NSRect(
-            x: 8,
+            x: Self.padding,
             y: (bounds.height - label.frame.height) / 2,
-            width: min(label.frame.width, bounds.width - 16),
+            width: min(label.frame.width, bounds.width - Self.padding * 2),
             height: label.frame.height)
     }
 }

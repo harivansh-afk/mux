@@ -234,11 +234,18 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Content-sized box floating at the bottom-left, inset by the same
+    /// margin from the left and bottom edges (container is flipped, so
+    /// the bottom is at maxY).
     private func positionModeBar() {
         let bounds = container.bounds
+        let margin = ModeBarView.margin
+        let width = min(modeBar.desiredWidth, bounds.width - margin * 2)
         modeBar.frame = NSRect(
-            x: 0, y: bounds.height - ModeBarView.height,
-            width: bounds.width, height: ModeBarView.height)
+            x: margin,
+            y: bounds.height - ModeBarView.height - margin,
+            width: width,
+            height: ModeBarView.height)
     }
 
     func layoutPanes() {
