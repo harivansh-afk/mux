@@ -1,10 +1,10 @@
 import AppKit
 
-/// The multiplexer's interaction model, carried over from herdr: the prefix
-/// is a mode among modes, not a chord table. A local NSEvent monitor sees
-/// keys before any view, so prefix handling is independent of terminal focus.
+/// The multiplexer's interaction model: the prefix is a mode among modes,
+/// not a chord table. A local NSEvent monitor sees keys before any view,
+/// so prefix handling is independent of terminal focus.
 ///
-/// M1 bindings (herdr defaults + the user's config.toml deltas):
+/// M1 bindings:
 ///   ctrl+b        arm prefix mode
 ///   prefix '      split right          prefix -      split down
 ///   prefix h/j/k/l  focus direction    prefix z      zoom toggle
@@ -29,9 +29,7 @@ final class PrefixEngine {
     /// the one we set even if key windows change mid-mode.
     private weak var indicatorController: MuxWindowController?
 
-    /// herdr's overlay span grammar: badge, then key/description pairs.
-    /// Labels for splits ("split│"/"split─") come from herdr's navigate
-    /// overlay.
+    /// Overlay span grammar: badge, then key/description pairs.
     private static let prefixSegments: [ModeBarSegment] = [
         .badge("PREFIX"),
         .key("esc"), .dim(" cancel  "),
@@ -124,7 +122,7 @@ final class PrefixEngine {
 
     private func runPrefixAction(key: String, event: NSEvent) -> NSEvent? {
         switch key {
-        // Splits: the user's herdr deltas (' right, - down).
+        // Splits: ' right, - down.
         case "'": controller?.split(direction: .horizontal)
         case "-": controller?.split(direction: .vertical)
 

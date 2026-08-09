@@ -219,8 +219,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - Layout
 
-    /// Show or hide the mode overlay. nil hides it. Like herdr, the bar is
-    /// an overlay on the bottom row: panes never reflow for it.
+    /// Show or hide the mode overlay. nil hides it. The bar is an overlay
+    /// on the bottom row: panes never reflow for it.
     func setModeIndicator(_ segments: [ModeBarSegment]?) {
         if let segments {
             modeBar.render(segments)

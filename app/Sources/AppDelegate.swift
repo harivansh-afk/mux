@@ -57,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let runtime else { return }
         let controller = MuxWindowController(runtime: runtime)
         controllers.append(controller)
-        // New windows start in the key pane's cwd, herdr's new_cwd=follow.
+        // New windows follow the key pane's cwd.
         let cwd = keyController?.focusedPane?.pwd
         controller.addInitialPane(workingDirectory: cwd)
         controller.window.makeKeyAndOrderFront(nil)

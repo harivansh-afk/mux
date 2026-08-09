@@ -183,12 +183,12 @@ to adapt, not write.</li>
 <code>Codable</code>): indirect enum <code>.leaf(view)</code> / <code>.split{direction, ratio, left, right}</code>,
 <code>Path</code> addressing, <code>Spatial</code> CGRect mapping for directional focus, a zoomed node.
 Core ghostty has zero split logic - tiling is entirely ours, which is what we want.</li>
-<li><b>Prefix engine</b>: herdr's model - prefix is a <i>mode</i> among modes
+<li><b>Prefix engine</b>: prefix is a <i>mode</i> among modes
 (<code>normal / prefix / navigate / resize / copy</code>), not a chord table. Bindings declare their
 own context (<code>"prefix+n"</code> vs <code>"ctrl+alt+n"</code>). Implemented as a local NSEvent
 monitor ahead of the focused surface. Includes the nvim-mux held-ctrl aliasing
 (<span class="kbd">C-b C-n</span> ≡ <span class="kbd">C-b n</span>) and edge-fallback pane motion.</li>
-<li><b>Layout snapshots</b>: versioned JSON, herdr-style. Restore layout and identity, not pixels.</li>
+<li><b>Layout snapshots</b>: versioned JSON. Restore layout and identity, not pixels.</li>
 </ul>
 
 <h3>muxd <span class="pill">Rust</span> <span class="pill">ix-console fork</span></h3>
@@ -255,7 +255,7 @@ comes along as the programmatic-split policy.</li>
 <tr><td><b>Layout + identity</b></td><td>Mux.app</td><td>workspaces, BSP trees, per-pane {target host,
 session id, cwd, launch argv, label, agent session ref}, stable never-reused IDs</td>
 <td>versioned JSON in <code>~/Library/Application Support/mux/</code>, autosaved on mutation
-(herdr's <code>SessionSnapshot</code> model, including the resume-agents trick)</td></tr>
+(<code>SessionSnapshot</code> model, including the resume-agents trick)</td></tr>
 <tr><td><b>Terminal content</b></td><td>each muxd / ix-console</td><td>live PTY, child process,
 headless ghostty-vt grid + scrollback</td><td>survives client disconnect by construction; reattach
 replays <code>render_screen_bytes()</code> - scrollback with per-cell SGR, all DEC modes, tabstops,
@@ -314,7 +314,7 @@ ix VM build - visually indistinguishable</td></tr>
 <tr><td><b>M4</b> <span class="pill later"></span></td><td>Native ix protocol client in mux-attach
 (QUIC + connect token); wire-compat golden tests</td><td>attach to an ix VM with no ix CLI installed</td></tr>
 <tr><td><b>M5</b> <span class="pill later"></span></td><td>Taste: agent identity + lifecycle states on
-panes, workspace-scoped env, <code>mux</code> JSON CLI (HERDR_ENV-style coords in every pane),
+panes, workspace-scoped env, <code>mux</code> JSON CLI (<code>MUX_ENV</code> coords in every pane),
 subagent spiral, mosh-style predictive echo (port <code>crates/term/predict</code>, 1,107 LOC,
 already written), GHOSTSNP snapshots</td><td>subagent-pane.sh ports over with a 5-line diff</td></tr>
 </table>
@@ -330,9 +330,9 @@ small hosts), slow-client disconnect-not-drop policy, live-fd daemon upgrades</t
 <tr><td>Lane framing + shell types</td><td>ix rpc</td><td>wire compat = ix VMs are an open API</td></tr>
 <tr><td>SplitTree + surface glue</td><td>ghostty macOS app (MIT)</td><td>1,413-line Codable BSP tree
 with spatial focus; 4,800 lines of embedding glue</td></tr>
-<tr><td>Prefix-as-mode, binding contexts, three command shapes (shell/pane/popup)</td><td>herdr</td>
+<tr><td>Prefix-as-mode, binding contexts, three command shapes (shell/pane/popup)</td><td>predecessor multiplexer</td>
 <td>the interaction model you already live in; config carries over as deltas</td></tr>
-<tr><td>Snapshot split: layout+identity always, pixels opt-in; agent session refs</td><td>herdr persist</td>
+<tr><td>Snapshot split: layout+identity always, pixels opt-in; agent session refs</td><td>predecessor persist layer</td>
 <td>correct cost boundary; restore resurrects conversations, not just shells</td></tr>
 <tr><td>Held-ctrl aliasing, edge-fallback motion, view roles</td><td>nvim mux</td><td>papercuts already
 sanded</td></tr>
@@ -354,10 +354,10 @@ as the relay so breakage is contained to M4.</li>
 <li><b>Two-VT scrollback semantics</b>: daemon owns truth, client scrollback is a replay artifact.
 Acceptable (it is tmux's model); GHOSTSNP later makes it exact.</li>
 <li><b>Crowded space</b> (muxy, agterm, cmux, forge...). The differentiator is not "multiplexer on
-libghostty" - it is native ix protocol + daemon-owned sessions on every target + the herdr agent
+libghostty" - it is native ix protocol + daemon-owned sessions on every target + the agent-session
 model. Nobody else has the protocol.</li>
 <li><b>Known upstream bug inherited</b>: ix#10126 same-node QUIC hairpin (the ~52s workaround that
-plausibly killed herdr-ix-space #408). mux's muxd path does not touch QUIC; the ix-VM path inherits
+plausibly killed the predecessor's ix integration, #408). mux's muxd path does not touch QUIC; the ix-VM path inherits
 it until upstream fixes it. Scope it out of the demo path.</li>
 </ul>
 
@@ -368,11 +368,10 @@ SwiftUI only for the divider/resize affordances, as ghostty does.</li>
 <li>Local panes go through local muxd from M2 on (uniformity beats one fewer process; the relay adds
 one PTY + a few MB per pane).</li>
 <li>Daemon-owned scrollback; client replay is content, not truth.</li>
-<li>BSP tree with ratios (herdr/ghostty model), not dwindle autolayout (ix-term's term-tile stays
+<li>BSP tree with ratios (ghostty model), not dwindle autolayout (ix-term's term-tile stays
 available in-tree as an option later).</li>
 <li>jj for VCS, colocated git for pushing to the forge.</li>
-<li>Config: TOML, delta-only with annotated defaults via <code>mux --default-config</code>
-(herdr's convention).</li>
+<li>Config: TOML, delta-only with annotated defaults via <code>mux --default-config</code>.</li>
 </ul>
 
 </main>

@@ -1,9 +1,8 @@
 import AppKit
 import GhosttyKit
 
-/// Light/dark theming for mux chrome, matched 1:1 to the herdr palette the
-/// user's nix theme renders (lib/theme.nix renderHerdrTheme): cozybox
-/// gruvbox with a deliberately greyscale accent.
+/// Light/dark theming for mux chrome: cozybox gruvbox with a deliberately
+/// greyscale accent, matching the user's terminal theme.
 ///
 /// The terminal contents theme themselves: we forward the effective
 /// appearance to libghostty via ghostty_app_set_color_scheme, which selects
@@ -16,13 +15,13 @@ enum Appearance {
 }
 
 struct Palette {
-    /// Overlay/bar background (herdr panel_bg = terminal background).
+    /// Overlay/bar background (= terminal background).
     let panelBg: NSColor
     /// Accent for keys and the mode badge background.
     let accent: NSColor
-    /// Badge text on accent (herdr panel_contrast_fg = panel_bg).
+    /// Badge text on accent (= panelBg for contrast).
     let accentContrast: NSColor
-    /// Dim descriptions (herdr overlay0).
+    /// Dim descriptions.
     let dim: NSColor
     /// Primary text.
     let text: NSColor

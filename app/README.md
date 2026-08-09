@@ -19,7 +19,7 @@ Swift/AppKit. Builds on macOS only - generate the Xcode project here on the Mac.
   local NSEvent monitor ahead of the focused surface, bindings that declare
   their own context ("prefix+n" vs "ctrl+alt+n"), held-ctrl aliasing, edge
   fallback motion.
-- `Sources/State/` - versioned JSON layout snapshots (herdr's model): BSP tree +
+- `Sources/State/` - versioned JSON layout snapshots: BSP tree +
   per-pane {target, session id, cwd, launch argv, label, agent session ref},
   stable never-reused pane/tab ids, autosave on mutation. Restore = rebuild
   tree, re-exec each pane's command (M1: local shell at cwd; M2: mux-attach

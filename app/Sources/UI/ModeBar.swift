@@ -1,10 +1,10 @@
 import AppKit
 
-/// herdr's mode overlay (src/ui/menus.rs render_prefix_overlay): a single
-/// row laid OVER the bottom of the terminal area - panes do not reflow -
-/// containing a badge (" PREFIX ", bold accent-contrast text on the accent
-/// color) followed by key/description span pairs: keys bold in accent,
-/// descriptions in the dim overlay color, all on panel_bg.
+/// The mode overlay: a single row laid OVER the bottom of the terminal
+/// area - panes do not reflow - containing a badge (" PREFIX ", bold
+/// accent-contrast text on the accent color) followed by key/description
+/// span pairs: keys bold in accent, descriptions in the dim overlay color,
+/// all on panel_bg.
 ///
 /// Unlike a full-width status strip, the bar is a content-sized box floating
 /// at the bottom-left, inset by the same margin from the left and bottom

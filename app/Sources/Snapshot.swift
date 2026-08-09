@@ -1,6 +1,6 @@
 import Foundation
 
-/// Layout-and-identity persistence, herdr's model: structural facts are
+/// Layout-and-identity persistence: structural facts are
 /// always saved (cheap, versioned JSON); screen contents are the daemon's
 /// job starting in M2. Restore resurrects the layout and per-pane cwd.
 

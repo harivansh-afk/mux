@@ -7,8 +7,8 @@ an ix VM, a plain Linux box running `muxd`, or the Mac itself. No web layer, no
 sidebar, no chrome: the UI is the panes.
 
 Read `docs/architecture.html` first - it is the design document and the map of what
-is forked from where (ix-console, ghostty's Swift SplitTree, herdr's interaction
-model).
+is forked from where (ix-console, ghostty's Swift SplitTree, a modal
+prefix-key interaction model).
 
 ## Layout
 
