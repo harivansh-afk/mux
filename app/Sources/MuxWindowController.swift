@@ -11,11 +11,47 @@ final class PaneContainerView: NSView {
     }
 }
 
+/// Thin status strip shown at the bottom while a prefix/resize mode is
+/// active. The multiplexer's only piece of chrome, and it earns its keep
+/// by disappearing.
+final class ModeBarView: NSView {
+    static let height: CGFloat = 24
+    private let label = NSTextField(labelWithString: "")
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(calibratedWhite: 0.07, alpha: 1).cgColor
+        label.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+        label.textColor = NSColor(calibratedRed: 0.85, green: 0.65, blue: 0.34, alpha: 1)
+        label.lineBreakMode = .byTruncatingTail
+        addSubview(label)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    var text: String = "" {
+        didSet {
+            label.stringValue = text
+            needsLayout = true
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        label.sizeToFit()
+        label.frame.origin = NSPoint(
+            x: 12, y: (bounds.height - label.frame.height) / 2)
+        label.frame.size.width = min(label.frame.width, bounds.width - 24)
+    }
+}
+
 /// One window = one workspace = one split tree of panes.
 final class MuxWindowController: NSObject, NSWindowDelegate {
     let runtime: GhosttyRuntime
     private(set) var window: NSWindow!
     private let container = PaneContainerView()
+    private let modeBar = ModeBarView()
 
     private(set) var tree: SplitNode?
     private(set) var panes: [UUID: PaneView] = [:]
@@ -28,15 +64,25 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 680),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false)
         window.title = "mux"
+        // Chromeless: no visible titlebar, no traffic lights. The window
+        // stays resizable from edges and draggable by background.
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+        window.isMovableByWindowBackground = true
         window.center()
         window.tabbingMode = .disallowed
         window.delegate = self
         container.controller = self
         window.contentView = container
+        container.addSubview(modeBar)
+        modeBar.isHidden = true
         self.window = window
     }
 
@@ -206,10 +252,30 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - Layout
 
+    /// Show or hide the bottom mode bar. nil hides it.
+    func setModeIndicator(_ text: String?) {
+        if let text {
+            modeBar.text = text
+            modeBar.isHidden = false
+        } else {
+            modeBar.isHidden = true
+        }
+        layoutPanes()
+    }
+
     func layoutPanes() {
         guard let tree else { return }
-        let bounds = container.bounds
+        var bounds = container.bounds
         guard bounds.width > 1, bounds.height > 1 else { return }
+
+        // Reserve the bottom strip while the mode bar is visible
+        // (container is flipped: y grows downward).
+        if !modeBar.isHidden {
+            modeBar.frame = NSRect(
+                x: 0, y: bounds.height - ModeBarView.height,
+                width: bounds.width, height: ModeBarView.height)
+            bounds.size.height -= ModeBarView.height
+        }
 
         if let zoomedID, let zoomed = panes[zoomedID] {
             for (_, pane) in panes {

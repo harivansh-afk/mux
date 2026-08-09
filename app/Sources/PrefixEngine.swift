@@ -14,6 +14,8 @@ import AppKit
 /// Held-ctrl aliasing: ctrl+<key> in prefix mode means <key> (the nvim-mux
 /// papercut fix: you rarely release ctrl between prefix and key).
 /// Resize mode: h/j/k/l nudge the enclosing split ratio, esc/enter/q exit.
+///
+/// Mode changes drive the bottom mode bar on the active window.
 final class PrefixEngine {
     enum Mode {
         case normal
@@ -23,6 +25,14 @@ final class PrefixEngine {
 
     private(set) var mode: Mode = .normal
     private var monitor: Any?
+    /// The controller currently showing our mode bar, so we always clear
+    /// the one we set even if key windows change mid-mode.
+    private weak var indicatorController: MuxWindowController?
+
+    private static let prefixHint =
+        "PREFIX   ' split right   - split down   h/j/k/l focus   z zoom   x close   c window   r resize"
+    private static let resizeHint =
+        "RESIZE   h/j/k/l adjust   esc done"
 
     /// Resolves the controller of the key window.
     private var controller: MuxWindowController? {
@@ -41,6 +51,22 @@ final class PrefixEngine {
         if let monitor { NSEvent.removeMonitor(monitor) }
     }
 
+    private func setMode(_ newMode: Mode) {
+        mode = newMode
+        indicatorController?.setModeIndicator(nil)
+        indicatorController = nil
+        switch newMode {
+        case .normal:
+            break
+        case .prefix:
+            indicatorController = controller
+            indicatorController?.setModeIndicator(Self.prefixHint)
+        case .resize:
+            indicatorController = controller
+            indicatorController?.setModeIndicator(Self.resizeHint)
+        }
+    }
+
     /// Returns nil to swallow the event, or the event to pass it through.
     private func handle(_ event: NSEvent) -> NSEvent? {
         let key = event.charactersIgnoringModifiers ?? ""
@@ -50,7 +76,7 @@ final class PrefixEngine {
         switch mode {
         case .normal:
             if hasCtrl && !hasCmd && key == "b" {
-                mode = .prefix
+                setMode(.prefix)
                 return nil
             }
             return event
@@ -58,10 +84,10 @@ final class PrefixEngine {
         case .prefix:
             // Literal prefix passthrough: ctrl+b again sends ctrl+b.
             if hasCtrl && key == "b" {
-                mode = .normal
+                setMode(.normal)
                 return event
             }
-            mode = .normal
+            setMode(.normal)
             return runPrefixAction(key: key, event: event)
 
         case .resize:
@@ -71,7 +97,7 @@ final class PrefixEngine {
             case "k": controller?.resizeFocused(.up); return nil
             case "l": controller?.resizeFocused(.right); return nil
             case "\u{1b}", "\r", "q":
-                mode = .normal
+                setMode(.normal)
                 return nil
             default:
                 return nil
@@ -94,7 +120,7 @@ final class PrefixEngine {
         case "z": controller?.toggleZoom()
         case "x": controller?.closeFocusedPane()
         case "c": (NSApp.delegate as? AppDelegate)?.newWindow(nil)
-        case "r": mode = .resize
+        case "r": setMode(.resize)
 
         case "\u{1b}": break // cancel
 

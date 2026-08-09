@@ -18,9 +18,13 @@ rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$BIN" "$BUNDLE/Contents/MacOS/Mux"
 
-# Ghostty runtime resources (terminfo, shell integration, themes).
+# Ghostty runtime resources. GHOSTTY_RESOURCES_DIR points at Resources/ghostty,
+# but the terminfo db lives at the SIBLING path Resources/terminfo (ghostty
+# derives it as resources_dir/../terminfo). Missing terminfo = TERM broken =
+# "'xterm-ghostty': unknown terminal type" and garbled zle redraws.
 if [ -d "$GHOSTTY_SRC/zig-out/share/ghostty" ]; then
   cp -R "$GHOSTTY_SRC/zig-out/share/ghostty" "$BUNDLE/Contents/Resources/ghostty"
+  cp -R "$GHOSTTY_SRC/zig-out/share/terminfo" "$BUNDLE/Contents/Resources/terminfo"
 else
   echo "warning: $GHOSTTY_SRC/zig-out/share/ghostty not found; run zig build in the ghostty checkout" >&2
 fi
