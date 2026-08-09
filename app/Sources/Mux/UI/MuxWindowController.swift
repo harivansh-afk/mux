@@ -17,6 +17,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     private(set) var window: NSWindow!
     private let container = PaneContainerView()
     private let modeBar = ModeBarView()
+    private let helpOverlay = HelpOverlayView()
 
     private(set) var tree: SplitNode?
     private(set) var panes: [UUID: PaneView] = [:]
@@ -234,6 +235,33 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    // MARK: - Help overlay
+
+    func showHelp() {
+        // Keep the overlay above any panes added since last time.
+        helpOverlay.removeFromSuperview()
+        container.addSubview(helpOverlay)
+        positionHelpOverlay()
+    }
+
+    func hideHelp() {
+        helpOverlay.removeFromSuperview()
+    }
+
+    func scrollHelp(by dy: CGFloat) {
+        helpOverlay.scroll(by: dy)
+    }
+
+    private func positionHelpOverlay() {
+        let bounds = container.bounds
+        let size = helpOverlay.desiredSize(in: bounds)
+        helpOverlay.frame = NSRect(
+            x: (bounds.width - size.width) / 2,
+            y: (bounds.height - size.height) / 2,
+            width: size.width,
+            height: size.height)
+    }
+
     /// Content-sized box floating at the bottom-left, inset by the same
     /// margin from the left and bottom edges (container is flipped, so
     /// the bottom is at maxY).
@@ -254,6 +282,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         guard bounds.width > 1, bounds.height > 1 else { return }
 
         if !modeBar.isHidden { positionModeBar() }
+        if helpOverlay.superview != nil { positionHelpOverlay() }
 
         if let zoomedID, let zoomed = panes[zoomedID] {
             for (_, pane) in panes {

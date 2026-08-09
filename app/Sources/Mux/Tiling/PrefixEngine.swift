@@ -10,7 +10,7 @@ import AppKit
 ///   prefix h/j/k/l  focus direction    prefix z      zoom toggle
 ///   prefix x      close pane           prefix c      new window
 ///   prefix r      resize mode          prefix esc    cancel
-///   prefix ctrl+b send a literal ctrl+b
+///   prefix ?      help overlay         prefix ctrl+b send a literal ctrl+b
 /// Held-ctrl aliasing: ctrl+<key> in prefix mode means <key> (the nvim-mux
 /// papercut fix: you rarely release ctrl between prefix and key).
 /// Resize mode: h/j/k/l nudge the enclosing split ratio, esc/enter/q exit.
@@ -21,6 +21,7 @@ final class PrefixEngine {
         case normal
         case prefix
         case resize
+        case help
     }
 
     private(set) var mode: Mode = .normal
@@ -29,24 +30,26 @@ final class PrefixEngine {
     /// the one we set even if key windows change mid-mode.
     private weak var indicatorController: MuxWindowController?
 
-    /// Overlay span grammar: badge, then key/description pairs.
+    /// Overlay span grammar: badge, then key/description pairs. Bars stay
+    /// clean: the full keybinding list lives in the keybinds overlay (?).
     private static let prefixSegments: [ModeBarSegment] = [
         .badge("PREFIX"),
         .key("esc"), .dim(" cancel  "),
         .key("ctrl+b"), .dim(" send prefix  "),
-        .key("'"), .dim(" split│  "),
-        .key("-"), .dim(" split─  "),
-        .key("h/j/k/l"), .dim(" focus  "),
-        .key("z"), .dim(" zoom  "),
-        .key("x"), .dim(" close  "),
-        .key("c"), .dim(" window  "),
-        .key("r"), .dim(" resize"),
+        .key("?"), .dim(" keybinds"),
     ]
 
     private static let resizeSegments: [ModeBarSegment] = [
         .badge("RESIZE"),
         .key("h/j/k/l"), .dim(" resize  "),
-        .key("esc/enter"), .dim(" done"),
+        .key("esc"), .dim(" done  "),
+        .key("?"), .dim(" keybinds"),
+    ]
+
+    private static let helpSegments: [ModeBarSegment] = [
+        .badge("KEYBINDS"),
+        .key("j/k"), .dim(" scroll  "),
+        .key("esc"), .dim(" close"),
     ]
 
     /// Resolves the controller of the key window.
@@ -69,6 +72,7 @@ final class PrefixEngine {
     private func setMode(_ newMode: Mode) {
         mode = newMode
         indicatorController?.setModeIndicator(nil)
+        indicatorController?.hideHelp()
         indicatorController = nil
         switch newMode {
         case .normal:
@@ -79,6 +83,10 @@ final class PrefixEngine {
         case .resize:
             indicatorController = controller
             indicatorController?.setModeIndicator(Self.resizeSegments)
+        case .help:
+            indicatorController = controller
+            indicatorController?.setModeIndicator(Self.helpSegments)
+            indicatorController?.showHelp()
         }
     }
 
@@ -111,7 +119,19 @@ final class PrefixEngine {
             case "j": controller?.resizeFocused(.down); return nil
             case "k": controller?.resizeFocused(.up); return nil
             case "l": controller?.resizeFocused(.right); return nil
+            case "?": setMode(.help); return nil
             case "\u{1b}", "\r", "q":
+                setMode(.normal)
+                return nil
+            default:
+                return nil
+            }
+
+        case .help:
+            switch key {
+            case "j", "\u{F701}": controller?.scrollHelp(by: 44); return nil
+            case "k", "\u{F700}": controller?.scrollHelp(by: -44); return nil
+            case "\u{1b}", "q", "?", "\r":
                 setMode(.normal)
                 return nil
             default:
@@ -136,6 +156,7 @@ final class PrefixEngine {
         case "x": controller?.closeFocusedPane()
         case "c": (NSApp.delegate as? AppDelegate)?.newWindow(nil)
         case "r": setMode(.resize)
+        case "?": setMode(.help)
 
         case "\u{1b}": break // cancel
 
