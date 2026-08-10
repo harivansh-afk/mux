@@ -1,5 +1,12 @@
 import AppKit
 
+/// Where a pane being created should live: inherited from the pane it is
+/// split from, or chosen explicitly (nil = the local daemon).
+enum NewPaneTarget {
+    case inherit
+    case explicit(String?)
+}
+
 /// One session: a split tree of panes with its focus and zoom state.
 /// The unit the user switches between and the unit of layout persistence.
 ///
@@ -34,16 +41,22 @@ final class Session {
     // MARK: - Pane lifecycle
 
     @discardableResult
-    func addInitialPane(id: UUID = UUID(), workingDirectory: String? = nil) -> PaneView {
-        let pane = makePane(id: id, workingDirectory: workingDirectory)
+    func addInitialPane(
+        id: UUID = UUID(), workingDirectory: String? = nil, target: String? = nil
+    ) -> PaneView {
+        let pane = makePane(id: id, workingDirectory: workingDirectory, target: target)
         tree = .leaf(pane.id)
         controller?.layoutPanes()
         focus(pane)
         return pane
     }
 
-    private func makePane(id: UUID = UUID(), workingDirectory: String? = nil) -> PaneView {
-        let pane = PaneView(id: id, runtime: runtime, workingDirectory: workingDirectory)
+    private func makePane(
+        id: UUID = UUID(), workingDirectory: String? = nil, target: String? = nil
+    ) -> PaneView {
+        let pane = PaneView(
+            id: id, runtime: runtime, workingDirectory: workingDirectory, target: target
+        )
         pane.controller = controller
         panes[pane.id] = pane
         controller?.attach(pane)
@@ -58,7 +71,9 @@ final class Session {
         zoomed: UUID?
     ) {
         for id in snapshotTree.leaves {
-            _ = makePane(id: id, workingDirectory: paneMeta[id]?.cwd)
+            _ = makePane(
+                id: id, workingDirectory: paneMeta[id]?.cwd, target: paneMeta[id]?.target
+            )
         }
         tree = snapshotTree
         zoomedID = zoomed
@@ -70,12 +85,25 @@ final class Session {
         }
     }
 
-    func split(from pane: PaneView? = nil, direction: SplitDirection) {
+    func split(
+        from pane: PaneView? = nil,
+        direction: SplitDirection,
+        target: NewPaneTarget = .inherit
+    ) {
         guard let source = pane ?? focusedPane else { return }
         guard let tree else { return }
         zoomedID = nil
-        // New panes inherit the source pane's cwd (OSC 7 / pwd action).
-        let newPane = makePane(workingDirectory: source.pwd)
+        // New panes inherit the source pane's target, and its cwd (OSC 7 /
+        // pwd action) only when the targets match: a path from another
+        // machine means nothing here, and vice versa.
+        let newTarget: String? = switch target {
+        case .inherit: source.target
+        case let .explicit(explicit): explicit
+        }
+        let newPane = makePane(
+            workingDirectory: newTarget == source.target ? source.pwd : nil,
+            target: newTarget
+        )
         self.tree = tree.inserting(newPane.id, at: source.id, direction: direction)
         controller?.layoutPanes()
         focus(newPane)

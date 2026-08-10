@@ -6,6 +6,10 @@ import Foundation
 
 struct PaneSnapshot: Codable {
     var cwd: String?
+    /// Where the pane's terminal lives (see PaneView.target). Absent in
+    /// files written before targets existed, which is exactly what a
+    /// local pane means - so no version bump.
+    var target: String?
 }
 
 struct SessionSnapshot: Codable {

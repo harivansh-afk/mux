@@ -68,9 +68,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let runtime else { return }
         let controller = MuxWindowController(runtime: runtime)
         controllers.append(controller)
-        // New windows follow the key pane's cwd.
-        let cwd = keyController?.focusedPane?.pwd
-        controller.addInitialPane(workingDirectory: cwd)
+        // New windows follow the key pane's target and cwd, like prefix c.
+        let source = keyController?.focusedPane
+        controller.addInitialPane(workingDirectory: source?.pwd, target: source?.target)
         controller.window.makeKeyAndOrderFront(nil)
         saveSnapshot()
     }
@@ -88,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let tree = s.tree else { return nil }
                 var paneMeta: [UUID: PaneSnapshot] = [:]
                 for (id, pane) in s.panes {
-                    paneMeta[id] = PaneSnapshot(cwd: pane.pwd)
+                    paneMeta[id] = PaneSnapshot(cwd: pane.pwd, target: pane.target)
                 }
                 return SessionSnapshot(
                     tree: tree, panes: paneMeta,

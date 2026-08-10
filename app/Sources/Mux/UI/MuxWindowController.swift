@@ -114,13 +114,13 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     // MARK: - Session switching
 
     /// prefix c: a new session with one pane, following the focused
-    /// pane's cwd.
+    /// pane's target and cwd.
     func newSession() {
-        let cwd = activeSession?.focusedPane?.pwd
+        let source = activeSession?.focusedPane
         let session = Session(runtime: runtime, controller: self)
         sessions.append(session)
         activeSessionIndex = sessions.count - 1
-        session.addInitialPane(workingDirectory: cwd)
+        session.addInitialPane(workingDirectory: source?.pwd, target: source?.target)
         layoutPanes()
         flashSessionIndicator()
         saveState()
@@ -155,8 +155,12 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     }
 
     @discardableResult
-    func addInitialPane(id: UUID = UUID(), workingDirectory: String? = nil) -> PaneView? {
-        activeSession?.addInitialPane(id: id, workingDirectory: workingDirectory)
+    func addInitialPane(
+        id: UUID = UUID(), workingDirectory: String? = nil, target: String? = nil
+    ) -> PaneView? {
+        activeSession?.addInitialPane(
+            id: id, workingDirectory: workingDirectory, target: target
+        )
     }
 
     /// Rebuild all sessions from a snapshot. The active session is
@@ -177,8 +181,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func split(direction: SplitDirection) {
-        activeSession?.split(direction: direction)
+    func split(direction: SplitDirection, target: NewPaneTarget = .inherit) {
+        activeSession?.split(direction: direction, target: target)
     }
 
     func split(from pane: PaneView, ghosttyDirection: ghostty_action_split_direction_e) {
