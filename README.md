@@ -37,6 +37,29 @@ the Linux build of `muxd` is proven.
 pty, SIGKILLs the client, reattaches and checks the replay. It uses a throwaway
 `HOME` and a private socket, so it never touches a daemon you are living in.
 
+## Remote hosts
+
+A pane on another machine runs the same `muxd` there and reaches it over QUIC.
+The local daemon is the broker: panes always speak to the local unix socket, and
+the local daemon holds one QUIC connection per host.
+
+1. On the remote box, run `muxd --listen-quic <addr>:4433`. On first start it
+   generates a cert and a bearer token under `~/.local/state/muxd/` and logs the
+   cert pin as `sha256:<base64>`.
+2. On the Mac, name the host in `~/.config/mux/hosts.json`:
+
+       { "spark": { "addr": "100.64.0.7:4433" } }
+
+3. Copy the remote's token to `~/.local/state/mux/tokens/spark` (0600). The first
+   connection pins the cert trust-on-first-use into `~/.local/state/mux/known_hosts`;
+   a later cert change is refused until you clear that line.
+4. In the app, `prefix t` lists `local` plus every alias. Pick `spark` and the
+   split lives there; kill the app and the remote pty (and its scrollback) is
+   still there on reattach.
+
+There is no CLI to manage `hosts.json` yet - it is hand-edited JSON, read fresh
+every time the picker opens.
+
 ## State model
 
 Layout and identity are client-owned (versioned JSON snapshots). 

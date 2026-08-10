@@ -29,12 +29,8 @@
   in
     unpackZigArtifact {inherit name artifact;};
   # url + hash live in the sibling pins.json (no inline `sha256-...`), the one
-  # place a bump edits. See indexable-inc/index's pins convention. This file is
-  # re-imported by the index cargo-unit renderer's generated units.nix in a
-  # scope that does NOT thread `lib`, so `lib.importJSON` fails there with
-  # `undefined variable 'lib'`; `builtins.fromJSON (readFile ...)` needs no free
-  # variable and reads identical bytes (drvPath unchanged).
-  # astlog-ignore: prefer-lib-import-format -- cargo-unit renderer scope has no `lib`; see above
+  # place a bump edits. builtins.fromJSON needs no free variable, so this file
+  # imports cleanly from a scope that does not thread `lib`.
   uucode = (builtins.fromJSON (builtins.readFile ./pins.json)).uucode;
 in
   linkFarm "ghostty-vt-zig-deps" [
