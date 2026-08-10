@@ -21,6 +21,11 @@ final class PaneView: NSView {
     /// reconnect to, or kill.
     static let ixPrefix = "ix:"
 
+    /// The host chip shown at this pane's top-right corner; nil for local
+    /// panes. A sibling view in the pane container (libghostty owns this
+    /// view's layer), laid out by Session next to the pane's frame.
+    let hostBadge: HostBadgeView?
+
     private(set) var surface: ghostty_surface_t?
     weak var controller: MuxWindowController?
 
@@ -50,6 +55,7 @@ final class PaneView: NSView {
     ) {
         self.id = id
         self.target = target
+        hostBadge = target.map { HostBadgeView(host: $0) }
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -268,6 +274,7 @@ final class PaneView: NSView {
     private func setFocus(_ value: Bool) {
         guard focused != value else { return }
         focused = value
+        hostBadge?.setFocused(value)
         guard let surface else { return }
         ghostty_surface_set_focus(surface, value)
         if value {
