@@ -52,10 +52,12 @@ final class Session {
     }
 
     private func makePane(
-        id: UUID = UUID(), workingDirectory: String? = nil, target: String? = nil
+        id: UUID = UUID(), workingDirectory: String? = nil, target: String? = nil,
+        initialFrame: CGRect = .zero
     ) -> PaneView {
         let pane = PaneView(
-            id: id, runtime: runtime, workingDirectory: workingDirectory, target: target
+            id: id, runtime: runtime, workingDirectory: workingDirectory, target: target,
+            initialFrame: initialFrame
         )
         pane.controller = controller
         panes[pane.id] = pane
@@ -70,9 +72,19 @@ final class Session {
         focused: UUID?,
         zoomed: UUID?
     ) {
+        // Size each pane before its surface spawns the attach command, so
+        // the pty handshake carries the pane's real dimensions and the
+        // daemon replays the screen at the size it was left at. A zoomed
+        // pane was covering the whole container when the snapshot was
+        // taken; the covered panes keep their tree rects, exactly as they
+        // did pre-quit.
+        let bounds = controller?.paneBounds ?? .zero
+        let rects = snapshotTree.layout(in: bounds)
         for id in snapshotTree.leaves {
+            let frame = (zoomed == id) ? bounds : (rects[id] ?? bounds)
             _ = makePane(
-                id: id, workingDirectory: paneMeta[id]?.cwd, target: paneMeta[id]?.target
+                id: id, workingDirectory: paneMeta[id]?.cwd, target: paneMeta[id]?.target,
+                initialFrame: frame
             )
         }
         tree = snapshotTree

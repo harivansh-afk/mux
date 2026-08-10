@@ -51,12 +51,13 @@ final class PaneView: NSView {
         runtime: GhosttyRuntime,
         workingDirectory: String? = nil,
         target: String? = nil,
-        command: String? = nil
+        command: String? = nil,
+        initialFrame: CGRect = .zero
     ) {
         self.id = id
         self.target = target
         hostBadge = target.map { HostBadgeView(host: $0) }
-        super.init(frame: .zero)
+        super.init(frame: initialFrame)
 
         wantsLayer = true
 
@@ -93,6 +94,20 @@ final class PaneView: NSView {
 
         if surface == nil {
             NSLog("ghostty_surface_new failed")
+        }
+
+        // A restored pane knows its final frame before the surface spawns
+        // its command: size the surface now so the attach handshake (and
+        // the daemon's screen replay) happen at the real size, not a
+        // default. convertToBacking is useless before the view joins a
+        // window, so scale by hand with the same factor the config used.
+        if let surface, initialFrame.width > 0, initialFrame.height > 0 {
+            let scale = cfg.scale_factor
+            ghostty_surface_set_size(
+                surface,
+                UInt32(max(1, initialFrame.width * scale)),
+                UInt32(max(1, initialFrame.height * scale))
+            )
         }
     }
 
