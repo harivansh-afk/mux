@@ -22,9 +22,9 @@ prefix-key interaction model).
 
 ## State model
 
-Layout and identity are client-owned (versioned JSON snapshots). Terminal content is
-daemon-owned: it survives client disconnect, and reattach replays the exact screen.
-Restore layout and identity always; pixels come back from the daemon.
+Layout and identity are client-owned (versioned JSON snapshots). 
+Terminal content is daemon-owned and survives client disconnect, reattach replays the exact screen.
+Restore layout and identity always; pixels come back from the daemon in form of raw byte stream
 
 Terminology: a *session* is the client-side unit you switch between (prefix c /
 1..9), a group of split panes - pure layout state. The daemon addresses terminal
