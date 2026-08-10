@@ -66,3 +66,13 @@ pub fn daemon_key() -> PathBuf {
 pub fn daemon_token() -> PathBuf {
     daemon_state_dir().join("token")
 }
+
+/// Running daemon's pidfile: `~/.local/state/muxd/muxd.pid`, one decimal
+/// pid and a newline. Written at startup; the successor reads it to know
+/// which process to ask for a live-fd handoff (see `migrate.rs`). Derived
+/// from `HOME` on purpose, so a test daemon with its own `HOME` never
+/// signals the user's.
+#[must_use]
+pub fn daemon_pid() -> PathBuf {
+    daemon_state_dir().join("muxd.pid")
+}
