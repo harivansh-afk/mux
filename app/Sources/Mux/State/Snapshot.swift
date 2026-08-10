@@ -10,6 +10,9 @@ struct PaneSnapshot: Codable {
     /// files written before targets existed, which is exactly what a
     /// local pane means - so no version bump.
     var target: String?
+    /// Font zoom in points relative to the config default (cmd+= /
+    /// cmd+-). Absent means default, so no version bump.
+    var fontDelta: Int?
 }
 
 struct SessionSnapshot: Codable {

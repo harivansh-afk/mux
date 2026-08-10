@@ -97,7 +97,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let tree = s.tree else { return nil }
                 var paneMeta: [UUID: PaneSnapshot] = [:]
                 for (id, pane) in s.panes {
-                    paneMeta[id] = PaneSnapshot(cwd: pane.pwd, target: pane.target)
+                    paneMeta[id] = PaneSnapshot(
+                        cwd: pane.pwd, target: pane.target,
+                        fontDelta: pane.fontDelta == 0 ? nil : pane.fontDelta
+                    )
                 }
                 return SessionSnapshot(
                     tree: tree, panes: paneMeta,

@@ -32,6 +32,13 @@ final class PaneView: NSView {
     var title: String = "mux"
     var pwd: String?
 
+    /// Points added to the config font size via cmd+= / cmd+- (font
+    /// zoom). libghostty owns the actual value and exposes no getter,
+    /// so the pane intercepts the keys, drives ghostty through binding
+    /// actions, and tracks the delta itself - that is what the snapshot
+    /// persists and restore replays.
+    private(set) var fontDelta: Int = 0
+
     /// Internal (not private): managed by updateTrackingAreas in
     /// PaneView+Input.swift.
     var trackingArea: NSTrackingArea?
@@ -52,10 +59,12 @@ final class PaneView: NSView {
         workingDirectory: String? = nil,
         target: String? = nil,
         command: String? = nil,
-        initialFrame: CGRect = .zero
+        initialFrame: CGRect = .zero,
+        fontDelta: Int = 0
     ) {
         self.id = id
         self.target = target
+        self.fontDelta = fontDelta
         hostBadge = target.map { HostBadgeView(host: $0) }
         super.init(frame: initialFrame)
 
@@ -107,6 +116,17 @@ final class PaneView: NSView {
                 surface,
                 UInt32(max(1, initialFrame.width * scale)),
                 UInt32(max(1, initialFrame.height * scale))
+            )
+        }
+
+        // Replay a persisted font zoom: a fresh surface starts at the
+        // config default, so the relative action lands on the exact
+        // point size the pane had.
+        if fontDelta != 0 {
+            bindingAction(
+                fontDelta > 0
+                    ? "increase_font_size:\(fontDelta)"
+                    : "decrease_font_size:\(-fontDelta)"
             )
         }
     }
@@ -168,6 +188,31 @@ final class PaneView: NSView {
     var processExited: Bool {
         guard let surface else { return true }
         return ghostty_surface_process_exited(surface)
+    }
+
+    // MARK: - Font zoom
+
+    /// Adjust the font zoom by `step` points; 0 resets to the config
+    /// default. Keeps `fontDelta` in lockstep with what ghostty applies.
+    func adjustFontSize(_ step: Int) {
+        guard surface != nil else { return }
+        if step == 0 {
+            fontDelta = 0
+            bindingAction("reset_font_size")
+        } else {
+            fontDelta += step
+            bindingAction(
+                step > 0 ? "increase_font_size:\(step)" : "decrease_font_size:\(-step)"
+            )
+        }
+        controller?.saveState()
+    }
+
+    private func bindingAction(_ action: String) {
+        guard let surface else { return }
+        _ = action.withCString { ptr in
+            ghostty_surface_binding_action(surface, ptr, UInt(action.utf8.count))
+        }
     }
 
     func setTitle(_ title: String) {

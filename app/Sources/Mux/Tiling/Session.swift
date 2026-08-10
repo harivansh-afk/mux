@@ -53,11 +53,11 @@ final class Session {
 
     private func makePane(
         id: UUID = UUID(), workingDirectory: String? = nil, target: String? = nil,
-        initialFrame: CGRect = .zero
+        initialFrame: CGRect = .zero, fontDelta: Int = 0
     ) -> PaneView {
         let pane = PaneView(
             id: id, runtime: runtime, workingDirectory: workingDirectory, target: target,
-            initialFrame: initialFrame
+            initialFrame: initialFrame, fontDelta: fontDelta
         )
         pane.controller = controller
         panes[pane.id] = pane
@@ -84,7 +84,7 @@ final class Session {
             let frame = (zoomed == id) ? bounds : (rects[id] ?? bounds)
             _ = makePane(
                 id: id, workingDirectory: paneMeta[id]?.cwd, target: paneMeta[id]?.target,
-                initialFrame: frame
+                initialFrame: frame, fontDelta: paneMeta[id]?.fontDelta ?? 0
             )
         }
         tree = snapshotTree
@@ -112,9 +112,11 @@ final class Session {
         case .inherit: source.target
         case let .explicit(explicit): explicit
         }
+        // Splits inherit the source pane's font zoom, matching ghostty's
+        // window-inherit-font-size default.
         let newPane = makePane(
             workingDirectory: newTarget == source.target ? source.pwd : nil,
-            target: newTarget
+            target: newTarget, fontDelta: source.fontDelta
         )
         self.tree = tree.inserting(newPane.id, at: source.id, direction: direction)
         controller?.layoutPanes()

@@ -8,8 +8,28 @@ extension PaneView {
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
+        // Font zoom stays pane-owned: libghostty has no way to read the
+        // font size back, so ghostty never sees these keys - the pane
+        // drives the change itself and tracks the delta for the snapshot.
+        if let step = Self.fontZoomStep(event) {
+            adjustFontSize(step)
+            return
+        }
         let action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         _ = keyAction(action, event: event, text: Self.ghosttyCharacters(event))
+    }
+
+    /// cmd+= / cmd+- / cmd+0 as +1 / -1 / 0 (reset); nil for everything
+    /// else.
+    private static func fontZoomStep(_ event: NSEvent) -> Int? {
+        let mods = event.modifierFlags.intersection([.command, .control, .option])
+        guard mods == .command else { return nil }
+        return switch event.charactersIgnoringModifiers {
+        case "=", "+": 1
+        case "-": -1
+        case "0": 0
+        default: nil
+        }
     }
 
     override func keyUp(with event: NSEvent) {
