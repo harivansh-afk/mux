@@ -11,7 +11,11 @@ final class PaneContainerView: NSView {
     }
 }
 
-/// One window = one workspace = one split tree of panes.
+/// One window = window chrome (borderless NSWindow, mode bar, keybinds
+/// overlay, theming) plus an ordered list of sessions. Tiling state and
+/// pane lifecycle live in Session; the controller routes operations to
+/// the active session (or, for pane-originated events, to the session
+/// owning that pane).
 final class MuxWindowController: NSObject, NSWindowDelegate {
     let runtime: GhosttyRuntime
     private(set) var window: NSWindow!
@@ -19,10 +23,12 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     private let modeBar = ModeBarView()
     private let helpOverlay = HelpOverlayView()
 
-    private(set) var tree: SplitNode?
-    private(set) var panes: [UUID: PaneView] = [:]
-    private(set) var focusedID: UUID?
-    private(set) var zoomedID: UUID?
+    private(set) var sessions: [Session] = []
+    private(set) var activeSessionIndex = 0
+
+    var activeSession: Session? {
+        sessions.indices.contains(activeSessionIndex) ? sessions[activeSessionIndex] : nil
+    }
 
     init(runtime: GhosttyRuntime) {
         self.runtime = runtime
@@ -48,131 +54,78 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         modeBar.isHidden = true
         self.window = window
 
+        sessions = [Session(runtime: runtime, controller: self)]
+
         applyTheme()
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeDidChange),
             name: .muxThemeDidChange, object: nil)
     }
 
-    // MARK: - Pane lifecycle
+    // MARK: - Session plumbing
 
-    @discardableResult
-    func addInitialPane(id: UUID = UUID(), workingDirectory: String? = nil) -> PaneView {
-        let pane = makePane(id: id, workingDirectory: workingDirectory)
-        tree = .leaf(pane.id)
-        layoutPanes()
-        focus(pane)
-        return pane
+    /// The session that owns a given pane (pane-originated events can
+    /// arrive for panes in inactive sessions).
+    func session(owning pane: PaneView) -> Session? {
+        sessions.first { $0.contains(pane) }
     }
 
-    private func makePane(id: UUID = UUID(), workingDirectory: String? = nil) -> PaneView {
-        let pane = PaneView(id: id, runtime: runtime, workingDirectory: workingDirectory)
-        pane.controller = self
-        panes[pane.id] = pane
+    /// Session hook: host a new pane view.
+    func attach(_ pane: PaneView) {
         container.addSubview(pane)
-        return pane
+    }
+
+    /// Session hook: the rect sessions lay their trees out in.
+    var paneBounds: CGRect { container.bounds }
+
+    /// Session hook: last pane in the session closed.
+    func sessionDidEmpty(_ session: Session) {
+        // Single-session windows close with their session.
+        window.close()
+    }
+
+    // MARK: - Tiling API (forwarded to the active session)
+
+    var focusedPane: PaneView? { activeSession?.focusedPane }
+    var tree: SplitNode? { activeSession?.tree }
+    var panes: [UUID: PaneView] { activeSession?.panes ?? [:] }
+    var focusedID: UUID? { activeSession?.focusedID }
+    var zoomedID: UUID? { activeSession?.zoomedID }
+
+    @discardableResult
+    func addInitialPane(id: UUID = UUID(), workingDirectory: String? = nil) -> PaneView? {
+        activeSession?.addInitialPane(id: id, workingDirectory: workingDirectory)
     }
 
     /// Restore a whole tree from a snapshot.
-    func restore(tree snapshotTree: SplitNode, paneMeta: [UUID: PaneSnapshot], focused: UUID?, zoomed: UUID?) {
-        for id in snapshotTree.leaves {
-            _ = makePane(id: id, workingDirectory: paneMeta[id]?.cwd)
-        }
-        self.tree = snapshotTree
-        self.zoomedID = zoomed
-        layoutPanes()
-        if let focused, let pane = panes[focused] {
-            focus(pane)
-        } else if let first = snapshotTree.leaves.first, let pane = panes[first] {
-            focus(pane)
-        }
+    func restore(tree: SplitNode, paneMeta: [UUID: PaneSnapshot], focused: UUID?, zoomed: UUID?) {
+        activeSession?.restore(tree: tree, paneMeta: paneMeta, focused: focused, zoomed: zoomed)
     }
 
-    func split(from pane: PaneView? = nil, direction: SplitDirection) {
-        guard let source = pane ?? focusedPane else { return }
-        guard let tree else { return }
-        zoomedID = nil
-        // New panes inherit the source pane's cwd (OSC 7 / pwd action).
-        let newPane = makePane(workingDirectory: source.pwd)
-        self.tree = tree.inserting(newPane.id, at: source.id, direction: direction)
-        layoutPanes()
-        focus(newPane)
-        saveState()
+    func split(direction: SplitDirection) {
+        activeSession?.split(direction: direction)
     }
 
     func split(from pane: PaneView, ghosttyDirection: ghostty_action_split_direction_e) {
+        let session = session(owning: pane) ?? activeSession
         switch ghosttyDirection {
         case GHOSTTY_SPLIT_DIRECTION_RIGHT, GHOSTTY_SPLIT_DIRECTION_LEFT:
-            split(from: pane, direction: .horizontal)
+            session?.split(from: pane, direction: .horizontal)
         default:
-            split(from: pane, direction: .vertical)
+            session?.split(from: pane, direction: .vertical)
         }
     }
 
     func closeFocusedPane() {
-        guard let pane = focusedPane else { return }
-        pane.destroySurface()
-        removePane(pane)
+        activeSession?.closeFocusedPane()
     }
 
     func removePane(_ pane: PaneView) {
-        guard panes[pane.id] != nil else { return }
-        panes.removeValue(forKey: pane.id)
-        pane.removeFromSuperview()
-        if zoomedID == pane.id { zoomedID = nil }
-
-        tree = tree?.removing(pane.id)
-        guard let tree, let nextID = tree.leaves.first else {
-            window.close()
-            return
-        }
-        layoutPanes()
-        if focusedID == pane.id, let next = panes[nextID] {
-            focus(next)
-        }
-        saveState()
-    }
-
-    // MARK: - Focus
-
-    var focusedPane: PaneView? {
-        guard let focusedID else { return nil }
-        return panes[focusedID]
-    }
-
-    func focus(_ pane: PaneView) {
-        window.makeFirstResponder(pane)
-    }
-
-    /// Called by the pane when it actually becomes first responder.
-    func noteFocused(_ pane: PaneView) {
-        focusedID = pane.id
+        (session(owning: pane) ?? activeSession)?.removePane(pane)
     }
 
     func focusDirection(_ direction: FocusDirection) {
-        guard let tree, let focusedID else { return }
-        let rects = tree.layout(in: container.bounds)
-        var target = SplitNode.neighbor(of: focusedID, direction: direction, rects: rects)
-        if target == nil {
-            // tmux-style edge fallback: wrap to the far side.
-            let opposite: FocusDirection
-            switch direction {
-            case .left: opposite = .right
-            case .right: opposite = .left
-            case .up: opposite = .down
-            case .down: opposite = .up
-            }
-            var candidate = focusedID
-            while let next = SplitNode.neighbor(of: candidate, direction: opposite, rects: rects) {
-                candidate = next
-            }
-            target = candidate == focusedID ? nil : candidate
-        }
-        if let target, let pane = panes[target] {
-            zoomedID = nil
-            layoutPanes()
-            focus(pane)
-        }
+        activeSession?.focusDirection(direction)
     }
 
     func focus(from pane: PaneView, ghosttyGoto dir: ghostty_action_goto_split_e) {
@@ -185,40 +138,26 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    // MARK: - Zoom and resize
-
     func toggleZoom() {
-        guard let focusedID else { return }
-        zoomedID = (zoomedID == focusedID) ? nil : focusedID
-        layoutPanes()
+        activeSession?.toggleZoom()
     }
 
     func resizeFocused(_ direction: FocusDirection, step: Double = 0.03) {
-        guard let tree, let focusedID else { return }
-        let axis: SplitDirection = (direction == .left || direction == .right) ? .horizontal : .vertical
-        // Growing toward right/down grows whichever side the pane is on;
-        // express as a first-child delta by probing the layout result.
-        let delta: Double = (direction == .right || direction == .down) ? step : -step
-        let before = tree.layout(in: container.bounds)[focusedID]
-        var (adjusted, found) = tree.adjustingRatio(around: focusedID, axis: axis, delta: delta)
-        if found {
-            // If the focused pane shrank in the intended growth direction,
-            // flip the sign (it was the second child).
-            let after = adjusted.layout(in: container.bounds)[focusedID]
-            if let b = before, let a = after {
-                let grew = axis == .horizontal ? a.width >= b.width : a.height >= b.height
-                let wantedGrowth = (direction == .right || direction == .down)
-                if grew != wantedGrowth {
-                    (adjusted, _) = tree.adjustingRatio(around: focusedID, axis: axis, delta: -delta)
-                }
-            }
-            self.tree = adjusted
-            layoutPanes()
-            saveState()
-        }
+        activeSession?.resizeFocused(direction, step: step)
     }
 
-    // MARK: - Layout
+    // MARK: - Focus
+
+    func focus(_ pane: PaneView) {
+        window.makeFirstResponder(pane)
+    }
+
+    /// Called by the pane when it actually becomes first responder.
+    func noteFocused(_ pane: PaneView) {
+        session(owning: pane)?.noteFocused(pane)
+    }
+
+    // MARK: - Overlays
 
     /// Show or hide the mode overlay. nil hides it. The bar is an overlay
     /// on the bottom row: panes never reflow for it.
@@ -234,8 +173,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             modeBar.isHidden = true
         }
     }
-
-    // MARK: - Help overlay
 
     func showHelp() {
         // Keep the overlay above any panes added since last time.
@@ -276,30 +213,17 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             height: ModeBarView.height)
     }
 
+    // MARK: - Layout
+
     func layoutPanes() {
-        guard let tree else { return }
         let bounds = container.bounds
         guard bounds.width > 1, bounds.height > 1 else { return }
 
         if !modeBar.isHidden { positionModeBar() }
         if helpOverlay.superview != nil { positionHelpOverlay() }
 
-        if let zoomedID, let zoomed = panes[zoomedID] {
-            for (_, pane) in panes {
-                pane.isHidden = pane.id != zoomedID
-            }
-            zoomed.frame = bounds
-            return
-        }
-
-        let rects = tree.layout(in: bounds)
-        for (id, pane) in panes {
-            if let rect = rects[id] {
-                pane.isHidden = false
-                pane.frame = rect
-            } else {
-                pane.isHidden = true
-            }
+        for (index, session) in sessions.enumerated() {
+            session.applyLayout(in: bounds, visible: index == activeSessionIndex)
         }
     }
 
@@ -324,9 +248,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        for (_, pane) in panes { pane.destroySurface() }
-        panes.removeAll()
-        tree = nil
+        for session in sessions { session.destroyAllSurfaces() }
+        sessions.removeAll()
         (NSApp.delegate as? AppDelegate)?.windowControllerDidClose(self)
     }
 
