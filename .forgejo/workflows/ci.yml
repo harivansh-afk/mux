@@ -17,11 +17,24 @@ env:
   SWIFTLINT_VERSION: "0.65.0"
   SWIFTFORMAT_VERSION: "0.62.1"
   ASTGREP_VERSION: "0.43.0"
+  # ghostty-vt compiles ghostty's terminal package from source with Zig, so
+  # the rust job needs both. Keep ZIG_VERSION in sync with
+  # crates/ghostty-vt/zig/build.zig.zon (minimum_zig_version).
+  ZIG_VERSION: "0.16.0"
+  # The single place the ghostty checkout is pinned. It must track the
+  # generation of app/GhosttyKit/GhosttyKit.xcframework: the Rust VT and the
+  # AppKit renderer have to agree on ghostty's terminal semantics, and
+  # build.zig.zon's uucode pin is chosen to match this tree.
+  GHOSTTY_COMMIT: "fea378e565c8ddb7f49808c4f2e36a4a932e35ff"
 
 jobs:
   rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Longer than the other jobs: on a cold cache this also downloads Zig and
+    # a ghostty checkout and compiles ghostty's terminal package. The Zig half
+    # measured 32s from an empty cache on an M4 Mac; the headroom here is for
+    # a slower runner plus clippy, test and the e2e run, not for that step.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -29,9 +42,95 @@ jobs:
           toolchain: "1.96.1" # keep in sync with rust-toolchain.toml
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          # ghostty-vt's build.rs puts Zig's global and local caches inside
+          # its OUT_DIR. That lives under target/, but rust-cache prunes
+          # workspace-member build directories before saving unless this is
+          # on - without it every run redoes the whole Zig build and
+          # re-fetches uucode over the network.
+          cache-workspace-crates: true
+          # build.rs is told about the ghostty tree by path, and the path
+          # never changes, so cargo's fingerprint cannot see a pin bump.
+          # Key the cache on the pin so bumping it starts clean.
+          key: ghostty-${{ env.GHOSTTY_COMMIT }}
+
+      # $HOME/tools/zig-<version> is also where crates/ghostty-vt/build.rs
+      # looks when zig is not on PATH, so the layout is not arbitrary.
+      - name: Cache Zig
+        id: zig-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/tools/zig-${{ env.ZIG_VERSION }}
+          key: zig-${{ env.ZIG_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Install Zig
+        if: steps.zig-cache.outputs.cache-hit != 'true'
+        # Resolve the tarball out of ziglang.org's download index rather than
+        # hand-building a URL: the index also carries the checksum, and the
+        # arch key keeps this honest on non-amd64 runners.
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)  zig_arch=x86_64 ;;
+            aarch64) zig_arch=aarch64 ;;
+            *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
+          esac
+          curl -fsSL -o /tmp/zig-index.json https://ziglang.org/download/index.json
+          export ZIG_ARCH="$zig_arch"
+          python3 - > /tmp/zig-target.txt <<'PY'
+          import json, os
+          index = json.load(open("/tmp/zig-index.json"))
+          build = index[os.environ["ZIG_VERSION"]][os.environ["ZIG_ARCH"] + "-linux"]
+          print(build["tarball"], build["shasum"])
+          PY
+          read -r url sha < /tmp/zig-target.txt
+          curl -fsSL -o /tmp/zig.tar.xz "$url"
+          echo "$sha  /tmp/zig.tar.xz" | sha256sum -c -
+          mkdir -p "$HOME/tools"
+          rm -rf "$HOME/tools/zig-$ZIG_VERSION"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/tools"
+          mv "$HOME/tools/$(basename "$url" .tar.xz)" "$HOME/tools/zig-$ZIG_VERSION"
+
+      - name: Cache the ghostty checkout
+        id: ghostty-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/ghostty
+          key: ghostty-src-${{ env.GHOSTTY_COMMIT }}
+      - name: Fetch the pinned ghostty source
+        if: steps.ghostty-cache.outputs.cache-hit != 'true'
+        # Fetch the commit directly: GitHub serves arbitrary reachable SHAs,
+        # so this stays a one-commit download with no branch to drift under us.
+        run: |
+          set -euo pipefail
+          rm -rf "$HOME/ghostty"
+          mkdir -p "$HOME/ghostty"
+          git -C "$HOME/ghostty" init -q
+          git -C "$HOME/ghostty" fetch --depth 1 -q \
+            https://github.com/ghostty-org/ghostty "$GHOSTTY_COMMIT"
+          git -C "$HOME/ghostty" checkout -q FETCH_HEAD
+          # The build only reads src/; dropping .git takes ~31M off the cache.
+          rm -rf "$HOME/ghostty/.git"
+
+      - name: Export the ghostty and Zig locations
+        # Separate from the two steps above because those are skipped on a
+        # cache hit and every cargo step below needs these set.
+        run: |
+          set -euo pipefail
+          test -d "$HOME/ghostty/src"
+          echo "$HOME/tools/zig-$ZIG_VERSION" >> "$GITHUB_PATH"
+          echo "GHOSTTY_SOURCE_DIR=$HOME/ghostty/src" >> "$GITHUB_ENV"
+      - run: zig version
+
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
+      # Proof that the daemon actually runs on Linux, not just that it
+      # compiles: a real pty, a detach by SIGKILL, and a replayed reattach.
+      - name: muxd end-to-end
+        run: |
+          set -euo pipefail
+          cargo build -p muxd -p mux-attach
+          python3 scripts/test-muxd-e2e.py
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
