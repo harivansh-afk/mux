@@ -231,6 +231,15 @@ where
     write_frame(&mut writer, OUT_LANE_OUTPUT, &attachment.dump).await?;
     writer.flush().await?;
 
+    // The client's handshake size can be provisional (a restoring app
+    // attaches before its window layout settles), which renders the
+    // replay for the wrong grid. Until the first byte of live output
+    // proves the two sides are in lockstep, a Resize re-renders and
+    // re-sends the replay at the corrected size; after live output a
+    // re-dump would clear real screen state, so the window closes for
+    // good.
+    let live_output = std::sync::atomic::AtomicBool::new(false);
+
     // Forward daemon -> client; ends when the channel closes (exit or
     // eviction).
     let forward = async {
@@ -238,6 +247,7 @@ where
         while let Some(msg) = rx.recv().await {
             match msg {
                 ClientMsg::Output(bytes) => {
+                    live_output.store(true, std::sync::atomic::Ordering::Relaxed);
                     write_frame(&mut writer, OUT_LANE_OUTPUT, &bytes).await?;
                 }
                 ClientMsg::Exit(code) => {
@@ -252,6 +262,7 @@ where
 
     // Client -> pty; ends on stream EOF (detach).
     let session_in = session.clone();
+    let live_output = &live_output;
     let receive = async move {
         loop {
             let Some(frame) = read_frame(&mut reader).await? else {
@@ -263,8 +274,19 @@ where
                 }
                 IN_LANE_CONTROL => match peer::decode::<ClientControl>(&frame.1) {
                     Ok(ClientControl::Resize { cols, rows }) => {
-                        session_in.terminal.lock().resize(rows, cols);
+                        let redump = {
+                            let mut term = session_in.terminal.lock();
+                            term.resize(rows, cols);
+                            (!live_output.load(std::sync::atomic::Ordering::Relaxed))
+                                .then(|| term.render_screen_bytes())
+                        };
                         let _ = pty::resize(&session_in.master, cols, rows);
+                        if let Some(dump) = redump {
+                            let tx = session_in.client.lock().as_ref().map(|c| c.tx.clone());
+                            if let Some(tx) = tx {
+                                let _ = tx.send(ClientMsg::Output(dump)).await;
+                            }
+                        }
                     }
                     Err(e) => tracing::warn!(error = %e, "bad control frame"),
                 },
