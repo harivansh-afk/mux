@@ -17,8 +17,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::manager::{self, ClientMsg, Manager};
-use crate::pty;
-use crate::tls;
+use crate::{broker, pty, tls};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -39,14 +38,9 @@ impl Policy {
     /// `OpenReply`.
     fn admit(&self, request: &OpenRequest) -> Result<(), String> {
         match self {
-            Self::Local => match &request.target {
-                // Broker relay lands later in M3; until then say so,
-                // rather than silently serving the wrong machine.
-                Some(host) => Err(format!(
-                    "remote target {host:?} not supported yet (M3 broker)"
-                )),
-                None => Ok(()),
-            },
+            // The 0600 socket is the auth boundary, and requests naming a
+            // remote target were handed to the broker before admission.
+            Self::Local => Ok(()),
             Self::Remote { token_digest } => {
                 // Digests, not the secrets: fixed-size and preimage
                 // resistant, so a short circuit leaks nothing useful.
@@ -115,6 +109,13 @@ where
         .await
         .context("handshake timeout")??;
 
+    // target = Some(host) on the unix socket: this daemon is the broker,
+    // not the server - the whole connection goes out over the per-host
+    // QUIC link. Remote policy refuses targets in admit (a remote daemon
+    // never relays onward).
+    if request.target.is_some() && matches!(policy, Policy::Local) {
+        return broker::relay(request, reader, writer).await;
+    }
     if let Err(message) = policy.admit(&request) {
         tracing::debug!(message, "request rejected");
         return reply(&mut writer, &Err(message)).await;
