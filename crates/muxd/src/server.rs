@@ -18,6 +18,9 @@ use crate::pty;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// # Errors
+///
+/// Another daemon already owns the socket, or the bind/accept fails.
 pub async fn serve(manager: Manager, socket: &std::path::Path) -> Result<()> {
     // A live daemon on the socket wins; a stale file is replaced.
     if UnixStream::connect(socket).await.is_ok() {
