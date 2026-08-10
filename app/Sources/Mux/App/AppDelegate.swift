@@ -73,18 +73,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func saveSnapshot() {
         let windows: [WindowSnapshot] = controllers.compactMap { c in
-            guard let tree = c.tree else { return nil }
-            var paneMeta: [UUID: PaneSnapshot] = [:]
-            for (id, pane) in c.panes {
-                paneMeta[id] = PaneSnapshot(cwd: pane.pwd)
+            let sessions: [SessionSnapshot] = c.sessions.compactMap { s in
+                guard let tree = s.tree else { return nil }
+                var paneMeta: [UUID: PaneSnapshot] = [:]
+                for (id, pane) in s.panes {
+                    paneMeta[id] = PaneSnapshot(cwd: pane.pwd)
+                }
+                return SessionSnapshot(
+                    tree: tree, panes: paneMeta,
+                    focused: s.focusedID, zoomed: s.zoomedID)
             }
+            guard !sessions.isEmpty else { return nil }
             let f = c.window.frame
             return WindowSnapshot(
                 frame: [f.origin.x, f.origin.y, f.size.width, f.size.height],
-                tree: tree,
-                panes: paneMeta,
-                focused: c.focusedID,
-                zoomed: c.zoomedID)
+                sessions: sessions,
+                activeSession: c.activeSessionIndex)
         }
         SnapshotStore.save(AppSnapshot(windows: windows))
     }
@@ -99,9 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     NSRect(x: w.frame[0], y: w.frame[1], width: w.frame[2], height: w.frame[3]),
                     display: false)
             }
-            controller.restore(
-                tree: w.tree, paneMeta: w.panes,
-                focused: w.focused, zoomed: w.zoomed)
+            controller.restoreSessions(w.sessions, active: w.activeSession)
             controller.window.makeKeyAndOrderFront(nil)
         }
         if controllers.isEmpty { newWindow(nil) }

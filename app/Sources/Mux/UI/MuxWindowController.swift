@@ -87,19 +87,25 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     // MARK: - Tiling API (forwarded to the active session)
 
     var focusedPane: PaneView? { activeSession?.focusedPane }
-    var tree: SplitNode? { activeSession?.tree }
-    var panes: [UUID: PaneView] { activeSession?.panes ?? [:] }
-    var focusedID: UUID? { activeSession?.focusedID }
-    var zoomedID: UUID? { activeSession?.zoomedID }
 
     @discardableResult
     func addInitialPane(id: UUID = UUID(), workingDirectory: String? = nil) -> PaneView? {
         activeSession?.addInitialPane(id: id, workingDirectory: workingDirectory)
     }
 
-    /// Restore a whole tree from a snapshot.
-    func restore(tree: SplitNode, paneMeta: [UUID: PaneSnapshot], focused: UUID?, zoomed: UUID?) {
-        activeSession?.restore(tree: tree, paneMeta: paneMeta, focused: focused, zoomed: zoomed)
+    /// Rebuild all sessions from a snapshot. The active session is
+    /// restored last so its focused pane ends up first responder.
+    func restoreSessions(_ snapshots: [SessionSnapshot], active: Int) {
+        guard !snapshots.isEmpty else { return }
+        sessions = snapshots.map { _ in Session(runtime: runtime, controller: self) }
+        activeSessionIndex = min(max(0, active), sessions.count - 1)
+        for (index, snapshot) in snapshots.enumerated() {
+            sessions[index].restore(
+                tree: snapshot.tree, paneMeta: snapshot.panes,
+                focused: snapshot.focused, zoomed: snapshot.zoomed)
+        }
+        layoutPanes()
+        if let pane = activeSession?.focusedPane { focus(pane) }
     }
 
     func split(direction: SplitDirection) {

@@ -8,18 +8,47 @@ struct PaneSnapshot: Codable {
     var cwd: String?
 }
 
-struct WindowSnapshot: Codable {
-    var frame: [Double] // x, y, w, h
+struct SessionSnapshot: Codable {
     var tree: SplitNode
     var panes: [UUID: PaneSnapshot]
     var focused: UUID?
     var zoomed: UUID?
 }
 
+struct WindowSnapshot: Codable {
+    var frame: [Double] // x, y, w, h
+    var sessions: [SessionSnapshot]
+    var activeSession: Int
+}
+
 struct AppSnapshot: Codable {
-    static let currentVersion = 1
+    static let currentVersion = 2
     var version: Int = AppSnapshot.currentVersion
     var windows: [WindowSnapshot]
+}
+
+/// v1: one implicit session per window, its fields inline on the window.
+private struct AppSnapshotV1: Decodable {
+    struct Window: Decodable {
+        var frame: [Double]
+        var tree: SplitNode
+        var panes: [UUID: PaneSnapshot]
+        var focused: UUID?
+        var zoomed: UUID?
+    }
+
+    var windows: [Window]
+
+    var migrated: AppSnapshot {
+        AppSnapshot(windows: windows.map { w in
+            WindowSnapshot(
+                frame: w.frame,
+                sessions: [SessionSnapshot(
+                    tree: w.tree, panes: w.panes,
+                    focused: w.focused, zoomed: w.zoomed)],
+                activeSession: 0)
+        })
+    }
 }
 
 enum SnapshotStore {
@@ -44,12 +73,20 @@ enum SnapshotStore {
     }
 
     static func load() -> AppSnapshot? {
+        struct Versioned: Decodable { var version: Int }
         guard let data = try? Data(contentsOf: url) else { return nil }
-        guard let snapshot = try? JSONDecoder().decode(AppSnapshot.self, from: data) else {
+        let decoder = JSONDecoder()
+        guard let versioned = try? decoder.decode(Versioned.self, from: data) else {
             NSLog("snapshot decode failed; starting fresh")
             return nil
         }
-        guard snapshot.version == AppSnapshot.currentVersion else { return nil }
-        return snapshot
+        switch versioned.version {
+        case AppSnapshot.currentVersion:
+            return try? decoder.decode(AppSnapshot.self, from: data)
+        case 1:
+            return (try? decoder.decode(AppSnapshotV1.self, from: data))?.migrated
+        default:
+            return nil
+        }
     }
 }
