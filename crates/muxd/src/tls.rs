@@ -28,8 +28,9 @@ const SECRET_MODE: u32 = 0o600;
 pub struct Identity {
     pub cert: CertificateDer<'static>,
     pub key: PrivateKeyDer<'static>,
-    /// Base64 of the SHA-256 over the certificate SPKI: the string a
-    /// client stores in `known_hosts`.
+    /// `sha256:<base64>` over the certificate SPKI: byte for byte the
+    /// token a client stores in `known_hosts` (see paths.rs), so the
+    /// logged line can be copied verbatim.
     pub spki_pin: String,
 }
 
@@ -66,8 +67,13 @@ pub fn load_or_generate_identity() -> Result<Identity> {
     // pulling in an X.509 parser just to reach one field.
     let key_pair = rcgen::KeyPair::from_pem(&key_pem)
         .with_context(|| format!("parse {}", key_path.display()))?;
-    let spki_pin =
-        base64::engine::general_purpose::STANDARD.encode(Sha256::digest(key_pair.public_key_der()));
+    // Exactly the `known_hosts` token: SHA-256 over the SPKI DER
+    // (tag+len+value, what public_key_der returns), standard base64
+    // alphabet, padded. A client comparing strings must get a match.
+    let spki_pin = format!(
+        "sha256:{}",
+        base64::engine::general_purpose::STANDARD.encode(Sha256::digest(key_pair.public_key_der()))
+    );
     tracing::info!(pin = %spki_pin, "certificate SPKI (pin this on clients)");
 
     Ok(Identity {

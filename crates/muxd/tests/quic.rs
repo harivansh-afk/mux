@@ -28,7 +28,18 @@ async fn quic_listener_serves_authenticated_clients() {
     let identity = muxd::tls::load_or_generate_identity().expect("identity");
     let token = muxd::tls::load_or_generate_token().expect("token");
     assert_eq!(token.len(), 64, "32 random bytes, hex encoded");
-    assert!(!identity.spki_pin.is_empty(), "clients need a pin to trust");
+    // The pin is copied verbatim into a client's known_hosts, so its
+    // shape is a contract: sha256: plus padded standard base64 of a
+    // 32-byte digest.
+    let encoded = identity
+        .spki_pin
+        .strip_prefix("sha256:")
+        .expect("known_hosts pin prefix");
+    assert_eq!(encoded.len(), 44, "base64 of 32 bytes, padded: {encoded}");
+    assert!(
+        !encoded.contains(['-', '_']),
+        "standard alphabet: {encoded}"
+    );
 
     let state = home.join(".local/state/muxd");
     assert_eq!(mode(&state.join("key.pem")), 0o600, "private key is 0600");
