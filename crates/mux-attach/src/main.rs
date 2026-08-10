@@ -313,12 +313,16 @@ struct Attach {
 fn run_attach(attach: &Attach) -> Result<()> {
     // The first connection is the user's command: its errors print
     // normally, with no raw mode and no retry.
-    let mut stream = open_session(attach, connect()?)?;
+    let size = winsize();
+    let mut stream = open_session(attach, connect()?, size)?;
 
     let _raw = RawModeGuard::enable();
     let uplink = Uplink::new();
     let stdin_closed = Arc::new(AtomicBool::new(false));
-    spawn_input_threads(&uplink, &stdin_closed);
+    // Seed the winsize poll with the size the handshake carried, not a
+    // fresh read: a resize landing between the two reads would otherwise
+    // never be sent, leaving the daemon pty stuck at the handshake size.
+    spawn_input_threads(&uplink, &stdin_closed, size);
 
     loop {
         uplink.set(Some(stream.try_clone()?));
@@ -336,8 +340,8 @@ fn run_attach(attach: &Attach) -> Result<()> {
 }
 
 /// Handshake on an open socket and check the reply.
-fn open_session(attach: &Attach, stream: UnixStream) -> Result<UnixStream> {
-    let (cols, rows) = winsize();
+fn open_session(attach: &Attach, stream: UnixStream, size: (u16, u16)) -> Result<UnixStream> {
+    let (cols, rows) = size;
     let mut writer = stream.try_clone()?;
     write_request(
         &mut writer,
@@ -393,7 +397,7 @@ fn reconnect(attach: &Attach, stdin_closed: &AtomicBool) -> Result<UnixStream> {
             connect().ok()
         };
         if let Some(socket) = socket {
-            if let Ok(stream) = open_session(attach, socket) {
+            if let Ok(stream) = open_session(attach, socket, winsize()) {
                 return Ok(stream);
             }
         }
@@ -403,7 +407,7 @@ fn reconnect(attach: &Attach, stdin_closed: &AtomicBool) -> Result<UnixStream> {
 /// stdin -> input lane, and a winsize poll -> control lane (SIGWINCH
 /// coalesces during drags). Both live for the whole process and follow
 /// the uplink across reconnects.
-fn spawn_input_threads(uplink: &Uplink, stdin_closed: &Arc<AtomicBool>) {
+fn spawn_input_threads(uplink: &Uplink, stdin_closed: &Arc<AtomicBool>, initial: (u16, u16)) {
     {
         let uplink = uplink.clone();
         let stdin_closed = Arc::clone(stdin_closed);
@@ -423,7 +427,7 @@ fn spawn_input_threads(uplink: &Uplink, stdin_closed: &Arc<AtomicBool>) {
     }
 
     let uplink = uplink.clone();
-    let mut last = winsize();
+    let mut last = initial;
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(200));
         let now = winsize();
