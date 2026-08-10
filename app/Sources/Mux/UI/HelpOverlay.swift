@@ -19,10 +19,14 @@ final class HelpOverlayView: NSView {
             ("h / j / k / l", "move focus"),
             ("z", "toggle zoom"),
             ("x", "close pane"),
-            ("c", "new window"),
             ("r", "resize mode"),
             ("?", "keybinds"),
             ("esc", "cancel"),
+        ]),
+        Section(title: "sessions", rows: [
+            ("c", "new session"),
+            ("1 .. 9", "select session"),
+            ("n / p", "next / previous"),
         ]),
         Section(title: "resize  prefix r", rows: [
             ("h / j / k / l", "adjust split ratio"),

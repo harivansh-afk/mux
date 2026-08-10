@@ -14,11 +14,15 @@ Standard SwiftPM layout: all sources under `Sources/Mux/`, grouped by feature.
   `ghostty_surface_new` with the view in `platform.nsview`; forward key/text/
   mouse/scroll/IME (NSTextInputClient); `ghostty_surface_set_size` on layout,
   `set_content_scale` on screen change. Adapted from `SurfaceView_AppKit.swift`.
-- `Sources/Mux/Tiling/` - the multiplexer. `SplitTree` adapted from ghostty's
+- `Sources/Mux/Tiling/` - the multiplexer. `Session`: one split tree of panes
+  plus focus/zoom state, the unit the user switches between (prefix c / 1..9 /
+  n / p) and the unit of layout persistence. Sessions are pure client-owned
+  layout; the daemon side (M2+) addresses terminal content per-pane and never
+  learns sessions exist. `SplitTree` adapted from ghostty's
   `macos/Sources/Features/Splits/SplitTree.swift` (Codable BSP: leaf/split with
   direction+ratio, spatial rects for h/j/k/l focus, zoomed node). Plus the
-  prefix engine: mode enum (normal/prefix/resize), local NSEvent monitor ahead
-  of the focused surface, held-ctrl aliasing, edge fallback motion.
+  prefix engine: mode enum (normal/prefix/resize/help), local NSEvent monitor
+  ahead of the focused surface, held-ctrl aliasing, edge fallback motion.
 - `Sources/Mux/State/` - versioned JSON layout snapshots: BSP tree +
   per-pane {target, session id, cwd, launch argv, label, agent session ref},
   stable never-reused pane/tab ids, autosave on mutation. Restore = rebuild
