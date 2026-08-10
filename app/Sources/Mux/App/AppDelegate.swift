@@ -48,14 +48,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var isTerminating = false
 
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
-        isTerminating = true
+        // Save before raising the flag: saveSnapshot is a no-op once
+        // terminating, so the teardown saves (windowControllerDidClose
+        // fires as AppKit closes each window with zero sessions left)
+        // cannot clobber this snapshot with an empty one.
         saveSnapshot()
+        isTerminating = true
         return .terminateNow
     }
 
     func applicationWillTerminate(_: Notification) {
-        isTerminating = true
+        // Normally a no-op (shouldTerminate already saved and raised the
+        // flag); covers termination paths that skip shouldTerminate.
         saveSnapshot()
+        isTerminating = true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
@@ -83,6 +89,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Snapshot
 
     func saveSnapshot() {
+        // Termination teardown must not overwrite the snapshot taken at
+        // the start of the quit; that file is the restore source.
+        guard !isTerminating else { return }
         let windows: [WindowSnapshot] = controllers.compactMap { c in
             let sessions: [SessionSnapshot] = c.sessions.compactMap { s in
                 guard let tree = s.tree else { return nil }
