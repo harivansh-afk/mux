@@ -30,8 +30,12 @@ final class GhosttyRuntime {
             wakeup_cb: { ud in GhosttyRuntime.wakeup(ud) },
             action_cb: { app, target, action in GhosttyRuntime.action(app!, target: target, action: action) },
             read_clipboard_cb: { ud, loc, state in GhosttyRuntime.readClipboard(ud, location: loc, state: state) },
-            confirm_read_clipboard_cb: { ud, str, state, _ in GhosttyRuntime.confirmReadClipboard(ud, string: str, state: state) },
-            write_clipboard_cb: { ud, loc, content, len, confirm in GhosttyRuntime.writeClipboard(ud, location: loc, content: content, len: len, confirm: confirm) },
+            confirm_read_clipboard_cb: { ud, str, state, _ in
+                GhosttyRuntime.confirmReadClipboard(ud, string: str, state: state)
+            },
+            write_clipboard_cb: { ud, loc, content, len, confirm in
+                GhosttyRuntime.writeClipboard(ud, location: loc, content: content, len: len, confirm: confirm)
+            },
             close_surface_cb: { ud, alive in GhosttyRuntime.closeSurface(ud, processAlive: alive) }
         )
 
@@ -150,7 +154,7 @@ final class GhosttyRuntime {
         action: ghostty_action_s
     ) -> Bool {
         // Resolve the pane view for surface-targeted actions.
-        var view: PaneView? = nil
+        var view: PaneView?
         if target.tag == GHOSTTY_TARGET_SURFACE {
             view = paneView(surface: target.target.surface)
         }

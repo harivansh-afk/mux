@@ -128,7 +128,7 @@ extension SplitNode {
     ) -> UUID? {
         guard let from = rects[id] else { return nil }
         let center = CGPoint(x: from.midX, y: from.midY)
-        var best: (UUID, CGFloat)? = nil
+        var best: (UUID, CGFloat)?
         for (candidate, rect) in rects where candidate != id {
             let c = CGPoint(x: rect.midX, y: rect.midY)
             let eligible: Bool = switch direction {
