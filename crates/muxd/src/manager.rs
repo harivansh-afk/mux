@@ -67,10 +67,12 @@ pub struct Manager {
 }
 
 impl Manager {
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<PtySession>> {
         self.ptys.lock().get(name).cloned()
     }
 
+    #[must_use]
     pub fn list(&self) -> Vec<mux_proto::peer::PtyInfo> {
         let mut infos: Vec<_> = self.ptys.lock().values().map(|s| s.info()).collect();
         infos.sort_by(|a, b| a.name.cmp(&b.name));
@@ -79,6 +81,11 @@ impl Manager {
 
     /// Attach-or-create: the pane id is the pty name, so restore is one
     /// round trip and needs no id handoff.
+    ///
+    /// # Errors
+    ///
+    /// The pty limit is reached, or the pty/terminal could not be
+    /// allocated.
     pub fn open(
         &self,
         name: &str,

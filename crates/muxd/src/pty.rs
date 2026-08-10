@@ -37,6 +37,9 @@ fn user_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
 }
 
+/// # Errors
+///
+/// The pty could not be allocated or the child could not be forked.
 pub fn spawn(params: &Spawn) -> Result<Pty> {
     let pty =
         nix::pty::openpty(Some(&winsize(params.cols, params.rows)), None).context("openpty")?;
@@ -111,6 +114,10 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
 }
 
 /// Write all of `data` to the PTY, waiting for writability.
+///
+/// # Errors
+///
+/// The write failed for any reason other than "would block".
 pub async fn write_all(master: &AsyncFd<OwnedFd>, data: &[u8]) -> Result<()> {
     let mut written = 0;
     while written < data.len() {
@@ -128,6 +135,9 @@ pub async fn write_all(master: &AsyncFd<OwnedFd>, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// # Errors
+///
+/// The `TIOCSWINSZ` ioctl failed.
 pub fn resize(master: &AsyncFd<OwnedFd>, cols: u16, rows: u16) -> Result<()> {
     let ws = winsize(cols, rows);
     let res = unsafe { libc::ioctl(master.get_ref().as_raw_fd(), libc::TIOCSWINSZ, &ws) };
