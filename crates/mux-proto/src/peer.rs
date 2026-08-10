@@ -18,8 +18,9 @@ pub const MAX_REQUEST_BYTES: u32 = 1024 * 1024;
 /// Bumped on every incompatible change to the handshake or lane values.
 /// The daemon replies with a readable error on mismatch instead of
 /// dropping the connection, so skew between a running daemon and a newer
-/// client is diagnosable (v1: M2; v2: token+target; v3: this field).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// client is diagnosable (v1: M2; v2: token+target; v3: this field;
+/// v4: `cwd_from`).
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// ALPN for muxd's QUIC listener (M3). Each bidirectional stream carries
 /// exactly one protocol run: the same handshake + lane frames as a unix
@@ -54,6 +55,12 @@ pub enum OpenMode {
         name: String,
         cwd: Option<String>,
         command: Vec<String>,
+        /// Inherit the working directory of this existing pty (a split's
+        /// source pane) when `cwd` is absent and the pty is being
+        /// created. Resolved daemon-side from the live process - the
+        /// daemon owns the shell, so only it can know where the user
+        /// actually is; no shell integration required.
+        cwd_from: Option<String>,
     },
     /// List ptys.
     List,
@@ -105,6 +112,18 @@ pub fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, postcard:
     postcard::from_bytes(bytes)
 }
 
+/// Decode a value from the front of `bytes`, ignoring what follows. This
+/// is how a daemon reads the version out of a request whose shape it
+/// cannot decode: the version is the first field by design.
+///
+/// # Errors
+///
+/// Returns the postcard error when `bytes` does not start with a valid
+/// encoding of `T`.
+pub fn decode_prefix<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, postcard::Error> {
+    postcard::take_from_bytes(bytes).map(|(value, _rest)| value)
+}
+
 /// Default daemon socket: a short /tmp path (`sun_path` is 104 bytes on
 /// darwin), per-uid so multi-user machines don't collide.
 #[must_use]
@@ -129,6 +148,7 @@ mod tests {
                 name: "pane-1".into(),
                 cwd: Some("/tmp".into()),
                 command: vec![],
+                cwd_from: Some("pane-0".into()),
             },
         };
         let bytes = encode(&req);
@@ -152,12 +172,13 @@ mod tests {
                 name: "p1".into(),
                 cwd: None,
                 command: vec![],
+                cwd_from: None,
             },
         };
         assert_eq!(
             encode(&req),
             [
-                0x03, // version = PROTOCOL_VERSION (varint)
+                0x04, // version = PROTOCOL_VERSION (varint)
                 0x78, // cols = 120 (varint)
                 0x28, // rows = 40
                 0x01, 0x0d, // term: Some, len 13
@@ -169,6 +190,7 @@ mod tests {
                 0x02, 0x70, 0x31, // name: len 2, "p1"
                 0x00, // cwd: None
                 0x00, // command: 0 args
+                0x00, // cwd_from: None
             ]
         );
 

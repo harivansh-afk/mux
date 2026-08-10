@@ -76,7 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controllers.append(controller)
         // New windows follow the key pane's target and cwd, like prefix c.
         let source = keyController?.focusedPane
-        controller.addInitialPane(workingDirectory: source?.pwd, target: source?.target)
+        controller.addInitialPane(
+            workingDirectory: source?.pwd, cwdFrom: source?.id, target: source?.target
+        )
         controller.window.makeKeyAndOrderFront(nil)
         saveSnapshot()
     }

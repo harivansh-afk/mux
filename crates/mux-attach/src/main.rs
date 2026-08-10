@@ -168,6 +168,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut target: Option<String> = None;
     let mut cwd: Option<String> = None;
+    let mut cwd_from: Option<String> = None;
     let mut command: Vec<String> = vec![];
     let mut list = false;
     let mut kill: Option<String> = None;
@@ -183,6 +184,10 @@ fn main() -> Result<()> {
             "--cwd" => {
                 i += 1;
                 cwd = Some(args.get(i).context("--cwd needs a dir")?.clone());
+            }
+            "--cwd-from" => {
+                i += 1;
+                cwd_from = Some(args.get(i).context("--cwd-from needs a pty name")?.clone());
             }
             "--" => {
                 command = args[i + 1..].to_vec();
@@ -206,6 +211,7 @@ fn main() -> Result<()> {
         target: host,
         name,
         cwd,
+        cwd_from,
         command,
     })
 }
@@ -307,6 +313,9 @@ struct Attach {
     target: Option<String>,
     name: String,
     cwd: Option<String>,
+    /// Inherit the working directory of this pty on the same daemon
+    /// (the split's source pane), resolved daemon-side at create time.
+    cwd_from: Option<String>,
     command: Vec<String>,
 }
 
@@ -358,6 +367,7 @@ fn open_session(attach: &Attach, stream: UnixStream, size: (u16, u16)) -> Result
                 name: attach.name.clone(),
                 cwd: attach.cwd.clone(),
                 command: attach.command.clone(),
+                cwd_from: attach.cwd_from.clone(),
             },
         },
     )?;

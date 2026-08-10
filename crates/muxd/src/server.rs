@@ -171,7 +171,18 @@ where
             reply(&mut writer, &Ok(Opened::Killed { existed })).await
         }
 
-        OpenMode::Open { name, cwd, command } => {
+        OpenMode::Open {
+            name,
+            cwd,
+            command,
+            cwd_from,
+        } => {
+            // Inherit the source pane's directory when no explicit cwd
+            // came along: resolved here, where the source process lives.
+            let cwd = cwd.or_else(|| {
+                let source = manager.get(cwd_from.as_deref()?)?;
+                source.current_cwd()
+            });
             let open = Open {
                 cols,
                 rows,
@@ -322,7 +333,29 @@ async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<OpenReques
     }
     let mut buf = vec![0u8; len as usize];
     reader.read_exact(&mut buf).await.context("request body")?;
-    peer::decode(&buf).context("request decode")
+    match peer::decode(&buf) {
+        Ok(request) => Ok(request),
+        // A request shaped by another protocol version cannot decode at
+        // all, but its version is the first varint by design: surface it
+        // as a minimal request so the version check upstream answers
+        // with the readable mismatch instead of a dropped socket.
+        Err(e) => {
+            if let Ok(version) = peer::decode_prefix::<u32>(&buf) {
+                if version != peer::PROTOCOL_VERSION {
+                    return Ok(OpenRequest {
+                        version,
+                        cols: 0,
+                        rows: 0,
+                        term: None,
+                        token: None,
+                        target: None,
+                        mode: OpenMode::List,
+                    });
+                }
+            }
+            Err(e).context("request decode")
+        }
+    }
 }
 
 /// Lane frame: [u32 LE length][u8 lane][payload]; length covers lane+payload.

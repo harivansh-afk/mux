@@ -128,11 +128,15 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// prefix c: a new session with one pane, following the focused
     /// pane's target and cwd.
     func newSession() {
+        // The new session's pane inherits the focused pane's host and
+        // working directory (resolved daemon-side from its live process).
         let source = activeSession?.focusedPane
         let session = Session(runtime: runtime, controller: self)
         sessions.append(session)
         activeSessionIndex = sessions.count - 1
-        session.addInitialPane(workingDirectory: source?.pwd, target: source?.target)
+        session.addInitialPane(
+            workingDirectory: source?.pwd, cwdFrom: source?.id, target: source?.target
+        )
         layoutPanes()
         flashSessionIndicator()
         saveState()
@@ -168,10 +172,11 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     @discardableResult
     func addInitialPane(
-        id: UUID = UUID(), workingDirectory: String? = nil, target: String? = nil
+        id: UUID = UUID(), workingDirectory: String? = nil, cwdFrom: UUID? = nil,
+        target: String? = nil
     ) -> PaneView? {
         activeSession?.addInitialPane(
-            id: id, workingDirectory: workingDirectory, target: target
+            id: id, workingDirectory: workingDirectory, cwdFrom: cwdFrom, target: target
         )
     }
 

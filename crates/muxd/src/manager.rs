@@ -59,6 +59,19 @@ pub struct PtySession {
 }
 
 impl PtySession {
+    /// Where the user is in this pty: the working directory of its
+    /// foreground process (tmux's trick - `tcgetpgrp` on the master
+    /// names the foreground process group, whose leader is the shell
+    /// or whatever it ran), read from the live process. The daemon owns
+    /// the process, so this needs no shell integration on either end.
+    #[must_use]
+    pub fn current_cwd(&self) -> Option<String> {
+        let pid = nix::unistd::tcgetpgrp(self.master.get_ref())
+            .map(nix::unistd::Pid::as_raw)
+            .unwrap_or_else(|_| self.child.as_raw());
+        process_cwd(pid).or_else(|| process_cwd(self.child.as_raw()))
+    }
+
     pub fn info(&self) -> mux_proto::peer::PtyInfo {
         mux_proto::peer::PtyInfo {
             name: self.name.clone(),
@@ -341,4 +354,36 @@ pub fn attach(session: &Arc<PtySession>, cols: u16, rows: u16) -> Attachment {
         term.render_screen_bytes()
     };
     Attachment { rx, dump }
+}
+
+/// The working directory of a live process, from the kernel.
+#[cfg(target_os = "macos")]
+fn process_cwd(pid: i32) -> Option<String> {
+    // SAFETY: proc_pidinfo writes at most `size` bytes into `info` and
+    // returns how many it wrote; vip_path is NUL-terminated on success.
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = i32::try_from(std::mem::size_of::<libc::proc_vnodepathinfo>()).ok()?;
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            (&raw mut info).cast(),
+            size,
+        )
+    };
+    if written < size {
+        return None;
+    }
+    // SAFETY: vip_path is NUL-terminated by the kernel.
+    let path = unsafe { std::ffi::CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
+    let path = path.to_str().ok()?;
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// The working directory of a live process, from procfs.
+#[cfg(target_os = "linux")]
+fn process_cwd(pid: i32) -> Option<String> {
+    let path = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+    path.to_str().map(ToString::to_string)
 }

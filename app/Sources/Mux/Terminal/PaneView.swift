@@ -57,6 +57,7 @@ final class PaneView: NSView {
         id: UUID = UUID(),
         runtime: GhosttyRuntime,
         workingDirectory: String? = nil,
+        cwdFrom: UUID? = nil,
         target: String? = nil,
         command: String? = nil,
         initialFrame: CGRect = .zero,
@@ -77,7 +78,7 @@ final class PaneView: NSView {
         // cwd. Terminal content survives the app by construction. M3: a
         // pane on a host alias is the same pty one hop away (the local
         // daemon relays the attach), while `ix:<vm>` is a plain exec.
-        let command = command ?? defaultCommand(cwd: workingDirectory)
+        let command = command ?? defaultCommand(cwd: workingDirectory, cwdFrom: cwdFrom)
 
         // A remote pane's cwd names a path on the remote host: it travels
         // as --cwd and is never handed to the local surface.
@@ -152,8 +153,11 @@ final class PaneView: NSView {
     }
 
     /// The pane's launch command. nil means "the user's shell": the dev
-    /// fallback when no relay binary is bundled.
-    private func defaultCommand(cwd: String?) -> String? {
+    /// fallback when no relay binary is bundled. `cwdFrom` names the pty
+    /// (a split's source pane, same daemon) whose live working directory
+    /// the new shell inherits, resolved daemon-side - no shell
+    /// integration needed. An explicit `cwd` wins.
+    private func defaultCommand(cwd: String?, cwdFrom: UUID? = nil) -> String? {
         if let target, target.hasPrefix(Self.ixPrefix) {
             return "ix shell \"\(target.dropFirst(Self.ixPrefix.count))\""
         }
@@ -161,6 +165,9 @@ final class PaneView: NSView {
         var parts = ["\"\(attach)\"", "\"\(attachAddress)\""]
         if let cwd {
             parts += ["--cwd", "\"\(cwd)\""]
+        }
+        if let cwdFrom {
+            parts += ["--cwd-from", "\"\(cwdFrom.uuidString)\""]
         }
         return parts.joined(separator: " ")
     }

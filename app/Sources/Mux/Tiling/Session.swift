@@ -42,9 +42,12 @@ final class Session {
 
     @discardableResult
     func addInitialPane(
-        id: UUID = UUID(), workingDirectory: String? = nil, target: String? = nil
+        id: UUID = UUID(), workingDirectory: String? = nil, cwdFrom: UUID? = nil,
+        target: String? = nil
     ) -> PaneView {
-        let pane = makePane(id: id, workingDirectory: workingDirectory, target: target)
+        let pane = makePane(
+            id: id, workingDirectory: workingDirectory, cwdFrom: cwdFrom, target: target
+        )
         tree = .leaf(pane.id)
         controller?.layoutPanes()
         focus(pane)
@@ -52,12 +55,12 @@ final class Session {
     }
 
     private func makePane(
-        id: UUID = UUID(), workingDirectory: String? = nil, target: String? = nil,
-        initialFrame: CGRect = .zero, fontDelta: Int = 0
+        id: UUID = UUID(), workingDirectory: String? = nil, cwdFrom: UUID? = nil,
+        target: String? = nil, initialFrame: CGRect = .zero, fontDelta: Int = 0
     ) -> PaneView {
         let pane = PaneView(
-            id: id, runtime: runtime, workingDirectory: workingDirectory, target: target,
-            initialFrame: initialFrame, fontDelta: fontDelta
+            id: id, runtime: runtime, workingDirectory: workingDirectory, cwdFrom: cwdFrom,
+            target: target, initialFrame: initialFrame, fontDelta: fontDelta
         )
         pane.controller = controller
         panes[pane.id] = pane
@@ -105,17 +108,22 @@ final class Session {
         guard let source = pane ?? focusedPane else { return }
         guard let tree else { return }
         zoomedID = nil
-        // New panes inherit the source pane's target, and its cwd (OSC 7 /
-        // pwd action) only when the targets match: a path from another
-        // machine means nothing here, and vice versa.
+        // New panes inherit the source pane's target, and its working
+        // directory only when the targets match: a path from another
+        // machine means nothing here, and vice versa. The directory is
+        // resolved daemon-side from the source pane's live process
+        // (cwdFrom); pwd (OSC 7, when shell integration provides it) is
+        // an explicit override.
         let newTarget: String? = switch target {
         case .inherit: source.target
         case let .explicit(explicit): explicit
         }
+        let sameHost = newTarget == source.target
         // Splits inherit the source pane's font zoom, matching ghostty's
         // window-inherit-font-size default.
         let newPane = makePane(
-            workingDirectory: newTarget == source.target ? source.pwd : nil,
+            workingDirectory: sameHost ? source.pwd : nil,
+            cwdFrom: sameHost ? source.id : nil,
             target: newTarget, fontDelta: source.fontDelta
         )
         self.tree = tree.inserting(newPane.id, at: source.id, direction: direction)
