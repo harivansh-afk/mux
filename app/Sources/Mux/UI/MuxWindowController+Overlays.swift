@@ -140,6 +140,67 @@ extension MuxWindowController {
         center(targetPicker, size: targetPicker.desiredSize(in: container.bounds))
     }
 
+    // MARK: - Panes overlay
+
+    /// prefix f: every pane in the window grouped by host. Rebuilt from
+    /// the live session model on every open; the highlight starts on the
+    /// focused pane.
+    func showPanesOverlay() {
+        panesOverlay.reload(groups: panesByHost(), selected: focusedPane?.id)
+        panesOverlay.removeFromSuperview()
+        container.addSubview(panesOverlay)
+        positionPanesOverlay()
+    }
+
+    func hidePanesOverlay() {
+        panesOverlay.removeFromSuperview()
+    }
+
+    func movePanesOverlay(by delta: Int) {
+        panesOverlay.move(by: delta)
+        positionPanesOverlay()
+    }
+
+    /// Enter: jump to the selected pane, switching session if needed and
+    /// unzooming whatever covers it.
+    func commitPanesOverlay() {
+        guard let entry = panesOverlay.selection,
+              sessions.indices.contains(entry.sessionIndex) else { return }
+        let session = sessions[entry.sessionIndex]
+        guard let pane = session.panes[entry.paneID] else { return }
+        selectSession(entry.sessionIndex)
+        session.reveal(pane)
+    }
+
+    func positionPanesOverlay() {
+        center(panesOverlay, size: panesOverlay.desiredSize(in: container.bounds))
+    }
+
+    /// Rows for the panes overlay: sessions in order, panes in tree
+    /// (visual) order, grouped under `local` first and then hosts by name.
+    private func panesByHost() -> [(host: String?, entries: [PanesOverlayView.Entry])] {
+        var order: [String?] = []
+        var groups: [String?: [PanesOverlayView.Entry]] = [:]
+        for (sessionIndex, session) in sessions.enumerated() {
+            for (paneIndex, paneID) in (session.tree?.leaves ?? []).enumerated() {
+                guard let pane = session.panes[paneID] else { continue }
+                var text = "\(sessionIndex + 1).\(paneIndex + 1)  \(pane.title)"
+                if let pwd = pane.pwd {
+                    text += "  \((pwd as NSString).abbreviatingWithTildeInPath)"
+                }
+                if groups[pane.target] == nil {
+                    order.append(pane.target)
+                }
+                groups[pane.target, default: []].append(PanesOverlayView.Entry(
+                    sessionIndex: sessionIndex, paneID: paneID, text: text
+                ))
+            }
+        }
+        // nil (local) sorts as "" - first; aliases are alphanumeric-led.
+        order.sort { ($0 ?? "") < ($1 ?? "") }
+        return order.map { ($0, groups[$0] ?? []) }
+    }
+
     /// Centered boxes (keybinds, picker) share one placement rule.
     private func center(_ view: NSView, size: NSSize) {
         let bounds = container.bounds

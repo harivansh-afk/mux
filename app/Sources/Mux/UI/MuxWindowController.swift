@@ -32,6 +32,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     let sessionIndicator = ModeBarView()
     let helpOverlay = HelpOverlayView()
     let targetPicker = TargetPickerView()
+    let panesOverlay = PanesOverlayView()
     var indicatorFlashTimer: Timer?
 
     private(set) var sessions: [Session] = []
@@ -264,6 +265,9 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
         if targetPicker.superview != nil {
             positionTargetPicker()
+        }
+        if panesOverlay.superview != nil {
+            positionPanesOverlay()
         }
 
         for (index, session) in sessions.enumerated() {

@@ -57,6 +57,12 @@ the local daemon holds one QUIC connection per host.
    split lives there; kill the app and the remote pty (and its scrollback) is
    still there on reattach.
 
+Splits and new sessions inherit the focused pane's host, so work started on
+`spark` stays on `spark` until you pick a different target. Remote panes carry
+a chip in their top-right corner (a host-colored dot plus the alias); local
+panes stay unmarked. `prefix f` opens an overlay of every pane grouped by
+host - enter jumps to the selected pane, switching session if needed.
+
 There is no CLI to manage `hosts.json` yet - it is hand-edited JSON, read fresh
 every time the picker opens.
 

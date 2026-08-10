@@ -12,12 +12,13 @@ import AppKit
 ///   prefix 1..9   select session       prefix n/p    next/prev session
 ///   prefix r      resize mode          prefix esc    cancel
 ///   prefix t      target picker        prefix ctrl+b send a literal ctrl+b
-///   prefix ?      keybinds overlay
+///   prefix f      panes by host        prefix ?      keybinds overlay
 /// Held-ctrl aliasing: ctrl+<key> in prefix mode means <key> (the nvim-mux
 /// papercut fix: you rarely release ctrl between prefix and key).
 /// Resize mode: h/j/k/l nudge the enclosing split ratio, esc/enter/q exit.
 /// Target mode: j/k choose the machine the next pane lives on, enter
 /// splits right into it, esc cancels.
+/// Panes mode: j/k walk every pane grouped by host, enter jumps to it.
 ///
 /// Mode changes drive the bottom mode bar on the active window.
 final class PrefixEngine {
@@ -27,6 +28,7 @@ final class PrefixEngine {
         case resize
         case help
         case pickTarget
+        case pickPane
     }
 
     private(set) var mode: Mode = .normal
@@ -63,6 +65,13 @@ final class PrefixEngine {
         .key("esc"), .dim(" cancel"),
     ]
 
+    private static let paneSegments: [ModeBarSegment] = [
+        .badge("PANES"),
+        .key("j/k"), .dim(" choose  "),
+        .key("enter"), .dim(" jump  "),
+        .key("esc"), .dim(" cancel"),
+    ]
+
     /// Resolves the controller of the key window.
     private var controller: MuxWindowController? {
         (NSApp.delegate as? AppDelegate)?.keyController
@@ -87,6 +96,7 @@ final class PrefixEngine {
         indicatorController?.setModeIndicator(nil)
         indicatorController?.hideHelp()
         indicatorController?.hideTargetPicker()
+        indicatorController?.hidePanesOverlay()
         indicatorController = nil
         switch newMode {
         case .normal:
@@ -105,6 +115,10 @@ final class PrefixEngine {
             indicatorController = controller
             indicatorController?.setModeIndicator(Self.targetSegments)
             indicatorController?.showTargetPicker()
+        case .pickPane:
+            indicatorController = controller
+            indicatorController?.setModeIndicator(Self.paneSegments)
+            indicatorController?.showPanesOverlay()
         }
     }
 
@@ -172,6 +186,22 @@ final class PrefixEngine {
             default:
                 return nil
             }
+
+        case .pickPane:
+            switch key {
+            case "j", "\u{F701}": controller?.movePanesOverlay(by: 1); return nil
+            case "k", "\u{F700}": controller?.movePanesOverlay(by: -1); return nil
+            case "\r":
+                // Commit before the mode change tears the overlay down.
+                controller?.commitPanesOverlay()
+                setMode(.normal)
+                return nil
+            case "\u{1b}", "q":
+                setMode(.normal)
+                return nil
+            default:
+                return nil
+            }
         }
     }
 
@@ -189,6 +219,7 @@ final class PrefixEngine {
         case "x": controller?.closeFocusedPane()
         case "r": setMode(.resize)
         case "t": setMode(.pickTarget)
+        case "f": setMode(.pickPane)
         case "?": setMode(.help)
         // Sessions.
         case "c": controller?.newSession()

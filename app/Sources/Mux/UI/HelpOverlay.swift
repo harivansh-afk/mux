@@ -20,6 +20,7 @@ final class HelpOverlayView: NSView {
             ("x", "close pane"),
             ("r", "resize mode"),
             ("t", "target picker"),
+            ("f", "panes by host"),
             ("?", "keybinds"),
             ("esc", "cancel"),
         ]),
@@ -35,6 +36,11 @@ final class HelpOverlayView: NSView {
         Section(title: "target  prefix t", rows: [
             ("j / k", "choose host"),
             ("enter", "split right into it"),
+            ("esc / q", "cancel"),
+        ]),
+        Section(title: "panes  prefix f", rows: [
+            ("j / k", "choose pane (by host)"),
+            ("enter", "jump to it"),
             ("esc / q", "cancel"),
         ]),
         Section(title: "app", rows: [

@@ -162,6 +162,17 @@ final class Session {
         focusedID = pane.id
     }
 
+    /// Jump focus straight to a pane (the panes overlay), unzooming
+    /// whatever covers it first.
+    func reveal(_ pane: PaneView) {
+        guard panes[pane.id] != nil else { return }
+        if let zoomedID, zoomedID != pane.id {
+            self.zoomedID = nil
+            controller?.layoutPanes()
+        }
+        focus(pane)
+    }
+
     func focusDirection(_ direction: FocusDirection) {
         guard let tree, let focusedID, let bounds = controller?.paneBounds else { return }
         let rects = tree.layout(in: bounds)
