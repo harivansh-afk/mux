@@ -4,7 +4,10 @@ import GhosttyKit
 /// A container view with top-left origin so tree layout math is direct.
 final class PaneContainerView: NSView {
     weak var controller: MuxWindowController?
-    override var isFlipped: Bool { true }
+    override var isFlipped: Bool {
+        true
+    }
+
     override func layout() {
         super.layout()
         controller?.layoutPanes()
@@ -42,7 +45,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 680),
             styleMask: [.borderless, .resizable],
             backing: .buffered,
-            defer: false)
+            defer: false
+        )
         window.title = "mux"
         window.isMovableByWindowBackground = true
         window.hasShadow = true
@@ -63,7 +67,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         applyTheme()
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeDidChange),
-            name: .muxThemeDidChange, object: nil)
+            name: .muxThemeDidChange, object: nil
+        )
     }
 
     // MARK: - Session plumbing
@@ -80,7 +85,9 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     }
 
     /// Session hook: the rect sessions lay their trees out in.
-    var paneBounds: CGRect { container.bounds }
+    var paneBounds: CGRect {
+        container.bounds
+    }
 
     /// Session hook: last pane in the session closed. The session closes;
     /// the last session closing closes the window.
@@ -97,7 +104,9 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             activeSessionIndex = sessions.count - 1
         }
         layoutPanes()
-        if let pane = activeSession?.focusedPane { focus(pane) }
+        if let pane = activeSession?.focusedPane {
+            focus(pane)
+        }
         flashSessionIndicator()
         saveState()
     }
@@ -122,7 +131,9 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         guard sessions.indices.contains(index), index != activeSessionIndex else { return }
         activeSessionIndex = index
         layoutPanes()
-        if let pane = activeSession?.focusedPane { focus(pane) }
+        if let pane = activeSession?.focusedPane {
+            focus(pane)
+        }
         flashSessionIndicator()
         saveState()
     }
@@ -139,7 +150,9 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - Tiling API (forwarded to the active session)
 
-    var focusedPane: PaneView? { activeSession?.focusedPane }
+    var focusedPane: PaneView? {
+        activeSession?.focusedPane
+    }
 
     @discardableResult
     func addInitialPane(id: UUID = UUID(), workingDirectory: String? = nil) -> PaneView? {
@@ -155,10 +168,13 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         for (index, snapshot) in snapshots.enumerated() {
             sessions[index].restore(
                 tree: snapshot.tree, paneMeta: snapshot.panes,
-                focused: snapshot.focused, zoomed: snapshot.zoomed)
+                focused: snapshot.focused, zoomed: snapshot.zoomed
+            )
         }
         layoutPanes()
-        if let pane = activeSession?.focusedPane { focus(pane) }
+        if let pane = activeSession?.focusedPane {
+            focus(pane)
+        }
     }
 
     func split(direction: SplitDirection) {
@@ -187,7 +203,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         activeSession?.focusDirection(direction)
     }
 
-    func focus(from pane: PaneView, ghosttyGoto dir: ghostty_action_goto_split_e) {
+    func focus(from _: PaneView, ghosttyGoto dir: ghostty_action_goto_split_e) {
         switch dir {
         case GHOSTTY_GOTO_SPLIT_LEFT: focusDirection(.left)
         case GHOSTTY_GOTO_SPLIT_RIGHT: focusDirection(.right)
@@ -231,7 +247,9 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             showSessionIndicator()
         } else {
             modeBar.isHidden = true
-            if indicatorFlashTimer == nil { sessionIndicator.isHidden = true }
+            if indicatorFlashTimer == nil {
+                sessionIndicator.isHidden = true
+            }
         }
     }
 
@@ -242,10 +260,13 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     private var sessionSegments: [ModeBarSegment] {
         var segments: [ModeBarSegment] = []
         for index in sessions.indices {
-            if index > 0 { segments.append(.dim(" ")) }
+            if index > 0 {
+                segments.append(.dim(" "))
+            }
             let label = "\(index + 1)"
             segments.append(
-                index == activeSessionIndex ? .highlight(label) : .dim(label))
+                index == activeSessionIndex ? .highlight(label) : .dim(label)
+            )
         }
         return segments
     }
@@ -268,8 +289,10 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             withTimeInterval: 1.0, repeats: false
         ) { [weak self] _ in
             guard let self else { return }
-            self.indicatorFlashTimer = nil
-            if self.modeBar.isHidden { self.sessionIndicator.isHidden = true }
+            indicatorFlashTimer = nil
+            if modeBar.isHidden {
+                sessionIndicator.isHidden = true
+            }
         }
     }
 
@@ -281,7 +304,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             x: bounds.width - margin - width,
             y: bounds.height - ModeBarView.height - margin,
             width: width,
-            height: ModeBarView.height)
+            height: ModeBarView.height
+        )
     }
 
     func showHelp() {
@@ -306,7 +330,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             x: (bounds.width - size.width) / 2,
             y: (bounds.height - size.height) / 2,
             width: size.width,
-            height: size.height)
+            height: size.height
+        )
     }
 
     /// Content-sized box floating at the bottom-left, inset by the same
@@ -320,7 +345,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             x: margin,
             y: bounds.height - ModeBarView.height - margin,
             width: width,
-            height: ModeBarView.height)
+            height: ModeBarView.height
+        )
     }
 
     // MARK: - Layout
@@ -329,9 +355,15 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         let bounds = container.bounds
         guard bounds.width > 1, bounds.height > 1 else { return }
 
-        if !modeBar.isHidden { positionModeBar() }
-        if !sessionIndicator.isHidden { positionSessionIndicator() }
-        if helpOverlay.superview != nil { positionHelpOverlay() }
+        if !modeBar.isHidden {
+            positionModeBar()
+        }
+        if !sessionIndicator.isHidden {
+            positionSessionIndicator()
+        }
+        if helpOverlay.superview != nil {
+            positionHelpOverlay()
+        }
 
         for (index, session) in sessions.enumerated() {
             session.applyLayout(in: bounds, visible: index == activeSessionIndex)
@@ -354,13 +386,15 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - Window delegate
 
-    func windowDidBecomeKey(_ notification: Notification) {
-        if let pane = focusedPane { focus(pane) }
+    func windowDidBecomeKey(_: Notification) {
+        if let pane = focusedPane {
+            focus(pane)
+        }
     }
 
     /// Occluded surfaces stop rendering (ghostty renderer throttle).
     /// A pane draws only if the window is visible AND its session active.
-    func windowDidChangeOcclusionState(_ notification: Notification) {
+    func windowDidChangeOcclusionState(_: Notification) {
         let windowVisible = window.occlusionState.contains(.visible)
         for session in sessions {
             for (_, pane) in session.panes {
@@ -369,14 +403,16 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func windowWillClose(_ notification: Notification) {
+    func windowWillClose(_: Notification) {
         // A deliberate window close kills its daemon ptys. During app
         // termination this is a detach instead: survival across quit and
         // crash is the point of M2.
         let terminating = (NSApp.delegate as? AppDelegate)?.isTerminating ?? false
         for session in sessions {
             if !terminating {
-                for (_, pane) in session.panes { pane.killRemote() }
+                for (_, pane) in session.panes {
+                    pane.killRemote()
+                }
             }
             session.destroyAllSurfaces()
         }

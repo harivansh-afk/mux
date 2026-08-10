@@ -1,13 +1,13 @@
 import AppKit
 import GhosttyKit
 
-/// Light/dark theming for mux chrome: cozybox gruvbox with a deliberately
-/// greyscale accent, matching the user's terminal theme.
-///
-/// The terminal contents theme themselves: we forward the effective
-/// appearance to libghostty via ghostty_app_set_color_scheme, which selects
-/// the light/dark variant of the user's ghostty theme and keeps OSC 10/11
-/// luminance detection correct for programs running inside the panes.
+// Light/dark theming for mux chrome: cozybox gruvbox with a deliberately
+// greyscale accent, matching the user's terminal theme.
+//
+// The terminal contents theme themselves: we forward the effective
+// appearance to libghostty via ghostty_app_set_color_scheme, which selects
+// the light/dark variant of the user's ghostty theme and keeps OSC 10/11
+// luminance detection correct for programs running inside the panes.
 
 enum Appearance {
     case light
@@ -43,7 +43,8 @@ struct Palette {
             dim: NSColor(hex: 0x504945),
             text: NSColor(hex: 0xD4BE98),
             pink: NSColor(hex: 0xD3869B),
-            divider: bg.ghosttyDividerColor)
+            divider: bg.ghosttyDividerColor
+        )
     }()
 
     static let light: Palette = {
@@ -55,7 +56,8 @@ struct Palette {
             dim: NSColor(hex: 0xA89984),
             text: NSColor(hex: 0x3C3836),
             pink: NSColor(hex: 0x8F3F71),
-            divider: bg.ghosttyDividerColor)
+            divider: bg.ghosttyDividerColor
+        )
     }()
 }
 
@@ -65,7 +67,8 @@ extension NSColor {
             srgbRed: CGFloat((hex >> 16) & 0xFF) / 255.0,
             green: CGFloat((hex >> 8) & 0xFF) / 255.0,
             blue: CGFloat(hex & 0xFF) / 255.0,
-            alpha: 1.0)
+            alpha: 1.0
+        )
     }
 
     // Ported 1:1 from ghostty macos/Sources/Helpers/Extensions/
@@ -78,7 +81,9 @@ extension NSColor {
         return (0.299 * r) + (0.587 * g) + (0.114 * b)
     }
 
-    var isLightColor: Bool { luminance > 0.5 }
+    var isLightColor: Bool {
+        luminance > 0.5
+    }
 
     func darken(by amount: CGFloat) -> NSColor {
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -88,7 +93,8 @@ extension NSColor {
             hue: h,
             saturation: s,
             brightness: min(b * (1 - amount), 1),
-            alpha: a)
+            alpha: a
+        )
     }
 
     /// ghostty's default `split-divider-color` (Ghostty.Config.swift).
@@ -133,7 +139,8 @@ final class ThemeManager {
         // and OSC 10/11 background reports match the visible theme.
         if let app = GhosttyRuntime.shared?.app {
             ghostty_app_set_color_scheme(
-                app, isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
+                app, isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+            )
         }
 
         NotificationCenter.default.post(name: .muxThemeDidChange, object: nil)

@@ -49,10 +49,10 @@ fn capture_output(cmd: &str, args: &[&str]) -> Vec<u8> {
             unreachable!();
         }
         nix::pty::ForkptyResult::Parent { child, master } => {
+            const READ_BUF_SIZE: usize = 4096;
+
             // SAFETY: master fd from forkpty is valid; into_raw_fd transfers ownership.
             let mut master_file = unsafe { std::fs::File::from_raw_fd(master.into_raw_fd()) };
-
-            const READ_BUF_SIZE: usize = 4096;
 
             let mut output = Vec::new();
             let mut buf = [0u8; READ_BUF_SIZE];

@@ -6,8 +6,25 @@ members = ["crates/mux-proto", "crates/mux-attach", "crates/muxd", "crates/ghost
 edition = "2021"
 license = "MIT"
 repository = "https://git.harivan.sh/harivansh-afk/mux"
+publish = false
+
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+# Group lints need priority below per-lint overrides so allow entries can
+# opt out without disabling the group (cargo errors with
+# `lint_groups_priority` otherwise).
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+multiple_crate_versions = "allow"
 
 [workspace.dependencies]
+# Local crates: declared once here (the one table where a `path` is allowed);
+# members inherit with `name.workspace = true`.
+mux-proto = { path = "crates/mux-proto" }
+ghostty-vt = { path = "crates/ghostty-vt" }
 anyhow = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
@@ -16,5 +33,5 @@ tracing-subscriber = "0.3"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
 nix = { version = "0.29", features = ["term", "process", "fs", "socket", "poll", "signal", "user"] }
-rustix = { version = "0.38", features = ["termios", "pty", "fs", "process"] }
 parking_lot = "0.12"
+libc = "0.2"

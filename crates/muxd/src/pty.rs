@@ -1,6 +1,6 @@
 //! PTY spawn and async IO. Fork of ix-console's pty.rs / pty/exec.rs
-//! core: openpty, fork, setsid + TIOCSCTTY, dup2, execvp; the master fd
-//! becomes a tokio AsyncFd (no spawn_blocking reads).
+//! core: openpty, fork, setsid + `TIOCSCTTY`, dup2, execvp; the master fd
+//! becomes a tokio `AsyncFd` (no `spawn_blocking` reads).
 
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -38,8 +38,8 @@ fn user_shell() -> String {
 }
 
 pub fn spawn(params: &Spawn) -> Result<Pty> {
-    let pty = nix::pty::openpty(Some(&winsize(params.cols, params.rows)), None)
-        .context("openpty")?;
+    let pty =
+        nix::pty::openpty(Some(&winsize(params.cols, params.rows)), None).context("openpty")?;
 
     // Everything the child needs, allocated before fork: only
     // async-signal-safe calls are allowed after.
@@ -60,10 +60,7 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
         (argv[0].clone(), argv)
     };
     let cwd = params.cwd.map(CString::new).transpose()?;
-    let term = CString::new(format!(
-        "TERM={}",
-        params.term.unwrap_or("xterm-ghostty")
-    ))?;
+    let term = CString::new(format!("TERM={}", params.term.unwrap_or("xterm-ghostty")))?;
 
     match unsafe { nix::unistd::fork() }.context("fork")? {
         ForkResult::Parent { child } => {
@@ -86,7 +83,7 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
                 if libc::setsid() < 0 {
                     libc::_exit(127);
                 }
-                if libc::ioctl(slave, libc::TIOCSCTTY as _, 0) < 0 {
+                if libc::ioctl(slave, u64::from(libc::TIOCSCTTY), 0) < 0 {
                     libc::_exit(127);
                 }
                 libc::dup2(slave, 0);
@@ -100,7 +97,7 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
                     // Best-effort; a stale cwd should not kill the shell.
                     let _ = libc::chdir(dir.as_ptr());
                 }
-                libc::putenv(term.as_ptr() as *mut _);
+                libc::putenv(term.as_ptr().cast_mut());
                 let argv_ptrs: Vec<*const libc::c_char> = exec_argv
                     .iter()
                     .map(|a| a.as_ptr())
@@ -123,9 +120,9 @@ pub async fn write_all(master: &AsyncFd<OwnedFd>, data: &[u8]) -> Result<()> {
                 .map_err(|e| std::io::Error::from_raw_os_error(e as i32))
         }) {
             Ok(Ok(n)) => written += n,
-            Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Ok(Err(e)) => return Err(e.into()),
-            Err(_would_block) => continue,
+            Err(_would_block) => {}
         }
     }
     Ok(())

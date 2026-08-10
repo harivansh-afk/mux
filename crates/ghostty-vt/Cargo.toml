@@ -3,10 +3,14 @@ name = "ghostty-vt"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "Headless terminal state tracking via ghostty VT (Zig FFI shim)"
 
+[lints]
+workspace = true
+
 [dependencies]
-serde = { workspace = true }
+serde.workspace = true
 
 [dev-dependencies]
-nix = { version = "0.29", features = ["term", "process", "fs"] }
+nix = { workspace = true, features = ["term", "process", "fs"] }

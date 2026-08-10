@@ -3,14 +3,18 @@ name = "muxd"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-mux-proto = { path = "../mux-proto" }
-ghostty-vt = { path = "../ghostty-vt" }
+mux-proto.workspace = true
+ghostty-vt.workspace = true
 nix.workspace = true
 parking_lot.workspace = true
-libc = "0.2"
+libc.workspace = true

@@ -22,10 +22,21 @@ struct ModeBarSegment {
     let kind: Kind
     let text: String
 
-    static func badge(_ t: String) -> ModeBarSegment { .init(kind: .badge, text: t) }
-    static func key(_ t: String) -> ModeBarSegment { .init(kind: .key, text: t) }
-    static func dim(_ t: String) -> ModeBarSegment { .init(kind: .dim, text: t) }
-    static func highlight(_ t: String) -> ModeBarSegment { .init(kind: .highlight, text: t) }
+    static func badge(_ t: String) -> ModeBarSegment {
+        .init(kind: .badge, text: t)
+    }
+
+    static func key(_ t: String) -> ModeBarSegment {
+        .init(kind: .key, text: t)
+    }
+
+    static func dim(_ t: String) -> ModeBarSegment {
+        .init(kind: .dim, text: t)
+    }
+
+    static func highlight(_ t: String) -> ModeBarSegment {
+        .init(kind: .highlight, text: t)
+    }
 }
 
 final class ModeBarView: NSView {
@@ -62,10 +73,14 @@ final class ModeBarView: NSView {
         applyTheme()
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeDidChange),
-            name: .muxThemeDidChange, object: nil)
+            name: .muxThemeDidChange, object: nil
+        )
     }
 
-    required init?(coder: NSCoder) { fatalError("not supported") }
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("not supported")
+    }
 
     func render(_ segments: [ModeBarSegment]) {
         self.segments = segments
@@ -80,7 +95,8 @@ final class ModeBarView: NSView {
                         .font: Self.boldFont,
                         .foregroundColor: palette.accentContrast,
                         .backgroundColor: palette.accent,
-                    ]))
+                    ]
+                ))
                 line.append(NSAttributedString(string: " "))
             case .key:
                 line.append(NSAttributedString(
@@ -88,21 +104,24 @@ final class ModeBarView: NSView {
                     attributes: [
                         .font: Self.boldFont,
                         .foregroundColor: palette.accent,
-                    ]))
+                    ]
+                ))
             case .dim:
                 line.append(NSAttributedString(
                     string: segment.text,
                     attributes: [
                         .font: Self.font,
                         .foregroundColor: palette.dim,
-                    ]))
+                    ]
+                ))
             case .highlight:
                 line.append(NSAttributedString(
                     string: segment.text,
                     attributes: [
                         .font: Self.boldFont,
                         .foregroundColor: palette.pink,
-                    ]))
+                    ]
+                ))
             }
         }
         label.attributedStringValue = line
@@ -126,6 +145,7 @@ final class ModeBarView: NSView {
             x: inset,
             y: inset,
             width: min(size.width, bounds.width - inset * 2),
-            height: size.height)
+            height: size.height
+        )
     }
 }

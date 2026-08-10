@@ -4,7 +4,7 @@
 //! 1. The attach race: upstream renders the reattach dump, releases the
 //!    terminal lock, and only later installs the client channel - bytes
 //!    fed in between are silently dropped for the client and the two VTs
-//!    diverge (ix test missed_output_causes_divergence proves it). Here
+//!    diverge (ix test `missed_output_causes_divergence` proves it). Here
 //!    the channel is installed and the dump rendered under ONE terminal
 //!    lock, and the read loop resolves the client sender while holding
 //!    that same lock: every chunk is either in the dump or delivered.
@@ -95,10 +95,15 @@ impl Manager {
             bail!("pty limit reached ({MAX_PTYS})");
         }
 
-        let pty = pty::spawn(&pty::Spawn { command, cwd, term, cols, rows })
-            .context("spawn pty")?;
-        let terminal = ghostty_vt::Terminal::new(rows, cols)
-            .context("terminal alloc")?;
+        let pty = pty::spawn(&pty::Spawn {
+            command,
+            cwd,
+            term,
+            cols,
+            rows,
+        })
+        .context("spawn pty")?;
+        let terminal = ghostty_vt::Terminal::new(rows, cols).context("terminal alloc")?;
         let session = Arc::new(PtySession {
             name: name.to_string(),
             command: command.to_vec(),
@@ -144,9 +149,8 @@ impl Manager {
 async fn read_loop(manager: Manager, session: Arc<PtySession>) {
     let mut buf = [0u8; READ_CHUNK];
     loop {
-        let mut guard = match session.master.readable().await {
-            Ok(guard) => guard,
-            Err(_) => break,
+        let Ok(mut guard) = session.master.readable().await else {
+            break;
         };
         let read = guard.try_io(|fd| {
             nix::unistd::read(std::os::fd::AsRawFd::as_raw_fd(fd.get_ref()), &mut buf)
@@ -163,10 +167,8 @@ async fn read_loop(manager: Manager, session: Arc<PtySession>) {
                     session.client.lock().as_ref().map(|c| c.tx.clone())
                 };
                 if let Some(tx) = tx {
-                    let send = tx.send_timeout(
-                        ClientMsg::Output(buf[..n].to_vec()),
-                        CLIENT_SEND_TIMEOUT,
-                    );
+                    let send =
+                        tx.send_timeout(ClientMsg::Output(buf[..n].to_vec()), CLIENT_SEND_TIMEOUT);
                     if send.await.is_err() {
                         // Slow or gone: disconnect, never drop bytes silently.
                         tracing::warn!(name = %session.name, "client too slow; detaching");
@@ -176,12 +178,12 @@ async fn read_loop(manager: Manager, session: Arc<PtySession>) {
             }
             // EIO on darwin/linux when the child exits: treat as EOF.
             Ok(Err(e)) if e.raw_os_error() == Some(libc::EIO) => break,
-            Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Ok(Err(e)) => {
                 tracing::warn!(name = %session.name, error = %e, "pty read failed");
                 break;
             }
-            Err(_would_block) => continue,
+            Err(_would_block) => {}
         }
     }
     reap(manager, session).await;
@@ -192,10 +194,7 @@ async fn read_loop(manager: Manager, session: Arc<PtySession>) {
 /// reattach to, and the app closes the pane on Exit.
 async fn reap(manager: Manager, session: Arc<PtySession>) {
     let pid = session.child;
-    let status = tokio::task::spawn_blocking(move || {
-        nix::sys::wait::waitpid(pid, None)
-    })
-    .await;
+    let status = tokio::task::spawn_blocking(move || nix::sys::wait::waitpid(pid, None)).await;
 
     let code = match status {
         Ok(Ok(nix::sys::wait::WaitStatus::Exited(_, code))) => code,
@@ -218,7 +217,6 @@ async fn reap(manager: Manager, session: Arc<PtySession>) {
 
 /// Everything attach needs to hand back to the connection handler.
 pub struct Attachment {
-    pub session: Arc<PtySession>,
     pub rx: mpsc::Receiver<ClientMsg>,
     pub dump: Vec<u8>,
 }
@@ -236,5 +234,5 @@ pub fn attach(session: &Arc<PtySession>, cols: u16, rows: u16) -> Attachment {
         *session.client.lock() = Some(AttachedClient { tx });
         term.render_screen_bytes()
     };
-    Attachment { session: session.clone(), rx, dump }
+    Attachment { rx, dump }
 }

@@ -7,3 +7,4 @@ app/GhosttyKit/resources/
 .DS_Store
 app/.build/
 .worktrees/
+app/GhosttyKit/

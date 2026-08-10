@@ -1,7 +1,7 @@
 //! VT escape sequence conformance tests.
 //!
 //! Feeds known ANSI/VT sequences and asserts exact screen state.
-//! Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+//! Reference: <https://invisible-island.net/xterm/ctlseqs/ctlseqs.html>
 
 use ghostty_vt::{CursorPosition, Terminal};
 

@@ -1,16 +1,16 @@
 //! muxd: the session daemon. Fork of ix-console (see docs/architecture.html
-//! for the fork map). Keeps per-pty: PTY master (AsyncFd), child process,
+//! for the fork map). Keeps per-pty: PTY master (`AsyncFd`), child process,
 //! and a headless ghostty-vt Terminal fed from the PTY. Ptys survive client
-//! disconnect; reattach replays render_screen_bytes() (scrollback with
+//! disconnect; reattach replays `render_screen_bytes()` (scrollback with
 //! per-cell SGR, DEC modes, tabstops, pending-wrap; never the palette).
 //!
 //! Upstream bugs fixed in this fork (see manager.rs):
 //! - the attach race (channel installed + dump rendered under one lock)
 //! - slow clients are detached, never silently skipped
 //!
-//! Listener: per-uid 0600 unix socket at /tmp/muxd-<uid>.sock (short path:
-//! sun_path is 104 bytes on darwin). Token auth returns with TCP in M3;
-//! SCM_RIGHTS live-fd self-upgrade (migrate.rs upstream) is M2.5.
+//! Listener: per-uid 0600 unix socket at `/tmp/muxd-<uid>.sock` (short path:
+//! `sun_path` is 104 bytes on darwin). Token auth returns with TCP in M3;
+//! `SCM_RIGHTS` live-fd self-upgrade (migrate.rs upstream) is M2.5.
 
 mod manager;
 mod pty;
@@ -34,8 +34,7 @@ fn socket_path_from_args() -> std::path::PathBuf {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with_writer(std::io::stderr)
         .init();

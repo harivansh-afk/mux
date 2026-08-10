@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Handshake cap, matching ix's MAX_LOCAL_REQUEST_BYTES.
+/// Handshake cap, matching ix's `MAX_LOCAL_REQUEST_BYTES`.
 pub const MAX_REQUEST_BYTES: u32 = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -66,16 +66,25 @@ pub enum ServerEvent {
     Detached,
 }
 
+/// # Panics
+///
+/// Never for the types in this module: postcard encoding of plain data
+/// enums cannot fail.
+#[must_use]
 pub fn encode<T: Serialize>(value: &T) -> Vec<u8> {
     postcard::to_stdvec(value).expect("postcard encode cannot fail for these types")
 }
 
+/// # Errors
+///
+/// Returns the postcard error when `bytes` is not a valid encoding of `T`.
 pub fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, postcard::Error> {
     postcard::from_bytes(bytes)
 }
 
-/// Default daemon socket: a short /tmp path (sun_path is 104 bytes on
+/// Default daemon socket: a short /tmp path (`sun_path` is 104 bytes on
 /// darwin), per-uid so multi-user machines don't collide.
+#[must_use]
 pub fn socket_path(uid: u32) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("/tmp/muxd-{uid}.sock"))
 }
@@ -102,7 +111,10 @@ mod tests {
 
     #[test]
     fn reply_roundtrip() {
-        let ok: OpenReply = Ok(Opened::Attached { name: "p".into(), created: true });
+        let ok: OpenReply = Ok(Opened::Attached {
+            name: "p".into(),
+            created: true,
+        });
         assert_eq!(decode::<OpenReply>(&encode(&ok)).unwrap(), ok);
         let err: OpenReply = Err("nope".into());
         assert_eq!(decode::<OpenReply>(&encode(&err)).unwrap(), err);

@@ -3,7 +3,7 @@
 //! libghostty's only IO backend is `exec`, so Mux.app sets each pane's
 //! command to `mux-attach <target>`. libghostty forks us against a real
 //! PTY; we bridge raw-mode stdio to the lane-framed protocol. That gets
-//! correct key encoding, resize (winsize poll -> ClientControl::Resize),
+//! correct key encoding, resize (winsize poll -> `ClientControl::Resize`),
 //! and rendering for free, with no ghostty fork.
 //!
 //! Usage:
@@ -22,10 +22,10 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use mux_proto::frame::{read_lane_frame, write_lane, FrameLimits};
-use mux_proto::peer::{
-    self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent,
+use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
+use mux_proto::shell::{
+    IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
 };
-use mux_proto::shell::{IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
 
 fn socket_path() -> std::path::PathBuf {
     if let Ok(path) = std::env::var("MUXD_SOCKET") {
@@ -80,12 +80,20 @@ fn connect() -> Result<UnixStream> {
 }
 
 fn winsize() -> (u16, u16) {
-    let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
-    let ok = unsafe { libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) } == 0;
+    let mut ws = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let ok = unsafe { libc::ioctl(0, libc::TIOCGWINSZ, &raw mut ws) } == 0;
     if ok && ws.ws_col > 0 && ws.ws_row > 0 {
         (ws.ws_col, ws.ws_row)
     } else {
-        (mux_proto::shell::DEFAULT_COLS, mux_proto::shell::DEFAULT_ROWS)
+        (
+            mux_proto::shell::DEFAULT_COLS,
+            mux_proto::shell::DEFAULT_ROWS,
+        )
     }
 }
 
@@ -98,13 +106,15 @@ impl RawModeGuard {
     fn enable() -> Self {
         unsafe {
             let mut original: libc::termios = std::mem::zeroed();
-            if libc::tcgetattr(0, &mut original) != 0 {
+            if libc::tcgetattr(0, &raw mut original) != 0 {
                 return Self { original: None };
             }
             let mut raw = original;
-            libc::cfmakeraw(&mut raw);
-            libc::tcsetattr(0, libc::TCSANOW, &raw);
-            Self { original: Some(original) }
+            libc::cfmakeraw(&raw mut raw);
+            libc::tcsetattr(0, libc::TCSANOW, &raw const raw);
+            Self {
+                original: Some(original),
+            }
         }
     }
 }
@@ -112,7 +122,7 @@ impl RawModeGuard {
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
         if let Some(original) = self.original {
-            unsafe { libc::tcsetattr(0, libc::TCSANOW, &original) };
+            unsafe { libc::tcsetattr(0, libc::TCSANOW, &raw const original) };
         }
     }
 }
@@ -171,7 +181,15 @@ fn main() -> Result<()> {
 fn run_control(mode: OpenMode) -> Result<()> {
     let mut stream = connect()?;
     let (cols, rows) = winsize();
-    write_request(&mut stream, &OpenRequest { cols, rows, term: None, mode })?;
+    write_request(
+        &mut stream,
+        &OpenRequest {
+            cols,
+            rows,
+            term: None,
+            mode,
+        },
+    )?;
     let Some(frame) = read_lane_frame(&mut stream, FrameLimits::default())? else {
         bail!("daemon closed without a reply");
     };
@@ -182,7 +200,11 @@ fn run_control(mode: OpenMode) -> Result<()> {
                 println!(
                     "{}\t{}\t{}{}",
                     p.name,
-                    if p.command.is_empty() { "<shell>".to_string() } else { p.command.join(" ") },
+                    if p.command.is_empty() {
+                        "<shell>".to_string()
+                    } else {
+                        p.command.join(" ")
+                    },
                     if p.attached { "attached" } else { "detached" },
                     if p.exited { " exited" } else { "" },
                 );
@@ -206,12 +228,15 @@ fn run_attach(name: String, cwd: Option<String>, command: Vec<String>) -> Result
 
     let (cols, rows) = winsize();
     let mut handshake_writer = writer.try_clone()?;
-    write_request(&mut handshake_writer, &OpenRequest {
-        cols,
-        rows,
-        term: std::env::var("TERM").ok(),
-        mode: OpenMode::Open { name, cwd, command },
-    })?;
+    write_request(
+        &mut handshake_writer,
+        &OpenRequest {
+            cols,
+            rows,
+            term: std::env::var("TERM").ok(),
+            mode: OpenMode::Open { name, cwd, command },
+        },
+    )?;
 
     // Reply first; errors print like a normal command, no raw mode yet.
     let Some(frame) = read_lane_frame(&mut reader, FrameLimits::default())? else {
@@ -259,7 +284,10 @@ fn run_attach(name: String, cwd: Option<String>, command: Vec<String>) -> Result
             let now = winsize();
             if now != last {
                 last = now;
-                let control = ClientControl::Resize { cols: now.0, rows: now.1 };
+                let control = ClientControl::Resize {
+                    cols: now.0,
+                    rows: now.1,
+                };
                 if write_lane(&mut writer, IN_LANE_CONTROL, &peer::encode(&control)).is_err() {
                     break;
                 }
@@ -292,7 +320,8 @@ fn run_attach(name: String, cwd: Option<String>, command: Vec<String>) -> Result
 
 fn write_request(stream: &mut UnixStream, request: &OpenRequest) -> Result<()> {
     let bytes = peer::encode(request);
-    stream.write_all(&(bytes.len() as u32).to_le_bytes())?;
+    let len = u32::try_from(bytes.len()).context("request too large")?;
+    stream.write_all(&len.to_le_bytes())?;
     stream.write_all(&bytes)?;
     stream.flush()?;
     Ok(())

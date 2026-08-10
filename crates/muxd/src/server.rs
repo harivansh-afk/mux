@@ -6,10 +6,10 @@
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use mux_proto::peer::{
-    self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent,
+use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
+use mux_proto::shell::{
+    IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
 };
-use mux_proto::shell::{IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -24,12 +24,9 @@ pub async fn serve(manager: Manager, socket: &std::path::Path) -> Result<()> {
         bail!("muxd already running on {}", socket.display());
     }
     let _ = std::fs::remove_file(socket);
-    let listener = UnixListener::bind(socket)
-        .with_context(|| format!("bind {}", socket.display()))?;
-    std::fs::set_permissions(
-        socket,
-        std::os::unix::fs::PermissionsExt::from_mode(0o600),
-    )?;
+    let listener =
+        UnixListener::bind(socket).with_context(|| format!("bind {}", socket.display()))?;
+    std::fs::set_permissions(socket, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     tracing::info!(socket = %socket.display(), "muxd listening");
 
     loop {
@@ -47,16 +44,15 @@ async fn handle_connection(manager: Manager, stream: UnixStream) -> Result<()> {
     let (mut reader, writer) = stream.into_split();
     let mut writer = BufWriter::new(writer);
 
-    let request: OpenRequest = tokio::time::timeout(
-        HANDSHAKE_TIMEOUT,
-        read_request(&mut reader),
-    )
-    .await
-    .context("handshake timeout")??;
+    let request: OpenRequest = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_request(&mut reader))
+        .await
+        .context("handshake timeout")??;
 
     match request.mode {
         OpenMode::List => {
-            let reply: OpenReply = Ok(Opened::Listed { ptys: manager.list() });
+            let reply: OpenReply = Ok(Opened::Listed {
+                ptys: manager.list(),
+            });
             write_frame(&mut writer, OUT_LANE_OPENED, &peer::encode(&reply)).await?;
             writer.flush().await?;
             Ok(())
@@ -91,7 +87,10 @@ async fn handle_connection(manager: Manager, stream: UnixStream) -> Result<()> {
 
             let attachment = manager::attach(&session, request.cols, request.rows);
 
-            let reply: OpenReply = Ok(Opened::Attached { name: name.clone(), created });
+            let reply: OpenReply = Ok(Opened::Attached {
+                name: name.clone(),
+                created,
+            });
             write_frame(&mut writer, OUT_LANE_OPENED, &peer::encode(&reply)).await?;
             write_frame(&mut writer, OUT_LANE_OUTPUT, &attachment.dump).await?;
             writer.flush().await?;
@@ -107,7 +106,8 @@ async fn handle_connection(manager: Manager, stream: UnixStream) -> Result<()> {
                         }
                         ClientMsg::Exit(code) => {
                             let event = ServerEvent::Exit { code };
-                            write_frame(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event)).await?;
+                            write_frame(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event))
+                                .await?;
                         }
                     }
                     writer.flush().await?;
@@ -126,15 +126,13 @@ async fn handle_connection(manager: Manager, stream: UnixStream) -> Result<()> {
                         IN_LANE_INPUT => {
                             pty::write_all(&session_in.master, &frame.1).await?;
                         }
-                        IN_LANE_CONTROL => {
-                            match peer::decode::<ClientControl>(&frame.1) {
-                                Ok(ClientControl::Resize { cols, rows }) => {
-                                    session_in.terminal.lock().resize(rows, cols);
-                                    let _ = pty::resize(&session_in.master, cols, rows);
-                                }
-                                Err(e) => tracing::warn!(error = %e, "bad control frame"),
+                        IN_LANE_CONTROL => match peer::decode::<ClientControl>(&frame.1) {
+                            Ok(ClientControl::Resize { cols, rows }) => {
+                                session_in.terminal.lock().resize(rows, cols);
+                                let _ = pty::resize(&session_in.master, cols, rows);
                             }
-                        }
+                            Err(e) => tracing::warn!(error = %e, "bad control frame"),
+                        },
                         other => tracing::warn!(lane = other, "unknown ingress lane"),
                     }
                 }
@@ -181,17 +179,14 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<(u8, 
     Ok(Some((lane, payload)))
 }
 
-async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, lane: u8, payload: &[u8]) -> Result<()> {
-    let len = 1u32 + payload.len() as u32;
+async fn write_frame<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    lane: u8,
+    payload: &[u8],
+) -> Result<()> {
+    let len = 1u32 + u32::try_from(payload.len()).context("frame too large")?;
     writer.write_u32_le(len).await?;
     writer.write_u8(lane).await?;
     writer.write_all(payload).await?;
-    Ok(())
-}
-
-pub async fn write_request<W: AsyncWrite + Unpin>(writer: &mut W, request: &OpenRequest) -> Result<()> {
-    let bytes = peer::encode(request);
-    writer.write_u32_le(bytes.len() as u32).await?;
-    writer.write_all(&bytes).await?;
     Ok(())
 }

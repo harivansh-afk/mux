@@ -86,13 +86,11 @@ fn main() {
 
     // On macOS, Zig's LLVM backend needs the SDK sysroot to find libSystem
     // and other system libraries. Set SDKROOT so Zig can locate them.
-    if cfg!(target_os = "macos") {
-        if std::env::var_os("SDKROOT").is_none() {
-            if let Ok(output) = Command::new("xcrun").arg("--show-sdk-path").output() {
-                if output.status.success() {
-                    let sdk = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                    cmd.env("SDKROOT", &sdk);
-                }
+    if cfg!(target_os = "macos") && std::env::var_os("SDKROOT").is_none() {
+        if let Ok(output) = Command::new("xcrun").arg("--show-sdk-path").output() {
+            if output.status.success() {
+                let sdk = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                cmd.env("SDKROOT", &sdk);
             }
         }
     }
