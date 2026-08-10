@@ -1,0 +1,8 @@
+id: no-anon-tuple
+valid:
+  - "fn pair() -> (u32, u32) { (0, 0) }"
+  - "fn expr() { let x = (1, 2, 3); }"
+  - "fn pat((a, b, c): (u8, u8)) {}"
+invalid:
+  - "fn triple() -> (u32, u32, u32) { (0, 0, 0) }"
+  - "struct S { field: (String, u8, bool) }"

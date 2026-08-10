@@ -1,0 +1,22 @@
+id: no-anon-tuple
+snapshots:
+  fn triple() -> (u32, u32, u32) { (0, 0, 0) }:
+    labels:
+    - source: (u32, u32, u32)
+      style: primary
+      start: 15
+      end: 30
+    - source: u32
+      style: secondary
+      start: 26
+      end: 29
+  'struct S { field: (String, u8, bool) }':
+    labels:
+    - source: (String, u8, bool)
+      style: primary
+      start: 18
+      end: 36
+    - source: bool
+      style: secondary
+      start: 31
+      end: 35

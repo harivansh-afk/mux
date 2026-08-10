@@ -1,0 +1,14 @@
+# An anonymous tuple *type* with 3+ fields carries several distinct domain
+# values positionally, so every call site re-derives what .0/.1/.2 mean and a
+# reorder is a silent bug. Promote it to a named struct. Two-field pairs
+# (key/value, a parse split) stay idiomatic and are allowed. Targets tuple
+# types only: tuple expressions `(1, 2, 3)` and patterns `let (a, b, c)` are
+# other node kinds and never match.
+id: no-anon-tuple
+language: rust
+severity: error
+message: anonymous tuple with 3+ fields; promote it to a named struct so each field has a name (2-field pairs are fine)
+rule:
+  kind: tuple_type
+  has:
+    nthChild: 3
