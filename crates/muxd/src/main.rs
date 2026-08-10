@@ -1,41 +1,63 @@
-//! muxd: the session daemon. Fork of ix-console (see docs/architecture.html
-//! for the fork map). Keeps per-pty: PTY master (`AsyncFd`), child process,
-//! and a headless ghostty-vt Terminal fed from the PTY. Ptys survive client
-//! disconnect; reattach replays `render_screen_bytes()` (scrollback with
-//! per-cell SGR, DEC modes, tabstops, pending-wrap; never the palette).
+//! muxd's entry point: parse the listener flags, then run them. The
+//! daemon itself lives in the library next door (lib.rs).
 //!
-//! Upstream bugs fixed in this fork (see manager.rs):
-//! - the attach race (channel installed + dump rendered under one lock)
-//! - slow clients are detached, never silently skipped
+//! Usage:
+//!   muxd [--socket PATH] [--listen-quic ADDR] [--upgrade]
 //!
-//! Listener: per-uid 0600 unix socket at `/tmp/muxd-<uid>.sock` (short path:
-//! `sun_path` is 104 bytes on darwin). Token auth returns with TCP in M3.
+//! The unix socket is always on; `--listen-quic` additionally exposes
+//! the same protocol to the network (`ADDR` is `<ip>:<port>` or a bare
+//! `<ip>`, which takes the default QUIC port).
 //!
-//! `--upgrade` replaces a running daemon without killing a shell: the new
-//! process inherits the live PTY fds plus a screen snapshot per pty over
-//! `SCM_RIGHTS` (migrate.rs), then takes the socket.
+//! `--upgrade` replaces a running daemon without killing a shell: the
+//! new process inherits the live PTY fds plus a screen snapshot per pty
+//! over `SCM_RIGHTS` (migrate.rs), then takes the socket.
 
-mod manager;
-mod migrate;
-mod pty;
-mod server;
+use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
+use muxd::{manager, migrate, quic, server};
 
-fn socket_path_from_args() -> std::path::PathBuf {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        if arg == "--socket" {
-            if let Some(path) = args.next() {
-                return path.into();
-            }
-        }
-    }
-    mux_proto::peer::socket_path(nix::unistd::getuid().as_raw())
+struct Args {
+    socket: PathBuf,
+    listen_quic: Option<SocketAddr>,
+    upgrade: bool,
 }
 
-fn has_flag(flag: &str) -> bool {
-    std::env::args().skip(1).any(|arg| arg == flag)
+fn parse_args() -> Result<Args> {
+    let mut socket = None;
+    let mut listen_quic = None;
+    let mut upgrade = false;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--socket" => {
+                socket = Some(PathBuf::from(args.next().context("--socket needs a path")?));
+            }
+            "--listen-quic" => {
+                let value = args.next().context("--listen-quic needs an address")?;
+                listen_quic = Some(parse_listen(&value)?);
+            }
+            "--upgrade" => upgrade = true,
+            other => bail!("unknown argument {other:?}"),
+        }
+    }
+    Ok(Args {
+        socket: socket
+            .unwrap_or_else(|| mux_proto::peer::socket_path(nix::unistd::getuid().as_raw())),
+        listen_quic,
+        upgrade,
+    })
+}
+
+fn parse_listen(value: &str) -> Result<SocketAddr> {
+    if let Ok(addr) = value.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    let ip: IpAddr = value
+        .parse()
+        .with_context(|| format!("bad --listen-quic address {value:?}"))?;
+    Ok(SocketAddr::new(ip, mux_proto::peer::DEFAULT_QUIC_PORT))
 }
 
 #[tokio::main]
@@ -54,14 +76,29 @@ async fn main() -> Result<()> {
         libc::signal(libc::SIGHUP, libc::SIG_IGN);
     }
 
-    let socket = socket_path_from_args();
+    let args = parse_args()?;
     let manager = manager::Manager::default();
+
     // Adopt first: the predecessor owns the socket until it hands over.
-    if has_flag("--upgrade") {
+    if args.upgrade {
         migrate::adopt_from_predecessor(&manager).await;
     }
-    let listener = server::bind(&socket).await?;
+    let listener = server::bind(&args.socket).await?;
+    // Only the daemon that owns the socket publishes itself as the one a
+    // successor should ask for a handoff.
     migrate::write_pidfile()?;
     migrate::spawn_handoff_task(manager.clone());
+
+    // The QUIC listener is a second door onto the same ptys: it shares
+    // the manager and runs beside the socket, never instead of it.
+    if let Some(addr) = args.listen_quic {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            if let Err(e) = quic::serve(manager, addr).await {
+                tracing::error!(error = %format!("{e:#}"), "quic listener stopped");
+            }
+        });
+    }
+
     server::serve(manager, listener).await
 }

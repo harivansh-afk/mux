@@ -1,4 +1,5 @@
 /target
+app/GhosttyKit
 app/GhosttyKit/GhosttyKit.xcframework/
 app/GhosttyKit/*.zip
 app/GhosttyKit/*.tar.gz

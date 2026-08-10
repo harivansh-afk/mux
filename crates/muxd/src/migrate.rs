@@ -56,6 +56,7 @@ const MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 /// Migration rendezvous socket. `MUXD_MIGRATE_SOCKET` overrides the
 /// per-uid default so tests never touch the user's.
+#[must_use]
 pub fn socket_path() -> PathBuf {
     if let Some(path) = std::env::var_os("MUXD_MIGRATE_SOCKET") {
         return PathBuf::from(path);
@@ -64,6 +65,10 @@ pub fn socket_path() -> PathBuf {
 }
 
 /// Publish our pid so a successor knows who to ask for a handoff.
+///
+/// # Errors
+///
+/// The state directory or the pidfile itself cannot be written.
 pub fn write_pidfile() -> Result<()> {
     let path = mux_proto::paths::daemon_pid();
     if let Some(dir) = path.parent() {
@@ -82,6 +87,7 @@ fn read_pidfile() -> Option<Pid> {
 
 /// `kill(pid, 0)`: EPERM still means alive, ESRCH means gone. darwin has
 /// no pidfd, so liveness is polled rather than watched.
+#[must_use]
 pub fn alive(pid: Pid) -> bool {
     !matches!(
         nix::sys::signal::kill(pid, None),

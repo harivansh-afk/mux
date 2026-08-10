@@ -1,7 +1,10 @@
-//! Unix-socket listener and per-connection protocol handling. Fork of
-//! ix-console's server.rs/session.rs dispatch skeleton: [u32 len][request]
-//! handshake, then lane frames. Local-only M2: a 0600 unix socket is the
-//! auth boundary (no token; ix's token flow returns with TCP in M3).
+//! Per-connection protocol handling and the unix-socket listener. Fork
+//! of ix-console's server.rs/session.rs dispatch skeleton: [u32 len]
+//! [request] handshake, then lane frames.
+//!
+//! The handler is transport-generic: a unix stream and one QUIC
+//! bidirectional stream run the identical protocol, and differ only in
+//! the [`Policy`] that decides who is let in.
 
 use std::time::Duration;
 
@@ -14,13 +17,54 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::manager::{self, ClientMsg, Manager};
-use crate::pty;
+use crate::{broker, pty, tls};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Admission rules, one per transport.
+pub enum Policy {
+    /// Unix socket: the 0600 socket file is the auth boundary, so no
+    /// token. Requests may name a remote `target` for the broker to
+    /// relay (M3).
+    Local,
+    /// QUIC: every request carries the daemon's bearer token, and none
+    /// relays onward - dialing peers is the *local* daemon's job, so
+    /// panes never touch the network themselves.
+    Remote { token_digest: [u8; 32] },
+}
+
+impl Policy {
+    /// `Err(message)` goes back to the client verbatim as the failed
+    /// `OpenReply`.
+    fn admit(&self, request: &OpenRequest) -> Result<(), String> {
+        match self {
+            // The 0600 socket is the auth boundary, and requests naming a
+            // remote target were handed to the broker before admission.
+            Self::Local => Ok(()),
+            Self::Remote { token_digest } => {
+                // Digests, not the secrets: fixed-size and preimage
+                // resistant, so a short circuit leaks nothing useful.
+                if request.token.as_deref().map(tls::digest).as_ref() != Some(token_digest) {
+                    return Err("authentication failed".into());
+                }
+                if let Some(host) = &request.target {
+                    return Err(format!(
+                        "target {host:?} rejected: a remote daemon does not relay"
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Take the control socket. Separate from [`serve`] so a daemon only
-/// publishes itself (the pidfile a successor signals) once it actually
-/// owns the socket.
+/// publishes itself (the pidfile a successor signals, see `migrate.rs`)
+/// once it actually owns the socket.
+///
+/// # Errors
+///
+/// Another daemon already owns the socket, or the bind fails.
 pub async fn bind(socket: &std::path::Path) -> Result<UnixListener> {
     // A live daemon on the socket wins; a stale file is replaced.
     if UnixStream::connect(socket).await.is_ok() {
@@ -34,35 +78,57 @@ pub async fn bind(socket: &std::path::Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
+/// # Errors
+///
+/// Accepting a connection fails.
 pub async fn serve(manager: Manager, listener: UnixListener) -> Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let manager = manager.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(manager, stream).await {
+            if let Err(e) = handle_unix(manager, stream).await {
                 tracing::debug!(error = %e, "connection ended with error");
             }
         });
     }
 }
 
-async fn handle_connection(manager: Manager, stream: UnixStream) -> Result<()> {
-    let (mut reader, writer) = stream.into_split();
-    let mut writer = BufWriter::new(writer);
+async fn handle_unix(manager: Manager, stream: UnixStream) -> Result<()> {
+    let (reader, writer) = stream.into_split();
+    handle_connection(manager, reader, writer, &Policy::Local).await
+}
 
+/// One run of the protocol over any byte stream: handshake, then either
+/// a one-shot reply (list, kill, rejection) or an attached session.
+///
+/// # Errors
+///
+/// A malformed or slow handshake, or an IO failure on the stream.
+pub async fn handle_connection<R, W>(
+    manager: Manager,
+    mut reader: R,
+    writer: W,
+    policy: &Policy,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    let mut writer = BufWriter::new(writer);
     let request: OpenRequest = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_request(&mut reader))
         .await
         .context("handshake timeout")??;
 
-    // Broker relay (target = Some(host)) lands in M3; until then be
-    // explicit rather than silently serving the wrong machine.
-    if let Some(host) = &request.target {
-        let reply: OpenReply = Err(format!(
-            "remote target {host:?} not supported yet (M3 broker)"
-        ));
-        write_frame(&mut writer, OUT_LANE_OPENED, &peer::encode(&reply)).await?;
-        writer.flush().await?;
-        return Ok(());
+    // target = Some(host) on the unix socket: this daemon is the broker,
+    // not the server - the whole connection goes out over the per-host
+    // QUIC link. Remote policy refuses targets in admit (a remote daemon
+    // never relays onward).
+    if request.target.is_some() && matches!(policy, Policy::Local) {
+        return broker::relay(request, reader, writer).await;
+    }
+    if let Err(message) = policy.admit(&request) {
+        tracing::debug!(message, "request rejected");
+        return reply(&mut writer, &Err(message)).await;
     }
 
     let OpenRequest {
@@ -75,123 +141,140 @@ async fn handle_connection(manager: Manager, stream: UnixStream) -> Result<()> {
 
     match mode {
         OpenMode::List => {
-            let reply: OpenReply = Ok(Opened::Listed {
-                ptys: manager.list(),
-            });
-            write_frame(&mut writer, OUT_LANE_OPENED, &peer::encode(&reply)).await?;
-            writer.flush().await?;
-            Ok(())
+            reply(
+                &mut writer,
+                &Ok(Opened::Listed {
+                    ptys: manager.list(),
+                }),
+            )
+            .await
         }
 
         OpenMode::Kill { name } => {
             let existed = manager.kill(&name);
-            let reply: OpenReply = Ok(Opened::Killed { existed });
-            write_frame(&mut writer, OUT_LANE_OPENED, &peer::encode(&reply)).await?;
-            writer.flush().await?;
-            Ok(())
+            reply(&mut writer, &Ok(Opened::Killed { existed })).await
         }
 
         OpenMode::Open { name, cwd, command } => {
-            handle_open(
-                manager, cols, rows, term, name, cwd, command, reader, writer,
-            )
-            .await
+            let open = Open {
+                cols,
+                rows,
+                term,
+                name,
+                cwd,
+                command,
+            };
+            handle_open(manager, open, reader, writer).await
         }
     }
 }
 
-/// The attach-or-create arm: reply + replay, then pump both directions.
-#[allow(clippy::too_many_arguments)]
-async fn handle_open(
-    manager: Manager,
+/// The handshake's attach-or-create parameters.
+struct Open {
     cols: u16,
     rows: u16,
     term: Option<String>,
     name: String,
     cwd: Option<String>,
     command: Vec<String>,
-    mut reader: tokio::net::unix::OwnedReadHalf,
-    mut writer: BufWriter<tokio::net::unix::OwnedWriteHalf>,
-) -> Result<()> {
-    {
-        {
-            let opened = manager.open(&name, &command, cwd.as_deref(), term.as_deref(), cols, rows);
-            let (session, created) = match opened {
-                Ok(v) => v,
-                Err(e) => {
-                    let reply: OpenReply = Err(format!("{e:#}"));
-                    write_frame(&mut writer, OUT_LANE_OPENED, &peer::encode(&reply)).await?;
-                    writer.flush().await?;
-                    return Ok(());
+}
+
+/// The attach-or-create arm: reply + replay, then pump both directions.
+async fn handle_open<R, W>(
+    manager: Manager,
+    open: Open,
+    mut reader: R,
+    mut writer: BufWriter<W>,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    let Open {
+        cols,
+        rows,
+        term,
+        name,
+        cwd,
+        command,
+    } = open;
+
+    let opened = manager.open(&name, &command, cwd.as_deref(), term.as_deref(), cols, rows);
+    let (session, created) = match opened {
+        Ok(v) => v,
+        Err(e) => return reply(&mut writer, &Err(format!("{e:#}"))).await,
+    };
+
+    let attachment = manager::attach(&session, cols, rows);
+
+    let attached: OpenReply = Ok(Opened::Attached {
+        name: name.clone(),
+        created,
+    });
+    write_frame(&mut writer, OUT_LANE_OPENED, &peer::encode(&attached)).await?;
+    write_frame(&mut writer, OUT_LANE_OUTPUT, &attachment.dump).await?;
+    writer.flush().await?;
+
+    // Forward daemon -> client; ends when the channel closes (exit or
+    // eviction).
+    let forward = async {
+        let mut rx = attachment.rx;
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                ClientMsg::Output(bytes) => {
+                    write_frame(&mut writer, OUT_LANE_OUTPUT, &bytes).await?;
                 }
-            };
-
-            let attachment = manager::attach(&session, cols, rows);
-
-            let reply: OpenReply = Ok(Opened::Attached {
-                name: name.clone(),
-                created,
-            });
-            write_frame(&mut writer, OUT_LANE_OPENED, &peer::encode(&reply)).await?;
-            write_frame(&mut writer, OUT_LANE_OUTPUT, &attachment.dump).await?;
+                ClientMsg::Exit(code) => {
+                    let event = ServerEvent::Exit { code };
+                    write_frame(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event)).await?;
+                }
+            }
             writer.flush().await?;
-
-            // Forward daemon -> client; ends when the channel closes
-            // (exit or eviction).
-            let forward = async {
-                let mut rx = attachment.rx;
-                while let Some(msg) = rx.recv().await {
-                    match msg {
-                        ClientMsg::Output(bytes) => {
-                            write_frame(&mut writer, OUT_LANE_OUTPUT, &bytes).await?;
-                        }
-                        ClientMsg::Exit(code) => {
-                            let event = ServerEvent::Exit { code };
-                            write_frame(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event))
-                                .await?;
-                        }
-                    }
-                    writer.flush().await?;
-                }
-                Ok::<_, anyhow::Error>(())
-            };
-
-            // Client -> pty; ends on socket EOF (detach).
-            let session_in = session.clone();
-            let receive = async move {
-                loop {
-                    let Some(frame) = read_frame(&mut reader).await? else {
-                        return Ok::<_, anyhow::Error>(()); // clean detach
-                    };
-                    match frame.0 {
-                        IN_LANE_INPUT => {
-                            pty::write_all(&session_in.master, &frame.1).await?;
-                        }
-                        IN_LANE_CONTROL => match peer::decode::<ClientControl>(&frame.1) {
-                            Ok(ClientControl::Resize { cols, rows }) => {
-                                session_in.terminal.lock().resize(rows, cols);
-                                let _ = pty::resize(&session_in.master, cols, rows);
-                            }
-                            Err(e) => tracing::warn!(error = %e, "bad control frame"),
-                        },
-                        other => tracing::warn!(lane = other, "unknown ingress lane"),
-                    }
-                }
-            };
-
-            tokio::select! {
-                r = forward => r?,
-                r = receive => r?,
-            }
-
-            // Detach: clear the client slot if it is still ours.
-            let mut client = session.client.lock();
-            if client.is_some() {
-                *client = None;
-            }
-            Ok(())
         }
+        Ok::<_, anyhow::Error>(())
+    };
+
+    // Client -> pty; ends on stream EOF (detach).
+    let session_in = session.clone();
+    let receive = async move {
+        loop {
+            let Some(frame) = read_frame(&mut reader).await? else {
+                return Ok::<_, anyhow::Error>(()); // clean detach
+            };
+            match frame.0 {
+                IN_LANE_INPUT => {
+                    pty::write_all(&session_in.master, &frame.1).await?;
+                }
+                IN_LANE_CONTROL => match peer::decode::<ClientControl>(&frame.1) {
+                    Ok(ClientControl::Resize { cols, rows }) => {
+                        session_in.terminal.lock().resize(rows, cols);
+                        let _ = pty::resize(&session_in.master, cols, rows);
+                    }
+                    Err(e) => tracing::warn!(error = %e, "bad control frame"),
+                },
+                other => tracing::warn!(lane = other, "unknown ingress lane"),
+            }
+        }
+    };
+
+    tokio::select! {
+        r = forward => r?,
+        r = receive => r?,
     }
+
+    // Detach: clear the client slot if it is still ours.
+    let mut client = session.client.lock();
+    if client.is_some() {
+        *client = None;
+    }
+    Ok(())
+}
+
+/// The one-shot handshake answer on the opened lane.
+async fn reply<W: AsyncWrite + Unpin>(writer: &mut W, reply: &OpenReply) -> Result<()> {
+    write_frame(writer, OUT_LANE_OPENED, &peer::encode(reply)).await?;
+    writer.flush().await?;
+    Ok(())
 }
 
 async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<OpenRequest> {

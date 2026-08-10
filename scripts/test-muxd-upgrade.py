@@ -21,12 +21,12 @@ $HOME/.local/state/muxd/muxd.pid), MUXD_SOCKET and --socket point at the
 tempdir, and MUXD_MIGRATE_SOCKET overrides the per-uid /tmp migration
 socket. Nothing here writes a path the user's daemon uses.
 
-Usage: python3 scripts/test-muxd-upgrade.py [--bin-dir target/debug]
+Builds nothing. Point it at binaries with MUXD_BIN / MUX_ATTACH_BIN, or
+let it default to target/debug/{muxd,mux-attach} beside this checkout.
 """
 
 from __future__ import annotations
 
-import argparse
 import fcntl
 import os
 import pty
@@ -42,11 +42,15 @@ import threading
 import time
 
 TIMEOUT = 20.0
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MUXD_BIN = os.environ.get("MUXD_BIN") or os.path.join(REPO_ROOT, "target/debug/muxd")
+MUX_ATTACH_BIN = os.environ.get("MUX_ATTACH_BIN") or os.path.join(
+    REPO_ROOT, "target/debug/mux-attach"
+)
 
 
 def log(message: str) -> None:
-    print(f"  {message}", flush=True)
+    print(f"[upgrade] {message}", flush=True)
 
 
 class Failure(Exception):
@@ -165,15 +169,14 @@ def set_winsize(fd: int, rows: int, cols: int) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--bin-dir", default=os.path.join(REPO, "target", "debug"))
-    args = parser.parse_args()
-
-    muxd = os.path.join(args.bin_dir, "muxd")
-    mux_attach = os.path.join(args.bin_dir, "mux-attach")
+    muxd = MUXD_BIN
+    mux_attach = MUX_ATTACH_BIN
     for binary in (muxd, mux_attach):
         if not os.path.exists(binary):
-            print(f"missing {binary}; run `cargo build --workspace` first", file=sys.stderr)
+            print(
+                f"missing {binary}; run `cargo build -p muxd -p mux-attach` first",
+                file=sys.stderr,
+            )
             return 2
 
     # Short /tmp path: sun_path is 104 bytes on darwin.

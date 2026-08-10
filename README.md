@@ -20,6 +20,23 @@ prefix-key interaction model).
 - `crates/ghostty-vt` - headless VT wrapper + `render_reattach` (zig shim, from ix).
 - `scripts/fetch-ghosttykit.sh` - prebuilt GhosttyKit.xcframework + resources.
 
+## Building the crates
+
+`crates/ghostty-vt` compiles ghostty's terminal package from source, so the Rust
+workspace needs Zig 0.16.0 on `PATH` (or at `$HOME/tools/zig-0.16.0/`) and a
+ghostty checkout:
+
+    export GHOSTTY_SOURCE_DIR="$HOME/src/ghostty/src"
+    cargo test --workspace
+
+The checkout must match the generation of `app/GhosttyKit/GhosttyKit.xcframework`;
+CI pins it as `GHOSTTY_COMMIT` in `.forgejo/workflows/ci.yml`, which is also where
+the Linux build of `muxd` is proven.
+
+`just e2e` runs `scripts/test-muxd-e2e.py`: it drives `mux-attach` under a real
+pty, SIGKILLs the client, reattaches and checks the replay. It uses a throwaway
+`HOME` and a private socket, so it never touches a daemon you are living in.
+
 ## State model
 
 Layout and identity are client-owned (versioned JSON snapshots). 

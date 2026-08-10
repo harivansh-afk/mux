@@ -39,6 +39,10 @@ fn user_shell() -> String {
 
 /// The tokio reactor requires it, and an inherited fd (migrate.rs) may
 /// arrive without it.
+///
+/// # Errors
+///
+/// The `fcntl` get/set of the descriptor's flags fails.
 pub fn set_nonblocking(fd: &OwnedFd) -> Result<()> {
     let flags = nix::fcntl::fcntl(fd.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)?;
     let mut oflags = nix::fcntl::OFlag::from_bits_truncate(flags);
@@ -55,6 +59,7 @@ pub struct WindowSize {
 
 /// Current size of the pty, falling back to the protocol default when the
 /// ioctl fails or reports an unset size.
+#[must_use]
 pub fn window_size(master: &AsyncFd<OwnedFd>) -> WindowSize {
     let mut ws = winsize(0, 0);
     let ok =
@@ -72,6 +77,9 @@ pub fn window_size(master: &AsyncFd<OwnedFd>) -> WindowSize {
     }
 }
 
+/// # Errors
+///
+/// The pty could not be allocated or the child could not be forked.
 pub fn spawn(params: &Spawn) -> Result<Pty> {
     let pty =
         nix::pty::openpty(Some(&winsize(params.cols, params.rows)), None).context("openpty")?;
@@ -142,6 +150,10 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
 }
 
 /// Write all of `data` to the PTY, waiting for writability.
+///
+/// # Errors
+///
+/// The write failed for any reason other than "would block".
 pub async fn write_all(master: &AsyncFd<OwnedFd>, data: &[u8]) -> Result<()> {
     let mut written = 0;
     while written < data.len() {
@@ -159,6 +171,9 @@ pub async fn write_all(master: &AsyncFd<OwnedFd>, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// # Errors
+///
+/// The `TIOCSWINSZ` ioctl failed.
 pub fn resize(master: &AsyncFd<OwnedFd>, cols: u16, rows: u16) -> Result<()> {
     let ws = winsize(cols, rows);
     let res = unsafe { libc::ioctl(master.get_ref().as_raw_fd(), libc::TIOCSWINSZ, &ws) };
