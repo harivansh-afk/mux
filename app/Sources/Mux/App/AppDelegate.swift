@@ -43,7 +43,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runtime?.setFocus(false)
     }
 
+    /// True once quit begins: window teardown during termination is a
+    /// detach (ptys survive for restore), never a kill.
+    private(set) var isTerminating = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        isTerminating = true
+        saveSnapshot()
+        return .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        isTerminating = true
         saveSnapshot()
     }
 

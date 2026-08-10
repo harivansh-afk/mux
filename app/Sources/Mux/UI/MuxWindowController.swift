@@ -370,7 +370,16 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        for session in sessions { session.destroyAllSurfaces() }
+        // A deliberate window close kills its daemon ptys. During app
+        // termination this is a detach instead: survival across quit and
+        // crash is the point of M2.
+        let terminating = (NSApp.delegate as? AppDelegate)?.isTerminating ?? false
+        for session in sessions {
+            if !terminating {
+                for (_, pane) in session.panes { pane.killRemote() }
+            }
+            session.destroyAllSurfaces()
+        }
         sessions.removeAll()
         (NSApp.delegate as? AppDelegate)?.windowControllerDidClose(self)
     }

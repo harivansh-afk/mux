@@ -84,6 +84,7 @@ final class Session {
 
     func closeFocusedPane() {
         guard let pane = focusedPane else { return }
+        pane.killRemote()
         pane.destroySurface()
         removePane(pane)
     }

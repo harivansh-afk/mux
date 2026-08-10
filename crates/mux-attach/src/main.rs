@@ -48,14 +48,24 @@ fn connect() -> Result<UnixStream> {
         .and_then(|p| p.parent().map(|d| d.join("muxd")))
         .filter(|p| p.exists())
         .unwrap_or_else(|| "muxd".into());
-    std::process::Command::new(muxd)
-        .arg("--socket")
+    let mut cmd = std::process::Command::new(muxd);
+    cmd.arg("--socket")
         .arg(&path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .context("spawn muxd")?;
+        .stderr(std::process::Stdio::null());
+    // The daemon must outlive the pane that births it: detach it from our
+    // session and controlling TTY, or the pty teardown SIGHUPs it away.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn().context("spawn muxd")?;
 
     // The daemon binds quickly; a double-spawn race resolves because the
     // loser exits on "already running" and we only need the socket to

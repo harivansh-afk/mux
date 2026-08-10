@@ -16,6 +16,15 @@ final class PaneView: NSView {
     private var trackingArea: NSTrackingArea?
     private var focused: Bool = false
 
+    /// The bundled stdio relay. nil (dev builds without the bundle step)
+    /// falls back to a plain local shell - panes then don't survive the
+    /// app, but everything else works.
+    static let attachBinary: String? = {
+        guard let dir = Bundle.main.executableURL?.deletingLastPathComponent() else { return nil }
+        let path = dir.appendingPathComponent("mux-attach").path
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }()
+
     init(
         id: UUID = UUID(),
         runtime: GhosttyRuntime,
@@ -28,6 +37,18 @@ final class PaneView: NSView {
         wantsLayer = true
 
         guard let app = runtime.app else { return }
+
+        // M2: every pane is a daemon pty named by the pane id. Attach
+        // reconnects and replays; a missing pty is created at the saved
+        // cwd. Terminal content survives the app by construction.
+        var command = command
+        if command == nil, let attach = Self.attachBinary {
+            var parts = ["\"\(attach)\"", "local:\(id.uuidString)"]
+            if let workingDirectory {
+                parts += ["--cwd", "\"\(workingDirectory)\""]
+            }
+            command = parts.joined(separator: " ")
+        }
 
         var cfg = ghostty_surface_config_new()
         cfg.platform_tag = GHOSTTY_PLATFORM_MACOS
@@ -57,12 +78,23 @@ final class PaneView: NSView {
         if let surface { ghostty_surface_free(surface) }
     }
 
-    /// Free the surface explicitly (kills the child process).
+    /// Free the surface explicitly (kills the local child - the relay).
+    /// The daemon pty behind it survives; call killRemote() too when the
+    /// user actually closes the pane.
     func destroySurface() {
         if let surface {
             ghostty_surface_free(surface)
             self.surface = nil
         }
+    }
+
+    /// Kill the pane's daemon pty (deliberate close, not detach).
+    func killRemote() {
+        guard let attach = Self.attachBinary else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: attach)
+        process.arguments = ["--kill", "local:\(id.uuidString)"]
+        try? process.run()
     }
 
     var processExited: Bool {

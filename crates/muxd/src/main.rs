@@ -40,9 +40,11 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    // The daemon must not die with a client mid-write.
+    // The daemon must not die with a client mid-write, nor with the
+    // terminal that happened to birth it.
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
     }
 
     let socket = socket_path_from_args();
