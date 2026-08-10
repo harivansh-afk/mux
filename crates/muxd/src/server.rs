@@ -109,16 +109,18 @@ where
         .await
         .context("handshake timeout")??;
 
-    // target = Some(host) on the unix socket: this daemon is the broker,
-    // not the server - the whole connection goes out over the per-host
-    // QUIC link. Remote policy refuses targets in admit (a remote daemon
-    // never relays onward).
-    if request.target.is_some() && matches!(policy, Policy::Local) {
-        return broker::relay(request, reader, writer).await;
-    }
+    // Admission first, unconditionally: relayed requests must never skip
+    // a future Policy::Local check by taking the broker branch early.
     if let Err(message) = policy.admit(&request) {
         tracing::debug!(message, "request rejected");
         return reply(&mut writer, &Err(message)).await;
+    }
+    // target = Some(host) on the unix socket: this daemon is the broker,
+    // not the server - the whole connection goes out over the per-host
+    // QUIC link. (Remote policy already refused targets in admit; the
+    // guard is defense in depth.)
+    if request.target.is_some() && matches!(policy, Policy::Local) {
+        return broker::relay(request, reader, writer).await;
     }
 
     let OpenRequest {
