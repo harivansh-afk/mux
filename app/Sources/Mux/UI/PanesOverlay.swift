@@ -36,7 +36,6 @@ final class PanesOverlayView: NSView {
     private let titleLabel = NSTextField(labelWithString: "panes")
     private let countLabel = NSTextField(labelWithString: "")
     private let cancelBadge = NSTextField(labelWithString: " esc cancel ")
-    private let separator = NSView()
     private let selectionBar = NSView()
     private var mainLabels: [NSTextField] = []
     private var metaLabels: [NSTextField] = []
@@ -54,9 +53,7 @@ final class PanesOverlayView: NSView {
         wantsLayer = true
         layer?.borderWidth = 1
         selectionBar.wantsLayer = true
-        separator.wantsLayer = true
         addSubview(selectionBar)
-        addSubview(separator)
         addSubview(titleLabel)
         addSubview(countLabel)
         addSubview(cancelBadge)
@@ -153,11 +150,7 @@ final class PanesOverlayView: NSView {
             x: cancelBadge.frame.minX - 16 - countLabel.frame.width,
             y: titleMidY - countLabel.frame.height / 2
         )
-        separator.frame = NSRect(
-            x: 1, y: bounds.height - inset - row, width: bounds.width - 2, height: 1
-        )
-
-        let rowsTop = separator.frame.minY - 6
+        let rowsTop = bounds.height - inset - row - 6
         selectionBar.isHidden = true
         for (i, main) in mainLabels.enumerated() {
             let meta = metaLabels[i]
@@ -195,7 +188,6 @@ final class PanesOverlayView: NSView {
         let palette = ThemeManager.shared.palette
         layer?.backgroundColor = palette.panelBg.cgColor
         layer?.borderColor = palette.dim.cgColor
-        separator.layer?.backgroundColor = palette.divider.cgColor
         selectionBar.layer?.backgroundColor = palette.accent.cgColor
 
         titleLabel.attributedStringValue = NSAttributedString(
