@@ -119,6 +119,20 @@ where
         .await
         .context("handshake timeout")??;
 
+    // Version first: a mismatched client gets a readable diagnosis, not
+    // a dropped socket. A pre-v3 request has no version field, so the
+    // first varint decodes as something else entirely - decode failure or
+    // a wrong version both land here or in read_request's error path.
+    if request.version != peer::PROTOCOL_VERSION {
+        let message = format!(
+            "protocol version mismatch: daemon v{}, client v{} - upgrade or restart the daemon (muxd --upgrade)",
+            peer::PROTOCOL_VERSION,
+            request.version,
+        );
+        tracing::warn!(message, "handshake rejected");
+        return reply(&mut writer, &Err(message)).await;
+    }
+
     // Admission first, unconditionally: relayed requests must never skip
     // a future Policy::Local check by taking the broker branch early.
     if let Err(message) = policy.admit(&request) {

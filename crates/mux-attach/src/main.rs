@@ -217,6 +217,7 @@ fn run_control(target: Option<String>, mode: OpenMode) -> Result<()> {
     write_request(
         &mut stream,
         &OpenRequest {
+            version: mux_proto::peer::PROTOCOL_VERSION,
             cols,
             rows,
             term: None,
@@ -341,6 +342,7 @@ fn open_session(attach: &Attach, stream: UnixStream) -> Result<UnixStream> {
     write_request(
         &mut writer,
         &OpenRequest {
+            version: mux_proto::peer::PROTOCOL_VERSION,
             cols,
             rows,
             term: std::env::var("TERM").ok(),

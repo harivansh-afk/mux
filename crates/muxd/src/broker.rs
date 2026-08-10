@@ -121,6 +121,7 @@ impl Broker {
         let connection = self.connection(alias, &addr).await?;
 
         let request = OpenRequest {
+            version: mux_proto::peer::PROTOCOL_VERSION,
             // The remote daemon serves this itself, and it authenticates by
             // token: the pane never holds either.
             target: None,
@@ -611,6 +612,7 @@ mod tests {
 
     fn request(alias: &str) -> OpenRequest {
         OpenRequest {
+            version: mux_proto::peer::PROTOCOL_VERSION,
             cols: 120,
             rows: 40,
             term: Some("xterm-ghostty".to_string()),

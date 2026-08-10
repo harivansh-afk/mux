@@ -144,6 +144,7 @@ fn mode(path: &Path) -> u32 {
 
 fn request(token: Option<&str>, target: Option<&str>, mode: OpenMode) -> OpenRequest {
     OpenRequest {
+        version: mux_proto::peer::PROTOCOL_VERSION,
         cols: 80,
         rows: 24,
         term: Some("xterm-ghostty".into()),

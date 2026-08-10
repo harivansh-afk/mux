@@ -15,6 +15,12 @@ use serde::{Deserialize, Serialize};
 /// Handshake cap, matching ix's `MAX_LOCAL_REQUEST_BYTES`.
 pub const MAX_REQUEST_BYTES: u32 = 1024 * 1024;
 
+/// Bumped on every incompatible change to the handshake or lane values.
+/// The daemon replies with a readable error on mismatch instead of
+/// dropping the connection, so skew between a running daemon and a newer
+/// client is diagnosable (v1: M2; v2: token+target; v3: this field).
+pub const PROTOCOL_VERSION: u32 = 3;
+
 /// ALPN for muxd's QUIC listener (M3). Each bidirectional stream carries
 /// exactly one protocol run: the same handshake + lane frames as a unix
 /// socket connection.
@@ -23,6 +29,9 @@ pub const DEFAULT_QUIC_PORT: u16 = 4433;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenRequest {
+    /// Must be `PROTOCOL_VERSION`; first field, so even a differently
+    /// shaped future request still yields a meaningful version check.
+    pub version: u32,
     pub cols: u16,
     pub rows: u16,
     pub term: Option<String>,
@@ -110,6 +119,7 @@ mod tests {
     #[test]
     fn open_request_roundtrip() {
         let req = OpenRequest {
+            version: PROTOCOL_VERSION,
             cols: 120,
             rows: 40,
             term: Some("xterm-ghostty".into()),
@@ -132,6 +142,7 @@ mod tests {
     fn golden_wire_bytes() {
         // Handshake payload: attach-or-create "p1" at 120x40, local.
         let req = OpenRequest {
+            version: PROTOCOL_VERSION,
             cols: 120,
             rows: 40,
             term: Some("xterm-ghostty".into()),
@@ -146,6 +157,7 @@ mod tests {
         assert_eq!(
             encode(&req),
             [
+                0x03, // version = PROTOCOL_VERSION (varint)
                 0x78, // cols = 120 (varint)
                 0x28, // rows = 40
                 0x01, 0x0d, // term: Some, len 13
