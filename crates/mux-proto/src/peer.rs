@@ -125,6 +125,53 @@ mod tests {
         assert_eq!(decode::<OpenRequest>(&bytes).unwrap(), req);
     }
 
+    /// The documented wire example (docs/architecture.html section 2):
+    /// this test IS the spec. If it breaks, either update the doc and
+    /// accept a protocol break, or revert the change.
+    #[test]
+    fn golden_wire_bytes() {
+        // Handshake payload: attach-or-create "p1" at 120x40, local.
+        let req = OpenRequest {
+            cols: 120,
+            rows: 40,
+            term: Some("xterm-ghostty".into()),
+            token: None,
+            target: None,
+            mode: OpenMode::Open {
+                name: "p1".into(),
+                cwd: None,
+                command: vec![],
+            },
+        };
+        assert_eq!(
+            encode(&req),
+            [
+                0x78, // cols = 120 (varint)
+                0x28, // rows = 40
+                0x01, 0x0d, // term: Some, len 13
+                0x78, 0x74, 0x65, 0x72, 0x6d, 0x2d, 0x67, 0x68, 0x6f, 0x73, 0x74, 0x74,
+                0x79, // "xterm-ghostty"
+                0x00, // token: None
+                0x00, // target: None
+                0x00, // mode: Open (discriminant 0)
+                0x02, 0x70, 0x31, // name: len 2, "p1"
+                0x00, // cwd: None
+                0x00, // command: 0 args
+            ]
+        );
+
+        // Control frame payload: resize to 120x40.
+        let resize = ClientControl::Resize {
+            cols: 120,
+            rows: 40,
+        };
+        assert_eq!(encode(&resize), [0x00, 0x78, 0x28]);
+
+        // Event frame payload: clean exit (i32 zigzag varint).
+        let exit = ServerEvent::Exit { code: 0 };
+        assert_eq!(encode(&exit), [0x00, 0x00]);
+    }
+
     #[test]
     fn reply_roundtrip() {
         let ok: OpenReply = Ok(Opened::Attached {

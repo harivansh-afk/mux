@@ -60,7 +60,11 @@ async fn handle_connection(manager: Manager, stream: UnixStream) -> Result<()> {
     }
 
     let OpenRequest {
-        cols, rows, term, mode, ..
+        cols,
+        rows,
+        term,
+        mode,
+        ..
     } = request;
 
     match mode {
@@ -82,7 +86,6 @@ async fn handle_connection(manager: Manager, stream: UnixStream) -> Result<()> {
         }
 
         OpenMode::Open { name, cwd, command } => {
-            let (cols, rows, term) = (request.cols, request.rows, request.term);
             handle_open(
                 manager, cols, rows, term, name, cwd, command, reader, writer,
             )

@@ -172,6 +172,105 @@ and a single bearer token</b> read from <code>/run/ix/console-token</code>. So:<
 <p>ix VMs work on day one with zero protocol code: the pane's relay command is literally
 <code>ix shell &lt;vm&gt;</code>. The native QUIC client is a later refinement, not a prerequisite.</p>
 
+
+<h3>2.1 What we inherit from ix's shell protocol, exactly</h3>
+<table>
+<tr><th>Layer</th><th>Inherited?</th><th>Detail</th></tr>
+<tr><td>Frame layout</td><td><b>byte-identical</b></td><td><code>[u32 LE length][u8 lane][payload]</code>,
+length covers lane byte + payload; 64 MiB cap on the receiver</td></tr>
+<tr><td>Lane numbering</td><td><b>identical</b></td><td>ingress <code>input=0</code> (raw PTY bytes),
+<code>control=1</code>; egress <code>opened=0</code>, <code>output=1</code> (raw bytes),
+<code>events=2</code>. Ingress and egress are independent namespaces</td></tr>
+<tr><td>Handshake shape</td><td><b>identical</b></td><td>one <code>[u32 LE len][request]</code> message
+(1 MiB cap, 10 s timeout), then lane frames until EOF; EOF at a frame boundary = detach</td></tr>
+<tr><td>Session semantics</td><td><b>identical</b></td><td>attach evicts the previous client; attach
+replays <code>render_screen_bytes()</code> as the first output frame; resize is a control value;
+exit is an event; slow clients are disconnected, never fed a gappy stream</td></tr>
+<tr><td>Control-value encoding</td><td>re-spelled</td><td>ix uses its slot-table <code>codec</code>;
+mux peers use postcard (same shapes, different bytes). The ix spelling returns in M4 for VM targets,
+golden-byte tested</td></tr>
+<tr><td>Addressing</td><td>re-spelled</td><td>ix keys sessions by u32 id per VM; mux keys ptys by
+client-chosen name (the pane UUID), which makes attach-or-create one round trip and restore
+id-handoff-free</td></tr>
+</table>
+
+<h3>2.2 The muxd peer dialect, byte for byte</h3>
+<p>These bytes are locked by a golden test
+(<code>crates/mux-proto/src/peer.rs::golden_wire_bytes</code>) - the test is the spec.
+Handshake: attach-or-create pty <code>"p1"</code> at 120x40, TERM=xterm-ghostty, local:</p>
+<pre>
+<span class="c">handshake message = [u32 LE payload length][payload]</span>
+19 00 00 00                                        <span class="c">length = 25</span>
+78                                                 <span class="c">cols = 120        (u16, varint)</span>
+28                                                 <span class="c">rows = 40</span>
+01 0d 78 74 65 72 6d 2d 67 68 6f 73 74 74 79      <span class="c">term = Some, len 13, "xterm-ghostty"</span>
+00                                                 <span class="c">token = None (unix socket: fs perms are auth)</span>
+00                                                 <span class="c">target = None (this daemon serves it)</span>
+00                                                 <span class="c">mode = Open (discriminant 0)</span>
+02 70 31                                           <span class="c">name = len 2, "p1"</span>
+00                                                 <span class="c">cwd = None</span>
+00                                                 <span class="c">command = 0 args (login shell)</span>
+</pre>
+<p>After the reply (<code>OpenReply</code> on egress lane 0) and the screen replay (raw bytes on
+egress lane 1), everything is lane frames. A resize control frame and an exit event, complete:</p>
+<pre>
+<span class="c">resize to 120x40, ingress lane 1:</span>
+04 00 00 00  01  00 78 28      <span class="c">[len=4][lane=1][Resize disc=0, cols=120, rows=40]</span>
+
+<span class="c">keystroke "g", ingress lane 0 (raw, no encoding ever):</span>
+02 00 00 00  00  67            <span class="c">[len=2][lane=0][0x67]</span>
+
+<span class="c">clean exit, egress lane 2:</span>
+03 00 00 00  02  00 00         <span class="c">[len=3][lane=2][Exit disc=0, code=0 zigzag]</span>
+</pre>
+<p>PTY data - the hot path - is raw bytes on lanes 0/1 with zero serialization, in ix and in mux
+identically. Encoded values only ever appear on the control/event lanes, a few messages per session.</p>
+
+<h3>2.3 Remote: the same bytes inside a QUIC stream</h3>
+<pre>
+UDP datagram
+└─ QUIC connection (quinn, RFC 9000) - TLS 1.3, ALPN <span class="g">muxd/1</span>, one per remote host
+   ├─ bidi stream: pane A's connection   <span class="c">[u32 len][OpenRequest] + lane frames</span>
+   ├─ bidi stream: pane B's connection   <span class="c">exactly the unix-socket byte stream</span>
+   └─ bidi stream: control (list/kill)
+</pre>
+<p>One QUIC connection per host, one bidirectional stream per logical pane connection. The byte
+stream inside a stream is <b>identical</b> to the unix-socket stream, so the daemon has a single
+connection handler generic over any async byte pipe. Panes never dial the network: they attach to
+the <b>local</b> muxd over the unix socket with <code>target = Some(host)</code>, and the local
+daemon relays the stream over its per-host connection. Reconnect and QUIC connection migration
+(wifi to LTE mid-session) therefore live in exactly one place. 0-RTT early data is disabled:
+replayable requests are not acceptable for a session protocol; every connection does a full 1-RTT
+handshake.</p>
+
+<h3>2.4 Security model (this replaces ssh for terminals)</h3>
+<table>
+<tr><th>Property</th><th>Mechanism</th><th>ssh equivalent</th></tr>
+<tr><td>Channel crypto</td><td>TLS 1.3 inside QUIC (rustls): AEAD only, forward secrecy, no legacy
+versions to misconfigure</td><td>ssh transport layer</td></tr>
+<tr><td>Server identity</td><td>self-signed cert generated on first run (rcgen); client pins
+SHA-256 of the SPKI per host alias, trust-on-first-use, recorded in
+<code>~/.local/state/mux/known_hosts</code>; hard fail on mismatch. The daemon logs its SPKI hash at
+startup for out-of-band verification</td><td><code>known_hosts</code> fingerprint pinning</td></tr>
+<tr><td>Client authorization</td><td>256-bit random bearer token, generated 0600 at
+<code>~/.local/state/muxd/token</code>, copied once out-of-band to
+<code>~/.local/state/mux/tokens/&lt;host&gt;</code>; sent only inside the encrypted channel;
+constant-time compare, re-read per connection</td><td>authorized_keys (weaker analogue: it is a
+capability, not a keypair - acceptable for single-user infra, revisit if muxd ever serves multiple
+users)</td></tr>
+<tr><td>Local plane</td><td>unix socket, 0600, kernel-enforced same-uid; no token</td>
+<td>n/a (ssh has no local plane)</td></tr>
+<tr><td>Attack surface</td><td>one UDP port, one protocol, ~2k LOC of daemon, runs as the login
+user</td><td>sshd: root daemon, PAM, subsystems, forwarding, config drift</td></tr>
+</table>
+<p>What a network observer sees: opaque QUIC datagrams. What a MITM can do: nothing after first
+contact (the pin covers the key doing the channel crypto); on <i>first</i> contact, TOFU has the
+same window ssh has - verify the logged SPKI hash out-of-band if the first connection crosses
+hostile ground. What a stolen token yields: attach rights to that one daemon, only from a peer that
+also passes the cert pin on ITS side of the channel; rotate by deleting the two files. Deliberately
+absent: agent forwarding, port forwarding, multi-user auth, PAM - not needed for personal infra,
+and every absent feature is attack surface that does not exist.</p>
+
 <h2>3. Components</h2>
 
 <h3>Mux.app <span class="pill">Swift / AppKit</span> <span class="pill">the only UI</span></h3>
