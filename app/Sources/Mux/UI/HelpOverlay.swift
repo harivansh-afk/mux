@@ -181,7 +181,7 @@ final class HelpOverlayView: NSView {
         for (i, section) in Self.sections.enumerated() {
             buffer.append(NSAttributedString(
                 string: (i == 0 ? "" : "\n") + section.title + "\n",
-                attributes: [.font: Self.boldFont, .foregroundColor: palette.text]
+                attributes: [.font: Self.boldFont, .foregroundColor: palette.pink]
             ))
             for row in section.rows {
                 buffer.append(NSAttributedString(
