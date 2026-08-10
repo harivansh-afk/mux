@@ -48,7 +48,22 @@ async fn handle_connection(manager: Manager, stream: UnixStream) -> Result<()> {
         .await
         .context("handshake timeout")??;
 
-    match request.mode {
+    // Broker relay (target = Some(host)) lands in M3; until then be
+    // explicit rather than silently serving the wrong machine.
+    if let Some(host) = &request.target {
+        let reply: OpenReply = Err(format!(
+            "remote target {host:?} not supported yet (M3 broker)"
+        ));
+        write_frame(&mut writer, OUT_LANE_OPENED, &peer::encode(&reply)).await?;
+        writer.flush().await?;
+        return Ok(());
+    }
+
+    let OpenRequest {
+        cols, rows, term, mode, ..
+    } = request;
+
+    match mode {
         OpenMode::List => {
             let reply: OpenReply = Ok(Opened::Listed {
                 ptys: manager.list(),
@@ -67,14 +82,31 @@ async fn handle_connection(manager: Manager, stream: UnixStream) -> Result<()> {
         }
 
         OpenMode::Open { name, cwd, command } => {
-            let opened = manager.open(
-                &name,
-                &command,
-                cwd.as_deref(),
-                request.term.as_deref(),
-                request.cols,
-                request.rows,
-            );
+            let (cols, rows, term) = (request.cols, request.rows, request.term);
+            handle_open(
+                manager, cols, rows, term, name, cwd, command, reader, writer,
+            )
+            .await
+        }
+    }
+}
+
+/// The attach-or-create arm: reply + replay, then pump both directions.
+#[allow(clippy::too_many_arguments)]
+async fn handle_open(
+    manager: Manager,
+    cols: u16,
+    rows: u16,
+    term: Option<String>,
+    name: String,
+    cwd: Option<String>,
+    command: Vec<String>,
+    mut reader: tokio::net::unix::OwnedReadHalf,
+    mut writer: BufWriter<tokio::net::unix::OwnedWriteHalf>,
+) -> Result<()> {
+    {
+        {
+            let opened = manager.open(&name, &command, cwd.as_deref(), term.as_deref(), cols, rows);
             let (session, created) = match opened {
                 Ok(v) => v,
                 Err(e) => {
@@ -85,7 +117,7 @@ async fn handle_connection(manager: Manager, stream: UnixStream) -> Result<()> {
                 }
             };
 
-            let attachment = manager::attach(&session, request.cols, request.rows);
+            let attachment = manager::attach(&session, cols, rows);
 
             let reply: OpenReply = Ok(Opened::Attached {
                 name: name.clone(),

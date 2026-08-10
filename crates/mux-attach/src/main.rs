@@ -127,10 +127,16 @@ impl Drop for RawModeGuard {
     }
 }
 
-fn parse_target(target: &str) -> Result<String> {
+/// `local:<name>` or `<host-alias>:<name>`. Returns (target, name)
+/// where target None = this machine. The local daemon does the remote
+/// dialing (broker); mux-attach always talks to the local unix socket.
+fn parse_target(target: &str) -> Result<(Option<String>, String)> {
     match target.split_once(':') {
-        Some(("local", name)) if !name.is_empty() => Ok(name.to_string()),
-        _ => bail!("target must be local:<name>, got {target:?}"),
+        Some(("local", name)) if !name.is_empty() => Ok((None, name.to_string())),
+        Some((host, name)) if !host.is_empty() && !name.is_empty() => {
+            Ok((Some(host.to_string()), name.to_string()))
+        }
+        _ => bail!("target must be [host|local]:<name>, got {target:?}"),
     }
 }
 
@@ -166,19 +172,19 @@ fn main() -> Result<()> {
     }
 
     if list {
-        return run_control(OpenMode::List);
+        return run_control(None, OpenMode::List);
     }
     if let Some(kill_target) = kill {
-        let name = parse_target(&kill_target)?;
-        return run_control(OpenMode::Kill { name });
+        let (kill_host, name) = parse_target(&kill_target)?;
+        return run_control(kill_host, OpenMode::Kill { name });
     }
 
-    let name = parse_target(&target.context("usage: mux-attach local:<name>")?)?;
-    run_attach(name, cwd, command)
+    let (host, name) = parse_target(&target.context("usage: mux-attach [host|local]:<name>")?)?;
+    run_attach(host, name, cwd, command)
 }
 
 /// One-shot request/reply (list, kill).
-fn run_control(mode: OpenMode) -> Result<()> {
+fn run_control(target: Option<String>, mode: OpenMode) -> Result<()> {
     let mut stream = connect()?;
     let (cols, rows) = winsize();
     write_request(
@@ -187,6 +193,8 @@ fn run_control(mode: OpenMode) -> Result<()> {
             cols,
             rows,
             term: None,
+            token: None,
+            target,
             mode,
         },
     )?;
@@ -221,7 +229,12 @@ fn run_control(mode: OpenMode) -> Result<()> {
     Ok(())
 }
 
-fn run_attach(name: String, cwd: Option<String>, command: Vec<String>) -> Result<()> {
+fn run_attach(
+    target: Option<String>,
+    name: String,
+    cwd: Option<String>,
+    command: Vec<String>,
+) -> Result<()> {
     let stream = connect()?;
     let writer = stream.try_clone()?;
     let mut reader = stream;
@@ -234,6 +247,8 @@ fn run_attach(name: String, cwd: Option<String>, command: Vec<String>) -> Result
             cols,
             rows,
             term: std::env::var("TERM").ok(),
+            token: None,
+            target,
             mode: OpenMode::Open { name, cwd, command },
         },
     )?;

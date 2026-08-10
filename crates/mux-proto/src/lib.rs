@@ -10,6 +10,8 @@
 //! golden-byte tests against captures from a real ix VM (M4).
 
 pub mod frame;
+pub mod migrate;
+pub mod paths;
 pub mod peer;
 pub mod shell;
 

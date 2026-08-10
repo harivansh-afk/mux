@@ -15,11 +15,25 @@ use serde::{Deserialize, Serialize};
 /// Handshake cap, matching ix's `MAX_LOCAL_REQUEST_BYTES`.
 pub const MAX_REQUEST_BYTES: u32 = 1024 * 1024;
 
+/// ALPN for muxd's QUIC listener (M3). Each bidirectional stream carries
+/// exactly one protocol run: the same handshake + lane frames as a unix
+/// socket connection.
+pub const ALPN: &[u8] = b"muxd/1";
+pub const DEFAULT_QUIC_PORT: u16 = 4433;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenRequest {
     pub cols: u16,
     pub rows: u16,
     pub term: Option<String>,
+    /// Bearer token, required on QUIC-originated requests; unix-socket
+    /// requests leave it None (filesystem perms are the auth boundary).
+    pub token: Option<String>,
+    /// None = this daemon serves the request itself. Some(host alias) =
+    /// the LOCAL daemon relays the whole connection over its per-host
+    /// QUIC link (panes never dial the network). Only meaningful on the
+    /// unix socket; relayed requests arrive with target = None.
+    pub target: Option<String>,
     pub mode: OpenMode,
 }
 
@@ -99,6 +113,8 @@ mod tests {
             cols: 120,
             rows: 40,
             term: Some("xterm-ghostty".into()),
+            token: None,
+            target: Some("spark".into()),
             mode: OpenMode::Open {
                 name: "pane-1".into(),
                 cwd: Some("/tmp".into()),
