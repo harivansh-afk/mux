@@ -40,7 +40,6 @@ final class HelpOverlayView: NSView {
         ]),
         Section(title: "app", rows: [
             ("cmd+n", "new window"),
-            ("cmd+w", "close window"),
             ("cmd+c / cmd+v", "copy / paste"),
         ]),
     ]
