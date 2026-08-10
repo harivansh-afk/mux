@@ -8,5 +8,9 @@ license.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 mux-proto = { path = "../mux-proto" }
+ghostty-vt = { path = "../ghostty-vt" }
+nix.workspace = true
+parking_lot.workspace = true
+libc = "0.2"

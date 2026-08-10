@@ -1,0 +1,141 @@
+//! PTY spawn and async IO. Fork of ix-console's pty.rs / pty/exec.rs
+//! core: openpty, fork, setsid + TIOCSCTTY, dup2, execvp; the master fd
+//! becomes a tokio AsyncFd (no spawn_blocking reads).
+
+use std::ffi::CString;
+use std::os::fd::{AsRawFd, OwnedFd};
+
+use anyhow::{Context, Result};
+use nix::pty::Winsize;
+use nix::unistd::{ForkResult, Pid};
+use tokio::io::unix::AsyncFd;
+
+pub struct Pty {
+    pub master: AsyncFd<OwnedFd>,
+    pub child: Pid,
+}
+
+pub struct Spawn<'a> {
+    /// argv; empty means the user's login shell.
+    pub command: &'a [String],
+    pub cwd: Option<&'a str>,
+    pub term: Option<&'a str>,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+fn winsize(cols: u16, rows: u16) -> Winsize {
+    Winsize {
+        ws_row: rows.max(1),
+        ws_col: cols.max(1),
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    }
+}
+
+fn user_shell() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
+}
+
+pub fn spawn(params: &Spawn) -> Result<Pty> {
+    let pty = nix::pty::openpty(Some(&winsize(params.cols, params.rows)), None)
+        .context("openpty")?;
+
+    // Everything the child needs, allocated before fork: only
+    // async-signal-safe calls are allowed after.
+    let (exec_path, exec_argv): (CString, Vec<CString>) = if params.command.is_empty() {
+        // Login shell convention: argv[0] = "-zsh".
+        let shell = user_shell();
+        let name = shell.rsplit('/').next().unwrap_or(&shell);
+        (
+            CString::new(shell.as_str())?,
+            vec![CString::new(format!("-{name}"))?],
+        )
+    } else {
+        let argv: Vec<CString> = params
+            .command
+            .iter()
+            .map(|a| CString::new(a.as_str()))
+            .collect::<Result<_, _>>()?;
+        (argv[0].clone(), argv)
+    };
+    let cwd = params.cwd.map(CString::new).transpose()?;
+    let term = CString::new(format!(
+        "TERM={}",
+        params.term.unwrap_or("xterm-ghostty")
+    ))?;
+
+    match unsafe { nix::unistd::fork() }.context("fork")? {
+        ForkResult::Parent { child } => {
+            drop(pty.slave);
+            let master = pty.master;
+            // Nonblocking for the tokio reactor.
+            let flags = nix::fcntl::fcntl(master.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)?;
+            let mut oflags = nix::fcntl::OFlag::from_bits_truncate(flags);
+            oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
+            nix::fcntl::fcntl(master.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))?;
+            Ok(Pty {
+                master: AsyncFd::new(master).context("AsyncFd")?,
+                child,
+            })
+        }
+        ForkResult::Child => {
+            // Async-signal-safe zone. Any failure: _exit(127).
+            let slave = pty.slave.as_raw_fd();
+            unsafe {
+                if libc::setsid() < 0 {
+                    libc::_exit(127);
+                }
+                if libc::ioctl(slave, libc::TIOCSCTTY as _, 0) < 0 {
+                    libc::_exit(127);
+                }
+                libc::dup2(slave, 0);
+                libc::dup2(slave, 1);
+                libc::dup2(slave, 2);
+                if slave > 2 {
+                    libc::close(slave);
+                }
+                libc::close(pty.master.as_raw_fd());
+                if let Some(dir) = &cwd {
+                    // Best-effort; a stale cwd should not kill the shell.
+                    let _ = libc::chdir(dir.as_ptr());
+                }
+                libc::putenv(term.as_ptr() as *mut _);
+                let argv_ptrs: Vec<*const libc::c_char> = exec_argv
+                    .iter()
+                    .map(|a| a.as_ptr())
+                    .chain([std::ptr::null()])
+                    .collect();
+                libc::execvp(exec_path.as_ptr(), argv_ptrs.as_ptr());
+                libc::_exit(127);
+            }
+        }
+    }
+}
+
+/// Write all of `data` to the PTY, waiting for writability.
+pub async fn write_all(master: &AsyncFd<OwnedFd>, data: &[u8]) -> Result<()> {
+    let mut written = 0;
+    while written < data.len() {
+        let mut guard = master.writable().await?;
+        match guard.try_io(|fd| {
+            nix::unistd::write(fd.get_ref(), &data[written..])
+                .map_err(|e| std::io::Error::from_raw_os_error(e as i32))
+        }) {
+            Ok(Ok(n)) => written += n,
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_would_block) => continue,
+        }
+    }
+    Ok(())
+}
+
+pub fn resize(master: &AsyncFd<OwnedFd>, cols: u16, rows: u16) -> Result<()> {
+    let ws = winsize(cols, rows);
+    let res = unsafe { libc::ioctl(master.get_ref().as_raw_fd(), libc::TIOCSWINSZ, &ws) };
+    if res < 0 {
+        return Err(std::io::Error::last_os_error()).context("TIOCSWINSZ");
+    }
+    Ok(())
+}
