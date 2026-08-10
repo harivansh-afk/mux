@@ -10,6 +10,7 @@
 //! golden-byte tests against captures from a real ix VM (M4).
 
 pub mod frame;
+pub mod peer;
 pub mod shell;
 
 pub use frame::{read_lane_frame, write_lane, FrameLimits, LaneFrame};
