@@ -27,6 +27,17 @@ mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$BIN" "$BUNDLE/Contents/MacOS/Mux"
 cp "$ROOT/target/release/muxd" "$ROOT/target/release/mux-attach" "$BUNDLE/Contents/MacOS/"
 
+# App icon (regenerate from scripts/make-icon.swift if the committed .icns is
+# missing, so the source of truth is the generator, not a binary blob).
+ICNS="$APPDIR/Assets/Mux.icns"
+if [ ! -f "$ICNS" ]; then
+  ICONSET="$(mktemp -d)/Mux.iconset"
+  swift "$ROOT/scripts/make-icon.swift" "$ICONSET" >/dev/null
+  mkdir -p "$APPDIR/Assets"
+  iconutil -c icns "$ICONSET" -o "$ICNS"
+fi
+cp "$ICNS" "$BUNDLE/Contents/Resources/Mux.icns"
+
 # Ghostty runtime resources. GHOSTTY_RESOURCES_DIR points at Resources/ghostty,
 # but the terminfo db lives at the SIBLING path Resources/terminfo (ghostty
 # derives it as resources_dir/../terminfo). Missing terminfo = TERM broken =
@@ -46,6 +57,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>sh.harivan.mux</string>
   <key>CFBundleName</key><string>mux</string>
   <key>CFBundleExecutable</key><string>Mux</string>
+  <key>CFBundleIconFile</key><string>Mux</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
