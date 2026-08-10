@@ -15,7 +15,9 @@ pub struct FrameLimits {
 
 impl Default for FrameLimits {
     fn default() -> Self {
-        Self { max_frame_size: MAX_FRAME_SIZE }
+        Self {
+            max_frame_size: MAX_FRAME_SIZE,
+        }
     }
 }
 
@@ -36,9 +38,15 @@ pub enum FrameError {
 }
 
 /// Write one lane frame.
+///
+/// # Errors
+///
+/// Returns [`FrameError::TooLarge`] when the payload cannot be described by
+/// the u32 length prefix, or [`FrameError::Io`] when the writer fails.
 pub fn write_lane<W: Write>(w: &mut W, lane: u8, payload: &[u8]) -> Result<(), FrameError> {
-    let len = 1u32
-        .checked_add(payload.len() as u32)
+    let len = u32::try_from(payload.len())
+        .ok()
+        .and_then(|n| n.checked_add(1))
         .ok_or(FrameError::TooLarge(u32::MAX, MAX_FRAME_SIZE))?;
     w.write_all(&len.to_le_bytes())?;
     w.write_all(&[lane])?;
@@ -47,6 +55,13 @@ pub fn write_lane<W: Write>(w: &mut W, lane: u8, payload: &[u8]) -> Result<(), F
 }
 
 /// Read one lane frame. Returns `Ok(None)` on clean EOF at a frame boundary.
+///
+/// # Errors
+///
+/// Returns [`FrameError::Empty`] on a zero-length frame,
+/// [`FrameError::TooLarge`] when the length prefix exceeds
+/// [`FrameLimits::max_frame_size`], or [`FrameError::Io`] on read failure
+/// (including EOF inside a frame).
 pub fn read_lane_frame<R: Read>(
     r: &mut R,
     limits: FrameLimits,
@@ -68,7 +83,10 @@ pub fn read_lane_frame<R: Read>(
     r.read_exact(&mut lane)?;
     let mut payload = vec![0u8; (len - 1) as usize];
     r.read_exact(&mut payload)?;
-    Ok(Some(LaneFrame { lane: lane[0], payload }))
+    Ok(Some(LaneFrame {
+        lane: lane[0],
+        payload,
+    }))
 }
 
 #[cfg(test)]
@@ -81,11 +99,29 @@ mod tests {
         write_lane(&mut buf, 1, b"hello").unwrap();
         write_lane(&mut buf, 0, b"").unwrap();
         let mut r = buf.as_slice();
-        let f1 = read_lane_frame(&mut r, FrameLimits::default()).unwrap().unwrap();
-        assert_eq!(f1, LaneFrame { lane: 1, payload: b"hello".to_vec() });
-        let f2 = read_lane_frame(&mut r, FrameLimits::default()).unwrap().unwrap();
-        assert_eq!(f2, LaneFrame { lane: 0, payload: vec![] });
-        assert!(read_lane_frame(&mut r, FrameLimits::default()).unwrap().is_none());
+        let f1 = read_lane_frame(&mut r, FrameLimits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            f1,
+            LaneFrame {
+                lane: 1,
+                payload: b"hello".to_vec()
+            }
+        );
+        let f2 = read_lane_frame(&mut r, FrameLimits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            f2,
+            LaneFrame {
+                lane: 0,
+                payload: vec![]
+            }
+        );
+        assert!(read_lane_frame(&mut r, FrameLimits::default())
+            .unwrap()
+            .is_none());
     }
 
     #[test]
