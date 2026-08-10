@@ -55,5 +55,19 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --sign - "$BUNDLE" 2>/dev/null || true
+# Sign with the stable local dev identity if it exists (scripts/dev-sign-setup.sh),
+# else fall back to ad-hoc. The stable identity is what lets a one-time TCC grant
+# (Documents/Full Disk access) survive rebuilds, so the app launches by
+# double-click instead of hanging on a privacy gate it can never satisfy.
+DEV_KEYCHAIN="$HOME/Library/Keychains/mux-dev.keychain-db"
+# No -v: a self-signed cert is untrusted (CSSMERR_TP_NOT_TRUSTED), which -v
+# filters out, but codesign signs with it fine and TCC keys on the stable
+# identity regardless of trust.
+if security find-identity -p codesigning "$DEV_KEYCHAIN" 2>/dev/null | grep -q "mux-dev"; then
+  codesign --force --deep --sign "mux-dev" --keychain "$DEV_KEYCHAIN" "$BUNDLE"
+  echo "signed with mux-dev"
+else
+  codesign --force --sign - "$BUNDLE" 2>/dev/null || true
+  echo "ad-hoc signed (run scripts/dev-sign-setup.sh for a stable identity)"
+fi
 echo "built: $BUNDLE"
