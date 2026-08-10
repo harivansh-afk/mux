@@ -15,6 +15,12 @@ lint: check
     ast-grep scan
     ./scripts/lint/no-cargo-path-dep.sh
 
+# End-to-end: `muxd --upgrade` adopts a live pty (private socket, temp
+# HOME - never touches a running daemon)
+upgrade-test:
+    cargo build --workspace
+    python3 scripts/test-muxd-upgrade.py
+
 # Fetch prebuilt GhosttyKit.xcframework + resources (run on the Mac)
 ghosttykit:
     ./scripts/fetch-ghosttykit.sh
