@@ -25,6 +25,8 @@ struct Palette {
     let dim: NSColor
     /// Primary text.
     let text: NSColor
+    /// The active-item highlight (session indicator's current number).
+    let pink: NSColor
     /// Pane separator lines. Derived from the terminal background exactly
     /// like ghostty's default `split-divider-color` (Ghostty.Config.swift
     /// splitDividerColor): darken a light background by 0.08, a dark one
@@ -40,6 +42,7 @@ struct Palette {
             accentContrast: bg,
             dim: NSColor(hex: 0x504945),
             text: NSColor(hex: 0xD4BE98),
+            pink: NSColor(hex: 0xD3869B),
             divider: bg.ghosttyDividerColor)
     }()
 
@@ -51,6 +54,7 @@ struct Palette {
             accentContrast: bg,
             dim: NSColor(hex: 0xA89984),
             text: NSColor(hex: 0x3C3836),
+            pink: NSColor(hex: 0x8F3F71),
             divider: bg.ghosttyDividerColor)
     }()
 }

@@ -14,6 +14,9 @@ struct ModeBarSegment {
         case badge
         case key
         case dim
+        /// Active-item highlight (bold pink), e.g. the current session
+        /// number in the session indicator.
+        case highlight
     }
 
     let kind: Kind
@@ -22,6 +25,7 @@ struct ModeBarSegment {
     static func badge(_ t: String) -> ModeBarSegment { .init(kind: .badge, text: t) }
     static func key(_ t: String) -> ModeBarSegment { .init(kind: .key, text: t) }
     static func dim(_ t: String) -> ModeBarSegment { .init(kind: .dim, text: t) }
+    static func highlight(_ t: String) -> ModeBarSegment { .init(kind: .highlight, text: t) }
 }
 
 final class ModeBarView: NSView {
@@ -91,6 +95,13 @@ final class ModeBarView: NSView {
                     attributes: [
                         .font: Self.font,
                         .foregroundColor: palette.dim,
+                    ]))
+            case .highlight:
+                line.append(NSAttributedString(
+                    string: segment.text,
+                    attributes: [
+                        .font: Self.boldFont,
+                        .foregroundColor: palette.pink,
                     ]))
             }
         }

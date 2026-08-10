@@ -21,7 +21,9 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     private(set) var window: NSWindow!
     private let container = PaneContainerView()
     private let modeBar = ModeBarView()
+    private let sessionIndicator = ModeBarView()
     private let helpOverlay = HelpOverlayView()
+    private var indicatorFlashTimer: Timer?
 
     private(set) var sessions: [Session] = []
     private(set) var activeSessionIndex = 0
@@ -52,6 +54,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         window.contentView = container
         container.addSubview(modeBar)
         modeBar.isHidden = true
+        container.addSubview(sessionIndicator)
+        sessionIndicator.isHidden = true
         self.window = window
 
         sessions = [Session(runtime: runtime, controller: self)]
@@ -94,6 +98,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
         layoutPanes()
         if let pane = activeSession?.focusedPane { focus(pane) }
+        flashSessionIndicator()
         saveState()
     }
 
@@ -108,6 +113,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         activeSessionIndex = sessions.count - 1
         session.addInitialPane(workingDirectory: cwd)
         layoutPanes()
+        flashSessionIndicator()
         saveState()
     }
 
@@ -117,6 +123,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         activeSessionIndex = index
         layoutPanes()
         if let pane = activeSession?.focusedPane { focus(pane) }
+        flashSessionIndicator()
         saveState()
     }
 
@@ -221,9 +228,60 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             modeBar.removeFromSuperview()
             container.addSubview(modeBar)
             positionModeBar()
+            showSessionIndicator()
         } else {
             modeBar.isHidden = true
+            if indicatorFlashTimer == nil { sessionIndicator.isHidden = true }
         }
+    }
+
+    // MARK: - Session indicator
+
+    /// `1 2 3` with the active number highlighted. Mirrors the mode bar
+    /// at the bottom-right corner with the same concentric insets.
+    private var sessionSegments: [ModeBarSegment] {
+        var segments: [ModeBarSegment] = []
+        for index in sessions.indices {
+            if index > 0 { segments.append(.dim(" ")) }
+            let label = "\(index + 1)"
+            segments.append(
+                index == activeSessionIndex ? .highlight(label) : .dim(label))
+        }
+        return segments
+    }
+
+    private func showSessionIndicator() {
+        indicatorFlashTimer?.invalidate()
+        indicatorFlashTimer = nil
+        sessionIndicator.render(sessionSegments)
+        sessionIndicator.isHidden = false
+        sessionIndicator.removeFromSuperview()
+        container.addSubview(sessionIndicator)
+        positionSessionIndicator()
+    }
+
+    /// Visible while a mode bar is up; a switch flashes it for a second
+    /// so normal use stays chrome-free.
+    private func flashSessionIndicator() {
+        showSessionIndicator()
+        indicatorFlashTimer = Timer.scheduledTimer(
+            withTimeInterval: 1.0, repeats: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.indicatorFlashTimer = nil
+            if self.modeBar.isHidden { self.sessionIndicator.isHidden = true }
+        }
+    }
+
+    private func positionSessionIndicator() {
+        let bounds = container.bounds
+        let margin = ModeBarView.margin
+        let width = min(sessionIndicator.desiredWidth, bounds.width - margin * 2)
+        sessionIndicator.frame = NSRect(
+            x: bounds.width - margin - width,
+            y: bounds.height - ModeBarView.height - margin,
+            width: width,
+            height: ModeBarView.height)
     }
 
     func showHelp() {
@@ -272,6 +330,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         guard bounds.width > 1, bounds.height > 1 else { return }
 
         if !modeBar.isHidden { positionModeBar() }
+        if !sessionIndicator.isHidden { positionSessionIndicator() }
         if helpOverlay.superview != nil { positionHelpOverlay() }
 
         for (index, session) in sessions.enumerated() {

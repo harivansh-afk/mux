@@ -6,3 +6,4 @@ app/GhosttyKit/resources/
 *.xcuserdata/
 .DS_Store
 app/.build/
+.worktrees/
