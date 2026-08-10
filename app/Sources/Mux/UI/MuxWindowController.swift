@@ -358,6 +358,17 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         if let pane = focusedPane { focus(pane) }
     }
 
+    /// Occluded surfaces stop rendering (ghostty renderer throttle).
+    /// A pane draws only if the window is visible AND its session active.
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        let windowVisible = window.occlusionState.contains(.visible)
+        for session in sessions {
+            for (_, pane) in session.panes {
+                pane.setOcclusion(visible: windowVisible && !pane.isHidden)
+            }
+        }
+    }
+
     func windowWillClose(_ notification: Notification) {
         for session in sessions { session.destroyAllSurfaces() }
         sessions.removeAll()

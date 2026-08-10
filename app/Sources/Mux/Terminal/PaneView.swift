@@ -91,10 +91,59 @@ final class PaneView: NSView {
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
+
+        // Keep the compositor from rescaling our layer contents; we manage
+        // resolution ourselves via set_content_scale (ghostty does the same).
+        if let window {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer?.contentsScale = window.backingScaleFactor
+            CATransaction.commit()
+        }
+
         guard let surface else { return }
         let scale = Double(window?.backingScaleFactor ?? 2.0)
         ghostty_surface_set_content_scale(surface, scale, scale)
         syncSurfaceSize()
+    }
+
+    /// Bind the renderer's CVDisplayLink to the display the window is on,
+    /// so frame pacing follows the right refresh rate.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(
+            self, name: NSWindow.didChangeScreenNotification, object: nil)
+        guard let window else { return }
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowDidChangeScreen),
+            name: NSWindow.didChangeScreenNotification, object: window)
+        syncDisplayID()
+    }
+
+    @objc private func windowDidChangeScreen(_ notification: Notification) {
+        syncDisplayID()
+        // The new screen may have a different scale factor.
+        DispatchQueue.main.async { [weak self] in
+            self?.viewDidChangeBackingProperties()
+        }
+    }
+
+    private func syncDisplayID() {
+        guard let surface,
+              let screen = window?.screen,
+              let id = screen.deviceDescription[
+                NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32
+        else { return }
+        ghostty_surface_set_display_id(surface, id)
+    }
+
+    /// Renderer throttle: occluded surfaces stop drawing entirely.
+    private var occlusionVisible = true
+
+    func setOcclusion(visible: Bool) {
+        guard let surface, visible != occlusionVisible else { return }
+        occlusionVisible = visible
+        ghostty_surface_set_occlusion(surface, visible)
     }
 
     private func syncSurfaceSize() {
@@ -302,16 +351,32 @@ final class PaneView: NSView {
         guard let surface else { return }
         var x = event.scrollingDeltaX
         var y = event.scrollingDeltaY
-        // Packed struct (src/input/mouse.zig ScrollMods): bit 0 = precision.
-        var scrollMods: Int32 = 0
-        if event.hasPreciseScrollingDeltas {
-            scrollMods |= 1
-        } else {
-            // Line-based scrolling is amplified like ghostty does.
+        let precision = event.hasPreciseScrollingDeltas
+        if precision {
+            // ghostty amplifies precise (trackpad) deltas 2x; discrete
+            // wheel ticks are scaled core-side by cell size.
             x *= 2
             y *= 2
         }
+        // Packed struct (src/input/mouse.zig ScrollMods): bit 0 precision,
+        // bits 1-3 momentum phase (inertial scrolling).
+        var scrollMods: Int32 = 0
+        if precision { scrollMods |= 1 }
+        scrollMods |= Int32(Self.momentum(event.momentumPhase)) << 1
         ghostty_surface_mouse_scroll(surface, x, y, scrollMods)
+    }
+
+    /// NSEvent.Phase -> ghostty Momentum (src/input/mouse.zig enum(u3)).
+    private static func momentum(_ phase: NSEvent.Phase) -> UInt8 {
+        switch phase {
+        case .began: return 1
+        case .stationary: return 2
+        case .changed: return 3
+        case .ended: return 4
+        case .cancelled: return 5
+        case .mayBegin: return 6
+        default: return 0
+        }
     }
 
     // MARK: - Cursor
