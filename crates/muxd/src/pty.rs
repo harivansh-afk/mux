@@ -37,6 +37,41 @@ fn user_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
 }
 
+/// The tokio reactor requires it, and an inherited fd (migrate.rs) may
+/// arrive without it.
+pub fn set_nonblocking(fd: &OwnedFd) -> Result<()> {
+    let flags = nix::fcntl::fcntl(fd.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)?;
+    let mut oflags = nix::fcntl::OFlag::from_bits_truncate(flags);
+    oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
+    nix::fcntl::fcntl(fd.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))?;
+    Ok(())
+}
+
+/// A pty's window size in cells.
+pub struct WindowSize {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Current size of the pty, falling back to the protocol default when the
+/// ioctl fails or reports an unset size.
+pub fn window_size(master: &AsyncFd<OwnedFd>) -> WindowSize {
+    let mut ws = winsize(0, 0);
+    let ok =
+        unsafe { libc::ioctl(master.get_ref().as_raw_fd(), libc::TIOCGWINSZ, &raw mut ws) } == 0;
+    if ok && ws.ws_col > 0 && ws.ws_row > 0 {
+        WindowSize {
+            cols: ws.ws_col,
+            rows: ws.ws_row,
+        }
+    } else {
+        WindowSize {
+            cols: mux_proto::shell::DEFAULT_COLS,
+            rows: mux_proto::shell::DEFAULT_ROWS,
+        }
+    }
+}
+
 pub fn spawn(params: &Spawn) -> Result<Pty> {
     let pty =
         nix::pty::openpty(Some(&winsize(params.cols, params.rows)), None).context("openpty")?;
@@ -66,11 +101,7 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
         ForkResult::Parent { child } => {
             drop(pty.slave);
             let master = pty.master;
-            // Nonblocking for the tokio reactor.
-            let flags = nix::fcntl::fcntl(master.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)?;
-            let mut oflags = nix::fcntl::OFlag::from_bits_truncate(flags);
-            oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-            nix::fcntl::fcntl(master.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))?;
+            set_nonblocking(&master)?;
             Ok(Pty {
                 master: AsyncFd::new(master).context("AsyncFd")?,
                 child,

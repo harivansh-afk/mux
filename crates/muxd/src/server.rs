@@ -18,7 +18,10 @@ use crate::pty;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub async fn serve(manager: Manager, socket: &std::path::Path) -> Result<()> {
+/// Take the control socket. Separate from [`serve`] so a daemon only
+/// publishes itself (the pidfile a successor signals) once it actually
+/// owns the socket.
+pub async fn bind(socket: &std::path::Path) -> Result<UnixListener> {
     // A live daemon on the socket wins; a stale file is replaced.
     if UnixStream::connect(socket).await.is_ok() {
         bail!("muxd already running on {}", socket.display());
@@ -28,7 +31,10 @@ pub async fn serve(manager: Manager, socket: &std::path::Path) -> Result<()> {
         UnixListener::bind(socket).with_context(|| format!("bind {}", socket.display()))?;
     std::fs::set_permissions(socket, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     tracing::info!(socket = %socket.display(), "muxd listening");
+    Ok(listener)
+}
 
+pub async fn serve(manager: Manager, listener: UnixListener) -> Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let manager = manager.clone();

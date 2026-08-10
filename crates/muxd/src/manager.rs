@@ -29,6 +29,10 @@ const MAX_PTYS: usize = 256;
 const READ_CHUNK: usize = 4096;
 /// Client channel depth (chunks), matching ix.
 const CLIENT_CHANNEL_DEPTH: usize = 64;
+/// How long an adopted child is given to disappear after its pty EOFs
+/// before the exit is reported anyway (see [`wait_adopted`]).
+const ADOPTED_EXIT_GRACE: Duration = Duration::from_secs(2);
+const ADOPTED_EXIT_POLL: Duration = Duration::from_millis(20);
 
 pub enum ClientMsg {
     Output(Vec<u8>),
@@ -46,6 +50,10 @@ pub struct PtySession {
     pub client: Mutex<Option<AttachedClient>>,
     pub master: tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>,
     pub child: nix::unistd::Pid,
+    /// Inherited from a predecessor daemon (migrate.rs), so the child is
+    /// not ours: `waitpid` answers ECHILD and the exit is observed
+    /// instead of reaped. See [`wait_adopted`].
+    pub adopted: bool,
     pub exited: AtomicBool,
     pub exit_code: AtomicI32,
 }
@@ -69,6 +77,19 @@ pub struct Manager {
 impl Manager {
     pub fn get(&self, name: &str) -> Option<Arc<PtySession>> {
         self.ptys.lock().get(name).cloned()
+    }
+
+    /// Every pty that has not exited: what a self-upgrade hands over.
+    pub fn live_sessions(&self) -> Vec<Arc<PtySession>> {
+        let mut sessions: Vec<_> = self
+            .ptys
+            .lock()
+            .values()
+            .filter(|s| !s.exited.load(Ordering::SeqCst))
+            .cloned()
+            .collect();
+        sessions.sort_by(|a, b| a.name.cmp(&b.name));
+        sessions
     }
 
     pub fn list(&self) -> Vec<mux_proto::peer::PtyInfo> {
@@ -111,6 +132,7 @@ impl Manager {
             client: Mutex::new(None),
             master: pty.master,
             child: pty.child,
+            adopted: false,
             exited: AtomicBool::new(false),
             exit_code: AtomicI32::new(0),
         });
@@ -120,6 +142,40 @@ impl Manager {
 
         tracing::info!(name, ?command, "pty created");
         Ok((session, true))
+    }
+
+    /// Take over a pty from a predecessor daemon: the inherited master fd
+    /// plus a fresh VT primed with the predecessor's screen snapshot, so
+    /// a reattaching client repaints exactly what it had.
+    pub fn adopt(
+        &self,
+        pty: mux_proto::migrate::MigratePty,
+        master: std::os::fd::OwnedFd,
+    ) -> Result<()> {
+        if self.get(&pty.name).is_some() {
+            bail!("pty {} already exists", pty.name);
+        }
+        crate::pty::set_nonblocking(&master).context("nonblocking master")?;
+        let mut terminal =
+            ghostty_vt::Terminal::new(pty.rows, pty.cols).context("terminal alloc")?;
+        terminal.feed(&pty.screen);
+        let session = Arc::new(PtySession {
+            name: pty.name.clone(),
+            command: pty.command,
+            terminal: Mutex::new(terminal),
+            client: Mutex::new(None),
+            master: tokio::io::unix::AsyncFd::new(master).context("AsyncFd")?,
+            child: nix::unistd::Pid::from_raw(pty.child_pid),
+            adopted: true,
+            exited: AtomicBool::new(false),
+            exit_code: AtomicI32::new(0),
+        });
+        self.ptys.lock().insert(pty.name.clone(), session.clone());
+
+        tokio::spawn(read_loop(self.clone(), session));
+
+        tracing::info!(name = pty.name, pid = pty.child_pid, "pty adopted");
+        Ok(())
     }
 
     pub fn kill(&self, name: &str) -> bool {
@@ -143,6 +199,15 @@ impl Manager {
     }
 }
 
+/// Outcome of one readiness turn of the read loop.
+enum Step {
+    /// `n` bytes were fed to the VT; `tx` is the client to forward to.
+    Fed(usize, Option<mpsc::Sender<ClientMsg>>),
+    Retry,
+    Eof,
+    Failed(std::io::Error),
+}
+
 /// PTY -> terminal + attached client. One task per pty for its lifetime;
 /// when the PTY EOFs it reaps the child and propagates the exit, so the
 /// client always sees all output BEFORE the exit event.
@@ -152,38 +217,46 @@ async fn read_loop(manager: Manager, session: Arc<PtySession>) {
         let Ok(mut guard) = session.master.readable().await else {
             break;
         };
-        let read = guard.try_io(|fd| {
-            nix::unistd::read(std::os::fd::AsRawFd::as_raw_fd(fd.get_ref()), &mut buf)
-                .map_err(|e| std::io::Error::from_raw_os_error(e as i32))
-        });
-        match read {
-            Ok(Ok(0)) => break, // EOF: child side gone
-            Ok(Ok(n)) => {
-                // Feed the VT and resolve the client under the SAME lock
-                // (the attach race fix; see module docs).
-                let tx = {
-                    let mut term = session.terminal.lock();
+        // Read, feed the VT and resolve the client under ONE terminal
+        // lock. Feed+resolve is the attach race fix (see module docs);
+        // including the read is what makes a self-upgrade lossless: the
+        // handoff snapshots every VT while holding these locks, so no
+        // byte can leave the pty for a VT that is about to be discarded.
+        let step = {
+            let mut term = session.terminal.lock();
+            let read = guard.try_io(|fd| {
+                nix::unistd::read(std::os::fd::AsRawFd::as_raw_fd(fd.get_ref()), &mut buf)
+                    .map_err(|e| std::io::Error::from_raw_os_error(e as i32))
+            });
+            match read {
+                Ok(Ok(0)) => Step::Eof, // child side gone
+                Ok(Ok(n)) => {
                     term.feed(&buf[..n]);
-                    session.client.lock().as_ref().map(|c| c.tx.clone())
-                };
-                if let Some(tx) = tx {
-                    let send =
-                        tx.send_timeout(ClientMsg::Output(buf[..n].to_vec()), CLIENT_SEND_TIMEOUT);
-                    if send.await.is_err() {
-                        // Slow or gone: disconnect, never drop bytes silently.
-                        tracing::warn!(name = %session.name, "client too slow; detaching");
-                        *session.client.lock() = None;
-                    }
+                    Step::Fed(n, session.client.lock().as_ref().map(|c| c.tx.clone()))
+                }
+                // EIO on darwin/linux when the child exits: treat as EOF.
+                Ok(Err(e)) if e.raw_os_error() == Some(libc::EIO) => Step::Eof,
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => Step::Retry,
+                Ok(Err(e)) => Step::Failed(e),
+                Err(_would_block) => Step::Retry,
+            }
+        };
+        match step {
+            Step::Fed(n, Some(tx)) => {
+                let send =
+                    tx.send_timeout(ClientMsg::Output(buf[..n].to_vec()), CLIENT_SEND_TIMEOUT);
+                if send.await.is_err() {
+                    // Slow or gone: disconnect, never drop bytes silently.
+                    tracing::warn!(name = %session.name, "client too slow; detaching");
+                    *session.client.lock() = None;
                 }
             }
-            // EIO on darwin/linux when the child exits: treat as EOF.
-            Ok(Err(e)) if e.raw_os_error() == Some(libc::EIO) => break,
-            Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Ok(Err(e)) => {
+            Step::Fed(_, None) | Step::Retry => {}
+            Step::Eof => break,
+            Step::Failed(e) => {
                 tracing::warn!(name = %session.name, error = %e, "pty read failed");
                 break;
             }
-            Err(_would_block) => {}
         }
     }
     reap(manager, session).await;
@@ -194,12 +267,15 @@ async fn read_loop(manager: Manager, session: Arc<PtySession>) {
 /// reattach to, and the app closes the pane on Exit.
 async fn reap(manager: Manager, session: Arc<PtySession>) {
     let pid = session.child;
-    let status = tokio::task::spawn_blocking(move || nix::sys::wait::waitpid(pid, None)).await;
-
-    let code = match status {
-        Ok(Ok(nix::sys::wait::WaitStatus::Exited(_, code))) => code,
-        Ok(Ok(nix::sys::wait::WaitStatus::Signaled(_, signal, _))) => 128 + signal as i32,
-        _ => 1,
+    let code = if session.adopted {
+        wait_adopted(pid).await
+    } else {
+        let status = tokio::task::spawn_blocking(move || nix::sys::wait::waitpid(pid, None)).await;
+        match status {
+            Ok(Ok(nix::sys::wait::WaitStatus::Exited(_, code))) => code,
+            Ok(Ok(nix::sys::wait::WaitStatus::Signaled(_, signal, _))) => 128 + signal as i32,
+            _ => 1,
+        }
     };
     session.exit_code.store(code, Ordering::SeqCst);
     session.exited.store(true, Ordering::SeqCst);
@@ -213,6 +289,23 @@ async fn reap(manager: Manager, session: Arc<PtySession>) {
     }
     manager.remove_if_same(&session);
     tracing::info!(name = %session.name, code, "pty exited");
+}
+
+/// An adopted child (migrate.rs) belongs to a daemon that is gone, so
+/// `waitpid` answers ECHILD and darwin offers no pidfd: its exit is
+/// observed, not reaped. The PTY already reported EOF, which means the
+/// slave side closed; wait briefly for the pid itself to disappear (init
+/// reaps the reparented child) and report 0, because a foreign child's
+/// status is genuinely unknowable.
+async fn wait_adopted(pid: nix::unistd::Pid) -> i32 {
+    let deadline = std::time::Instant::now() + ADOPTED_EXIT_GRACE;
+    while std::time::Instant::now() < deadline {
+        if !crate::migrate::alive(pid) {
+            break;
+        }
+        tokio::time::sleep(ADOPTED_EXIT_POLL).await;
+    }
+    0
 }
 
 /// Everything attach needs to hand back to the connection handler.

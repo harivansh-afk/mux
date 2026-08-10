@@ -9,10 +9,14 @@
 //! - slow clients are detached, never silently skipped
 //!
 //! Listener: per-uid 0600 unix socket at `/tmp/muxd-<uid>.sock` (short path:
-//! `sun_path` is 104 bytes on darwin). Token auth returns with TCP in M3;
-//! `SCM_RIGHTS` live-fd self-upgrade (migrate.rs upstream) is M2.5.
+//! `sun_path` is 104 bytes on darwin). Token auth returns with TCP in M3.
+//!
+//! `--upgrade` replaces a running daemon without killing a shell: the new
+//! process inherits the live PTY fds plus a screen snapshot per pty over
+//! `SCM_RIGHTS` (migrate.rs), then takes the socket.
 
 mod manager;
+mod migrate;
 mod pty;
 mod server;
 
@@ -28,6 +32,10 @@ fn socket_path_from_args() -> std::path::PathBuf {
         }
     }
     mux_proto::peer::socket_path(nix::unistd::getuid().as_raw())
+}
+
+fn has_flag(flag: &str) -> bool {
+    std::env::args().skip(1).any(|arg| arg == flag)
 }
 
 #[tokio::main]
@@ -47,5 +55,13 @@ async fn main() -> Result<()> {
     }
 
     let socket = socket_path_from_args();
-    server::serve(manager::Manager::default(), &socket).await
+    let manager = manager::Manager::default();
+    // Adopt first: the predecessor owns the socket until it hands over.
+    if has_flag("--upgrade") {
+        migrate::adopt_from_predecessor(&manager).await;
+    }
+    let listener = server::bind(&socket).await?;
+    migrate::write_pidfile()?;
+    migrate::spawn_handoff_task(manager.clone());
+    server::serve(manager, listener).await
 }
