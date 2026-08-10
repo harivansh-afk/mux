@@ -33,6 +33,9 @@ lets one session span machines.
 
 ## Milestones
 
-M1 local-only app; M2 local muxd (kill the app mid-htop, reopen, htop is still
-there); M3 remote muxd + ix VMs via `ix shell` relay; M4 native ix QUIC client;
-M5 agent identity, workspace env, JSON CLI, predictive echo.
+M1 local-only app (done); M2 local muxd - kill the app mid-htop, reopen, htop is
+still there (done; M2.5 daemon self-upgrade via SCM_RIGHTS pending); M3 remote
+muxd over QUIC streams (quinn - never ssh/mosh/plain TCP; the local muxd brokers
+one connection per host) + ix VMs via `ix shell` relay; M4 native ix client
+(their codec encoding + connect-token dial; same session protocol); M5 agent
+identity, workspace env, JSON CLI, predictive echo.

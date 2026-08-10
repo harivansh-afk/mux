@@ -116,8 +116,9 @@ The wire protocol becomes an open API for "give me a terminal on that machine."
 <span class="c">│</span>         <span class="b">▼</span> unix socket <span class="c">│</span>                  <span class="c">│</span>                            <span class="c">│</span>
 <span class="c">│</span>  <span class="p">muxd</span> (local)         <span class="c">│</span>                  <span class="c">│</span>                            <span class="c">│</span>
 <span class="c">└──────────────────────<span class="c">│</span>──────────────────<span class="c">│</span>────────────────────────────┘</span>
-                        <span class="b">▼</span> TCP over        <span class="b">▼</span> QUIC/WebTransport
-                          tailscale/ssh      + connect token (ix native)
+                        <span class="b">▼</span> QUIC (quinn):    <span class="b">▼</span> QUIC/WebTransport
+                          1 conn per host,    + connect token (ix native)
+                          1 stream per pane
                  <span class="p">muxd</span> (linux box)       <span class="p">ix-agent → ix-console</span> (ix VM)
 
 <span class="c">muxd = ix-console fork: session manager + PTY + headless ghostty-vt.</span>
@@ -164,7 +165,7 @@ and a single bearer token</b> read from <code>/run/ix/console-token</code>. So:<
 <table>
 <tr><th>Target</th><th>Transport</th><th>Auth</th><th>Server</th></tr>
 <tr><td>Mac (local panes)</td><td>Unix socket</td><td>filesystem perms</td><td>muxd</td></tr>
-<tr><td>Linux box</td><td>TCP over tailscale (or ssh -L)</td><td>bearer token file</td><td>muxd (ix-console fork)</td></tr>
+<tr><td>Linux box</td><td>QUIC streams (quinn); local muxd brokers one connection per host</td><td>pinned self-signed cert (TOFU) + bearer token file</td><td>muxd (ix-console fork)</td></tr>
 <tr><td>ix VM (v1)</td><td>whatever <code>ix shell</code> does</td><td>ix connect token</td><td>unmodified ix-console</td></tr>
 <tr><td>ix VM (v2)</td><td>QUIC/WebTransport, native client</td><td>connect token JWT + pinned cert</td><td>unmodified ix-console</td></tr>
 </table>
@@ -204,8 +205,12 @@ killing sessions), the <code>ghostty-vt</code> crate (headless VT + <code>render
 installed; bytes in the window are lost - upstream has a test proving it:
 <code>missed_output_causes_divergence</code>). Also: make <code>migrate.rs</code> carry a screen snapshot
 across restarts (upstream builds a fresh empty Terminal and loses scrollback).</li>
-<li><b>Listen on</b>: unix socket (local) or TCP loopback/tailscale (remote), bearer token file,
-re-read per connection.</li>
+<li><b>Listen on</b>: unix socket (local, 0600 - shipping in M2) and QUIC via quinn (remote, M3):
+each bidirectional stream is one logical connection (same handshake, same lanes - the handler is
+generic over any byte stream). Auth: self-signed cert generated on first run, client pins the key
+ssh-known-hosts style, plus a bearer token file re-read per connection. Panes never dial the network
+themselves: they attach to the LOCAL muxd, which brokers one QUIC connection per remote host and
+relays a stream per pane - reconnect and roaming (QUIC connection migration) live in one place.</li>
 </ul>
 
 <h3>mux-attach <span class="pill">Rust</span> <span class="pill">~500 LOC</span></h3>
@@ -272,45 +277,52 @@ content. Later upgrade path: the brand-new GHOSTSNP binary snapshot format (libg
 it has a compat guarantee - Mitchell has said upstream is building reconnectable terminals on it.
 </div>
 
-<h2>6. Repo layout</h2>
+<h2>6. Repo layout (as built)</h2>
 <pre>
 mux/
 ├── README.md
 ├── docs/architecture.html          <span class="c">← this file</span>
-├── app/                            <span class="c">Mux.app - Swift, builds on the Mac</span>
-│   ├── Mux.xcodeproj
-│   ├── Sources/
-│   │   ├── App/                    <span class="c">lifecycle, ghostty_app_t wrapper, action_cb dispatch</span>
-│   │   ├── Surface/                <span class="c">SurfaceView glue (adapted from ghostty, MIT)</span>
-│   │   ├── Tiling/                 <span class="c">SplitTree, Spatial, prefix + modes, keybindings</span>
-│   │   └── State/                  <span class="c">layout snapshots, restore orchestration</span>
-│   └── GhosttyKit/                 <span class="c">module.modulemap; xcframework fetched, not vendored</span>
-├── crates/                         <span class="c">Rust workspace - builds anywhere, tests on spark</span>
-│   ├── mux-proto/                  <span class="c">lane framing + control types + mini codec</span>
-│   ├── muxd/                       <span class="c">ix-console fork: sessions, PTY, reattach, migrate</span>
-│   ├── mux-attach/                 <span class="c">stdio relay (the pane command)</span>
-│   └── ghostty-vt/                 <span class="c">headless VT + render_reattach (zig shim, from ix)</span>
-├── scripts/fetch-ghosttykit.sh     <span class="c">muxy-style: prebuilt xcframework + resources from CI</span>
+├── app/                            <span class="c">Mux.app - SwiftPM, builds on the Mac</span>
+│   ├── Package.swift               <span class="c">executable target Mux + GhosttyKit binary target</span>
+│   ├── Sources/Mux/
+│   │   ├── App/                    <span class="c">main, AppDelegate, GhosttyRuntime (action_cb dispatch)</span>
+│   │   ├── Terminal/               <span class="c">PaneView(+Input): surface glue, exec's mux-attach</span>
+│   │   ├── Tiling/                 <span class="c">Session (the layout unit), SplitTree, PrefixEngine</span>
+│   │   ├── State/                  <span class="c">Snapshot: versioned JSON, v1→v2 migration</span>
+│   │   └── UI/                     <span class="c">MuxWindow(+Controller), ModeBar, HelpOverlay, Theme</span>
+│   └── GhosttyKit/                 <span class="c">xcframework, copied/fetched - never vendored in git</span>
+├── crates/                         <span class="c">Rust workspace (zig 0.16 + GHOSTTY_SOURCE_DIR to build)</span>
+│   ├── mux-proto/                  <span class="c">frame.rs (ix framing) + peer.rs (postcard control) + shell.rs (ix types, M4)</span>
+│   ├── muxd/                       <span class="c">daemon: manager/pty/server; ptys survive clients</span>
+│   ├── mux-attach/                 <span class="c">raw-mode stdio relay (the pane command)</span>
+│   └── ghostty-vt/                 <span class="c">headless VT + render_reattach (zig shim, vendored from ix)</span>
+├── scripts/
+│   ├── make-app.sh                 <span class="c">swift build + cargo release + bundle all three binaries</span>
+│   ├── fetch-ghosttykit.sh         <span class="c">prebuilt xcframework (ReleaseFast REQUIRED - see comments)</span>
+│   └── lint/no-cargo-path-dep.sh
+├── .forgejo/workflows/ci.yml       <span class="c">fmt/clippy(pedantic)/test/audit + ast-grep + swift lints</span>
 └── justfile
 </pre>
 <p>Prebuilt GhosttyKit (the muxy pattern): a CI job builds <code>GhosttyKit.xcframework</code> +
-resources tarball from pinned upstream; the app repo downloads release assets. No Zig toolchain on
-dev machines. Zig 0.16 only in that CI job. Everything MIT end to end.</p>
+resources tarball from pinned upstream; the app repo downloads release assets. Until that CI exists,
+<code>make-app.sh</code> copies from a local ghostty checkout - ReleaseFast only (a Debug framework
+stalls the IO thread under load and its asserts crash silently). Everything MIT end to end.</p>
 
 <h2>7. Milestones</h2>
 <table>
 <tr><th></th><th>Deliverable</th><th>Proof</th></tr>
 <tr><td><b>M0</b> <span class="pill now">now</span></td><td>Repo, this doc, Rust workspace skeleton,
 GhosttyKit fetch script</td><td><code>cargo test</code> green on spark</td></tr>
-<tr><td><b>M1</b> <span class="pill now">first light</span></td><td>Local-only Mux.app: GhosttyKit panes,
+<tr><td><b>M1</b> <span class="pill now">done</span></td><td>Local-only Mux.app: GhosttyKit panes,
 SplitTree, prefix keys, layout persist/restore. Panes are plain local exec - no daemon yet.</td>
 <td>Daily-drivable terminal with splits on the Mac</td></tr>
-<tr><td><b>M2</b> <span class="pill later"></span></td><td>muxd + mux-attach on localhost: every pane a
-session; detach/reattach; app restart restores screens; daemon self-upgrade via SCM_RIGHTS handoff</td>
-<td>kill Mux.app mid-<code>htop</code>, reopen, htop still there</td></tr>
-<tr><td><b>M3</b> <span class="pill later"></span></td><td>Remote: muxd on spark over tailscale;
-ix VMs via <code>ix shell</code> relay command</td><td>one window, three panes: mac zsh, spark nvim,
-ix VM build - visually indistinguishable</td></tr>
+<tr><td><b>M2</b> <span class="pill now">done</span></td><td>muxd + mux-attach on localhost: every pane a
+pty; detach/reattach; app restart restores screens. Self-upgrade via SCM_RIGHTS handoff is M2.5.</td>
+<td>killed Mux.app mid-<code>btop</code>, reopened: same pid, exact screen replayed</td></tr>
+<tr><td><b>M3</b> <span class="pill later"></span></td><td>Remote: muxd on spark over QUIC (quinn;
+never ssh/mosh/plain TCP), local muxd as per-host connection broker; ix VMs via <code>ix shell</code>
+relay command</td><td>one window, three panes: mac zsh, spark nvim, ix VM build - visually
+indistinguishable; wifi-to-hotspot hop mid-session and the spark pane never blinks</td></tr>
 <tr><td><b>M4</b> <span class="pill later"></span></td><td>Native ix protocol client in mux-attach
 (QUIC + connect token); wire-compat golden tests</td><td>attach to an ix VM with no ix CLI installed</td></tr>
 <tr><td><b>M5</b> <span class="pill later"></span></td><td>Taste: agent identity + lifecycle states on
@@ -356,9 +368,10 @@ Acceptable (it is tmux's model); GHOSTSNP later makes it exact.</li>
 <li><b>Crowded space</b> (muxy, agterm, cmux, forge...). The differentiator is not "multiplexer on
 libghostty" - it is native ix protocol + daemon-owned sessions on every target + the agent-session
 model. Nobody else has the protocol.</li>
-<li><b>Known upstream bug inherited</b>: ix#10126 same-node QUIC hairpin (the ~52s workaround that
-plausibly killed the predecessor's ix integration, #408). mux's muxd path does not touch QUIC; the ix-VM path inherits
-it until upstream fixes it. Scope it out of the demo path.</li>
+<li><b>Known upstream bug, scoped</b>: ix#10126 same-node QUIC hairpin (the ~52s workaround that
+plausibly killed the predecessor's ix integration, #408). muxd's remote QUIC (M3) is our own quinn
+client/server, so it does not inherit this; only the native ix-VM path (M4, ix's stack) does, until
+upstream fixes it. Keep the ix hop out of the demo path.</li>
 </ul>
 
 <h2>10. Decisions taken (defaults, revisit if wrong)</h2>
