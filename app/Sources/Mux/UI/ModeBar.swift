@@ -30,15 +30,18 @@ final class ModeBarView: NSView {
     /// Equal inset from the left and bottom edges of the terminal area,
     /// so the box sits concentric with the corner.
     static let margin: CGFloat = 4
-    /// Horizontal padding between the box edge and the text. Matches the
-    /// vertical slack around the text ((height - line height) / 2), so the
-    /// visible badge sits concentric with the window corner: the box bg is
-    /// the terminal bg, so the badge IS the visual edge of the bar.
-    static let padding: CGFloat = 4
+
+    /// The box bg is the terminal bg, so the badge is the visual edge of
+    /// the bar: its inset inside the box must be identical on every side.
+    /// The horizontal inset is therefore derived from the vertical slack
+    /// ((height - label height) / 2), making left gap == bottom gap exactly.
+    private var textInset: CGFloat {
+        max(0, (Self.height - label.fittingSize.height) / 2)
+    }
 
     /// Content-sized width for the current segments.
     var desiredWidth: CGFloat {
-        label.attributedStringValue.size().width + Self.padding * 2
+        label.fittingSize.width + textInset * 2
     }
 
     private let label = NSTextField(labelWithString: "")
@@ -106,11 +109,12 @@ final class ModeBarView: NSView {
 
     override func layout() {
         super.layout()
-        label.sizeToFit()
+        let size = label.fittingSize
+        let inset = max(0, (bounds.height - size.height) / 2)
         label.frame = NSRect(
-            x: Self.padding,
-            y: (bounds.height - label.frame.height) / 2,
-            width: min(label.frame.width, bounds.width - Self.padding * 2),
-            height: label.frame.height)
+            x: inset,
+            y: inset,
+            width: min(size.width, bounds.width - inset * 2),
+            height: size.height)
     }
 }
