@@ -119,11 +119,18 @@ def main():
     assert b"RMARKER-42" in out, f"no marker via broker: {out[-400:]!r}"
     print("PASS: pane attached through local broker -> QUIC -> remote daemon")
 
-    # 2. TOFU pin recorded.
+    # 2. TOFU pin recorded - and byte-identical to the pin the remote
+    # daemon logged, which is what a user copies into known_hosts. This
+    # equality is the assertion that catches format drift between the
+    # server's log and the client's parser.
     with open(os.path.join(local_home, ".local/state/mux/known_hosts")) as f:
         known_hosts = f.read()
     assert "testbox sha256:" in known_hosts, known_hosts
-    print("PASS: TOFU pin recorded")
+    stored = known_hosts.split("testbox ", 1)[1].split()[0]
+    with open(os.path.join(remote_home, "muxd.log")) as f:
+        log = f.read()
+    assert stored in log, f"pin {stored!r} not found in the daemon's startup log"
+    print("PASS: TOFU pin recorded and matches the daemon's logged pin")
 
     # 3. pty owned by the remote daemon.
     lst_remote = subprocess.run(
