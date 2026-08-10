@@ -392,8 +392,28 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func windowWillClose(_: Notification) {
+    /// Occluded surfaces stop rendering (ghostty renderer throttle).
+    /// A pane draws only if the window is visible AND its session active.
+    func windowDidChangeOcclusionState(_: Notification) {
+        let windowVisible = window.occlusionState.contains(.visible)
         for session in sessions {
+            for (_, pane) in session.panes {
+                pane.setOcclusion(visible: windowVisible && !pane.isHidden)
+            }
+        }
+    }
+
+    func windowWillClose(_: Notification) {
+        // A deliberate window close kills its daemon ptys. During app
+        // termination this is a detach instead: survival across quit and
+        // crash is the point of M2.
+        let terminating = (NSApp.delegate as? AppDelegate)?.isTerminating ?? false
+        for session in sessions {
+            if !terminating {
+                for (_, pane) in session.panes {
+                    pane.killRemote()
+                }
+            }
             session.destroyAllSurfaces()
         }
         sessions.removeAll()

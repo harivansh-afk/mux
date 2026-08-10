@@ -14,9 +14,18 @@ swift build -c "$CONFIG"
 BIN="$(swift build -c "$CONFIG" --show-bin-path)/Mux"
 BUNDLE="$APPDIR/.build/Mux.app"
 
+# muxd + mux-attach: the session daemon and the relay every pane runs.
+# ghostty-vt's build shim needs zig 0.16 and a ghostty source checkout.
+export GHOSTTY_SOURCE_DIR="${GHOSTTY_SOURCE_DIR:-$GHOSTTY_SRC/src}"
+if ! command -v zig >/dev/null && [ -d "$HOME/tools/zig-0.16.0" ]; then
+  export PATH="$HOME/tools/zig-0.16.0:$PATH"
+fi
+(cd "$ROOT" && cargo build --release -p muxd -p mux-attach)
+
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$BIN" "$BUNDLE/Contents/MacOS/Mux"
+cp "$ROOT/target/release/muxd" "$ROOT/target/release/mux-attach" "$BUNDLE/Contents/MacOS/"
 
 # Ghostty runtime resources. GHOSTTY_RESOURCES_DIR points at Resources/ghostty,
 # but the terminfo db lives at the SIBLING path Resources/terminfo (ghostty

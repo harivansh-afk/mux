@@ -84,6 +84,7 @@ final class Session {
 
     func closeFocusedPane() {
         guard let pane = focusedPane else { return }
+        pane.killRemote()
         pane.destroySurface()
         removePane(pane)
     }
@@ -192,32 +193,43 @@ final class Session {
     // MARK: - Layout
 
     /// Apply the tree layout to pane frames within `bounds`. An inactive
-    /// session hides all its panes; their processes keep running.
+    /// session hides all its panes; their processes keep running but the
+    /// renderer stops drawing them (occlusion).
     func applyLayout(in bounds: CGRect, visible: Bool = true) {
         guard visible else {
             for (_, pane) in panes {
-                pane.isHidden = true
+                hide(pane)
             }
             return
         }
         guard let tree else { return }
 
         if let zoomedID, let zoomed = panes[zoomedID] {
-            for (_, pane) in panes {
-                pane.isHidden = pane.id != zoomedID
+            for (_, pane) in panes where pane.id != zoomedID {
+                hide(pane)
             }
-            zoomed.frame = bounds
+            show(zoomed, frame: bounds)
             return
         }
 
         let rects = tree.layout(in: bounds)
         for (id, pane) in panes {
             if let rect = rects[id] {
-                pane.isHidden = false
-                pane.frame = rect
+                show(pane, frame: rect)
             } else {
-                pane.isHidden = true
+                hide(pane)
             }
         }
+    }
+
+    private func show(_ pane: PaneView, frame: CGRect) {
+        pane.isHidden = false
+        pane.frame = frame
+        pane.setOcclusion(visible: true)
+    }
+
+    private func hide(_ pane: PaneView) {
+        pane.isHidden = true
+        pane.setOcclusion(visible: false)
     }
 }

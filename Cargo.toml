@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mux-proto", "crates/mux-attach", "crates/muxd"]
+members = ["crates/mux-proto", "crates/mux-attach", "crates/muxd", "crates/ghostty-vt"]
 
 [workspace.package]
 edition = "2021"
@@ -24,8 +24,14 @@ multiple_crate_versions = "allow"
 # Local crates: declared once here (the one table where a `path` is allowed);
 # members inherit with `name.workspace = true`.
 mux-proto = { path = "crates/mux-proto" }
+ghostty-vt = { path = "crates/ghostty-vt" }
 anyhow = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+nix = { version = "0.29", features = ["term", "process", "fs", "socket", "poll", "signal", "user"] }
+parking_lot = "0.12"
+libc = "0.2"

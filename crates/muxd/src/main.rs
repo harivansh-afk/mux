@@ -1,26 +1,51 @@
-//! muxd: the session daemon. Fork of ix-console
-//! (ix/crates/vm/guest/console/agent, 4,289 LOC; ~2,500 LOC survive the fork).
+//! muxd: the session daemon. Fork of ix-console (see docs/architecture.html
+//! for the fork map). Keeps per-pty: PTY master (`AsyncFd`), child process,
+//! and a headless ghostty-vt Terminal fed from the PTY. Ptys survive client
+//! disconnect; reattach replays `render_screen_bytes()` (scrollback with
+//! per-cell SGR, DEC modes, tabstops, pending-wrap; never the palette).
 //!
-//! Keeps per-session: PTY master (`AsyncFd`, not `spawn_blocking`), child process,
-//! and a headless ghostty-vt Terminal fed from the PTY. Sessions survive client
-//! disconnect; reattach replays `render_screen_bytes()` (scrollback with per-cell
-//! SGR, DEC modes, tabstops, pending-wrap; deliberately never the palette).
+//! Upstream bugs fixed in this fork (see manager.rs):
+//! - the attach race (channel installed + dump rendered under one lock)
+//! - slow clients are detached, never silently skipped
 //!
-//! Fork plan (M2):
-//! - keep: manager.rs, session.rs, pty*.rs, io.rs, attach.rs, migrate.rs
-//!   (`SCM_RIGHTS` live-PTY handoff for zero-downtime daemon upgrades)
-//! - drop: service-init (OTel/Prometheus/Sentry/axum), vm-guest-* crates,
-//!   guest passwd/PATH assumptions, `local_open.rs`
-//! - fix: the attach race (render the screen dump AFTER installing the client
-//!   channel; upstream test `missed_output_causes_divergence` proves the gap)
-//! - fix: migrate.rs rebuilds an empty Terminal; carry a screen snapshot so
-//!   scrollback survives daemon restarts too
-//! - listen: unix socket (local) / TCP loopback+tailscale (remote), bearer
-//!   token file re-read per connection (golden-restore friendly)
-//! - macOS: rustix ptsname covers darwin (TIOCPTYGNAME); avoid $TMPDIR socket
-//!   paths (104-byte `sun_path` limit) - use short /tmp paths
+//! Listener: per-uid 0600 unix socket at `/tmp/muxd-<uid>.sock` (short path:
+//! `sun_path` is 104 bytes on darwin). Token auth returns with TCP in M3;
+//! `SCM_RIGHTS` live-fd self-upgrade (migrate.rs upstream) is M2.5.
 
-fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt().init();
-    anyhow::bail!("muxd is M2 work: fork of ix-console. See docs/architecture.html");
+mod manager;
+mod pty;
+mod server;
+
+use anyhow::Result;
+
+fn socket_path_from_args() -> std::path::PathBuf {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--socket" {
+            if let Some(path) = args.next() {
+                return path.into();
+            }
+        }
+    }
+    mux_proto::peer::socket_path(nix::unistd::getuid().as_raw())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
+    // The daemon must not die with a client mid-write, nor with the
+    // terminal that happened to birth it.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+    }
+
+    let socket = socket_path_from_args();
+    server::serve(manager::Manager::default(), &socket).await
 }

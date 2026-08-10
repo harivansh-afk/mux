@@ -1,0 +1,15 @@
+.{
+    .name = .ghostty_vt_zig,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{""},
+    .fingerprint = 0x19fa48fcc7e0b592,
+    .dependencies = .{
+        .uucode = .{
+            // jacobsandlund/uucode - unicode table generation. Pin matches
+            // the ghostty checkout GHOSTTY_SOURCE_DIR points at (HEAD).
+            .url = "https://deps.files.ghostty.org/uucode-2826a37a4562284fdacd8fa029d49509cc9bffcd.tar.gz",
+            .hash = "uucode-0.2.0-ZZjBPlK5VADj7fdoq7G8LIHzD5o6FSkcBXXrRWr4jnrA",
+        },
+    },
+}
