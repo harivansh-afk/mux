@@ -62,12 +62,14 @@ final class PrefixEngine {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
-            return self.handle(event)
+            return handle(event)
         }
     }
 
     deinit {
-        if let monitor { NSEvent.removeMonitor(monitor) }
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
     }
 
     private func setMode(_ newMode: Mode) {
@@ -99,7 +101,7 @@ final class PrefixEngine {
 
         switch mode {
         case .normal:
-            if hasCtrl && !hasCmd && key == "b" {
+            if hasCtrl, !hasCmd, key == "b" {
                 setMode(.prefix)
                 return nil
             }
@@ -107,7 +109,7 @@ final class PrefixEngine {
 
         case .prefix:
             // Literal prefix passthrough: ctrl+b again sends ctrl+b.
-            if hasCtrl && key == "b" {
+            if hasCtrl, key == "b" {
                 setMode(.normal)
                 return event
             }
@@ -141,32 +143,27 @@ final class PrefixEngine {
         }
     }
 
-    private func runPrefixAction(key: String, event: NSEvent) -> NSEvent? {
+    private func runPrefixAction(key: String, event _: NSEvent) -> NSEvent? {
         switch key {
         // Splits: ' right, - down.
         case "'": controller?.split(direction: .horizontal)
         case "-": controller?.split(direction: .vertical)
-
         // Focus movement.
         case "h": controller?.focusDirection(.left)
         case "j": controller?.focusDirection(.down)
         case "k": controller?.focusDirection(.up)
         case "l": controller?.focusDirection(.right)
-
         case "z": controller?.toggleZoom()
         case "x": controller?.closeFocusedPane()
         case "r": setMode(.resize)
         case "?": setMode(.help)
-
         // Sessions.
         case "c": controller?.newSession()
         case "n": controller?.nextSession()
         case "p": controller?.prevSession()
         case "1", "2", "3", "4", "5", "6", "7", "8", "9":
             controller?.selectSession(Int(key)! - 1)
-
         case "\u{1b}": break // cancel
-
         default:
             NSSound.beep()
         }

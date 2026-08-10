@@ -30,9 +30,16 @@ pub struct EnvVar {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
-    Create { command: Vec<String>, default_shell: bool },
-    Attach { session: u32 },
-    Peek { session: u32 },
+    Create {
+        command: Vec<String>,
+        default_shell: bool,
+    },
+    Attach {
+        session: u32,
+    },
+    Peek {
+        session: u32,
+    },
     List,
 }
 

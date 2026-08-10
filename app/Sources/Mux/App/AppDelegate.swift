@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controllers.first { $0.window.isKeyWindow } ?? controllers.first
     }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    func applicationDidFinishLaunching(_: Notification) {
         buildMenu()
 
         guard let runtime = GhosttyRuntime() else {
@@ -35,25 +35,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func applicationDidBecomeActive(_ notification: Notification) {
+    func applicationDidBecomeActive(_: Notification) {
         runtime?.setFocus(true)
     }
 
-    func applicationDidResignActive(_ notification: Notification) {
+    func applicationDidResignActive(_: Notification) {
         runtime?.setFocus(false)
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
+    func applicationWillTerminate(_: Notification) {
         saveSnapshot()
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
         true
     }
 
     // MARK: - Windows
 
-    @objc func newWindow(_ sender: Any?) {
+    @objc func newWindow(_: Any?) {
         guard let runtime else { return }
         let controller = MuxWindowController(runtime: runtime)
         controllers.append(controller)
@@ -81,14 +81,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return SessionSnapshot(
                     tree: tree, panes: paneMeta,
-                    focused: s.focusedID, zoomed: s.zoomedID)
+                    focused: s.focusedID, zoomed: s.zoomedID
+                )
             }
             guard !sessions.isEmpty else { return nil }
             let f = c.window.frame
             return WindowSnapshot(
                 frame: [f.origin.x, f.origin.y, f.size.width, f.size.height],
                 sessions: sessions,
-                activeSession: c.activeSessionIndex)
+                activeSession: c.activeSessionIndex
+            )
         }
         SnapshotStore.save(AppSnapshot(windows: windows))
     }
@@ -101,25 +103,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if w.frame.count == 4 {
                 controller.window.setFrame(
                     NSRect(x: w.frame[0], y: w.frame[1], width: w.frame[2], height: w.frame[3]),
-                    display: false)
+                    display: false
+                )
             }
             controller.restoreSessions(w.sessions, active: w.activeSession)
             controller.window.makeKeyAndOrderFront(nil)
         }
-        if controllers.isEmpty { newWindow(nil) }
+        if controllers.isEmpty {
+            newWindow(nil)
+        }
     }
 
-    @objc func closeKeyWindow(_ sender: Any?) {
+    @objc func closeKeyWindow(_: Any?) {
         NSApp.keyWindow?.close()
     }
 
     // MARK: - Clipboard menu actions
 
-    @objc func copyFromPane(_ sender: Any?) {
+    @objc func copyFromPane(_: Any?) {
         bindingAction("copy_to_clipboard")
     }
 
-    @objc func pasteToPane(_ sender: Any?) {
+    @objc func pasteToPane(_: Any?) {
         bindingAction("paste_from_clipboard")
     }
 

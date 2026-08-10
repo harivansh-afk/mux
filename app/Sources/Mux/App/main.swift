@@ -7,12 +7,13 @@ if getenv("GHOSTTY_RESOURCES_DIR") == nil {
     let candidates = [
         Bundle.main.resourcePath.map { $0 + "/ghostty" },
         NSHomeDirectory() + "/src/ghostty/zig-out/share/ghostty",
-    ].compactMap { $0 }
+    ].compactMap(\.self)
     if let found = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) {
         setenv("GHOSTTY_RESOURCES_DIR", found, 1)
     } else {
         FileHandle.standardError.write(Data(
-            "warning: GHOSTTY_RESOURCES_DIR not found; shell integration will be degraded\n".utf8))
+            "warning: GHOSTTY_RESOURCES_DIR not found; shell integration will be degraded\n".utf8
+        ))
     }
 }
 

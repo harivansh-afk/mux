@@ -1,0 +1,6 @@
+# Pin so the clippy lint set (pedantic denies churn across releases) is the
+# same locally and in CI. Bump deliberately, fixing new findings in the same
+# change.
+[toolchain]
+channel = "1.96.1"
+components = ["clippy", "rustfmt"]

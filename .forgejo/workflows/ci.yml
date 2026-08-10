@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Asymmetric on purpose (ported from ix): PR refs group per-ref and cancel
+# in progress, but main groups per-commit and never cancels - two
+# individually-green PRs can merge into a red union that no PR run ever
+# validated, so every main commit gets its own uncancelled run.
+concurrency:
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  SWIFTLINT_VERSION: "0.65.0"
+  SWIFTFORMAT_VERSION: "0.62.1"
+  ASTGREP_VERSION: "0.43.0"
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.1" # keep in sync with rust-toolchain.toml
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets
+      - run: cargo test --workspace
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: ast-grep@${{ env.ASTGREP_VERSION }}
+      - run: ast-grep test
+      - run: ast-grep scan
+      - run: ./scripts/lint/no-cargo-path-dep.sh
+
+  swift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SwiftLint and SwiftFormat (pinned static binaries)
+        # The AppKit target cannot build on Linux (xcframework binary target),
+        # so no Swift toolchain: both linters are self-contained binaries.
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)  sl_arch=amd64; sf_arch=linux ;;
+            aarch64) sl_arch=arm64; sf_arch=linux_aarch64 ;;
+            *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
+          esac
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o /tmp/swiftlint.zip \
+            "https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/swiftlint_linux_${sl_arch}.zip"
+          unzip -o -q /tmp/swiftlint.zip -d /tmp/swiftlint
+          install -m755 /tmp/swiftlint/swiftlint "$HOME/.local/bin/"
+          curl -fsSL -o /tmp/swiftformat.zip \
+            "https://github.com/nicklockwood/SwiftFormat/releases/download/${SWIFTFORMAT_VERSION}/swiftformat_${sf_arch}.zip"
+          unzip -o -q /tmp/swiftformat.zip -d /tmp/swiftformat
+          install -m755 /tmp/swiftformat/swiftformat* "$HOME/.local/bin/swiftformat"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: swiftformat --lint app/Sources
+      - run: swiftlint lint --strict app/Sources
+
+  # Ported from ix: a required status that cannot false-green when an
+  # upstream job is skipped or cancelled. Branch protection requires this
+  # job's status, not the individual gates.
+  closure-gate:
+    needs: [rust, lint, swift]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Mirror the required-root gate
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for r in $RESULTS; do
+            if [ "$r" != "success" ]; then
+              echo "a gate result was $r; refusing a false-green closure gate" >&2
+              exit 1
+            fi
+          done

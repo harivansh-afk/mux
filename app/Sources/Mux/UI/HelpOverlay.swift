@@ -80,10 +80,14 @@ final class HelpOverlayView: NSView {
         render()
         NotificationCenter.default.addObserver(
             self, selector: #selector(render),
-            name: .muxThemeDidChange, object: nil)
+            name: .muxThemeDidChange, object: nil
+        )
     }
 
-    required init?(coder: NSCoder) { fatalError("not supported") }
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("not supported")
+    }
 
     /// Content-fitting size, capped to the container.
     func desiredSize(in bounds: NSRect) -> NSSize {
@@ -92,10 +96,11 @@ final class HelpOverlayView: NSView {
         }
         lm.ensureLayout(for: container)
         let content = lm.usedRect(for: container).size
-        let chrome = Self.inset * 2 + Self.rowHeight * 2  // title + footer rows
+        let chrome = Self.inset * 2 + Self.rowHeight * 2 // title + footer rows
         return NSSize(
             width: min(content.width + Self.inset * 2, bounds.width - 48),
-            height: min(content.height + chrome, bounds.height * 0.75))
+            height: min(content.height + chrome, bounds.height * 0.75)
+        )
     }
 
     func scroll(by dy: CGFloat) {
@@ -113,17 +118,21 @@ final class HelpOverlayView: NSView {
         titleLabel.sizeToFit()
         closeBadge.sizeToFit()
         titleLabel.frame.origin = NSPoint(
-            x: inset, y: bounds.height - inset - (row + titleLabel.frame.height) / 2)
+            x: inset, y: bounds.height - inset - (row + titleLabel.frame.height) / 2
+        )
         closeBadge.frame.origin = NSPoint(
             x: bounds.width - inset - closeBadge.frame.width,
-            y: bounds.height - inset - (row + closeBadge.frame.height) / 2)
+            y: bounds.height - inset - (row + closeBadge.frame.height) / 2
+        )
         footerLabel.sizeToFit()
         footerLabel.frame.origin = NSPoint(
-            x: inset, y: inset + (row - footerLabel.frame.height) / 2 - 4)
+            x: inset, y: inset + (row - footerLabel.frame.height) / 2 - 4
+        )
         scrollView.frame = NSRect(
             x: inset, y: inset + row,
             width: bounds.width - inset * 2,
-            height: bounds.height - inset * 2 - row * 2)
+            height: bounds.height - inset * 2 - row * 2
+        )
     }
 
     @objc private func render() {
@@ -133,28 +142,33 @@ final class HelpOverlayView: NSView {
 
         titleLabel.attributedStringValue = NSAttributedString(
             string: "keybinds",
-            attributes: [.font: Self.boldFont, .foregroundColor: palette.text])
+            attributes: [.font: Self.boldFont, .foregroundColor: palette.text]
+        )
         closeBadge.attributedStringValue = NSAttributedString(
             string: " esc close ",
             attributes: [
                 .font: Self.boldFont,
                 .foregroundColor: palette.accentContrast,
                 .backgroundColor: palette.accent,
-            ])
+            ]
+        )
 
         let footer = NSMutableAttributedString()
         for (i, hint) in [("j/k", "scroll"), ("esc", "close")].enumerated() {
             if i > 0 {
                 footer.append(NSAttributedString(
                     string: "  \u{00B7}  ",
-                    attributes: [.font: Self.font, .foregroundColor: palette.dim]))
+                    attributes: [.font: Self.font, .foregroundColor: palette.dim]
+                ))
             }
             footer.append(NSAttributedString(
                 string: hint.0 + " ",
-                attributes: [.font: Self.boldFont, .foregroundColor: palette.accent]))
+                attributes: [.font: Self.boldFont, .foregroundColor: palette.accent]
+            ))
             footer.append(NSAttributedString(
                 string: hint.1,
-                attributes: [.font: Self.font, .foregroundColor: palette.dim]))
+                attributes: [.font: Self.font, .foregroundColor: palette.dim]
+            ))
         }
         footerLabel.attributedStringValue = footer
 
@@ -162,16 +176,20 @@ final class HelpOverlayView: NSView {
         for (i, section) in Self.sections.enumerated() {
             buffer.append(NSAttributedString(
                 string: (i == 0 ? "" : "\n") + section.title + "\n",
-                attributes: [.font: Self.boldFont, .foregroundColor: palette.text]))
+                attributes: [.font: Self.boldFont, .foregroundColor: palette.text]
+            ))
             for row in section.rows {
                 buffer.append(NSAttributedString(
                     string: row.key.padding(
                         toLength: max(Self.keyColumn, row.key.count + 2),
-                        withPad: " ", startingAt: 0),
-                    attributes: [.font: Self.boldFont, .foregroundColor: palette.accent]))
+                        withPad: " ", startingAt: 0
+                    ),
+                    attributes: [.font: Self.boldFont, .foregroundColor: palette.accent]
+                ))
                 buffer.append(NSAttributedString(
                     string: row.desc + "\n",
-                    attributes: [.font: Self.font, .foregroundColor: palette.dim]))
+                    attributes: [.font: Self.font, .foregroundColor: palette.dim]
+                ))
             }
         }
         textView.textStorage?.setAttributedString(buffer)
