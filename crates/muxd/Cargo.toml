@@ -15,7 +15,9 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 mux-proto.workspace = true
 ghostty-vt.workspace = true
-nix.workspace = true
+# `uio` adds sendmsg/recvmsg + SCM_RIGHTS, which the self-upgrade handoff
+# (src/migrate.rs) is built on; only muxd needs it.
+nix = { workspace = true, features = ["uio"] }
 parking_lot.workspace = true
 libc.workspace = true
 quinn.workspace = true

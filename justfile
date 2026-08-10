@@ -14,6 +14,12 @@ e2e:
     cargo build -p muxd -p mux-attach
     python3 scripts/test-muxd-e2e.py
 
+# `muxd --upgrade` adopts a live pty from the running daemon: same
+# isolation as `e2e`, same promise about your own daemon.
+upgrade-test:
+    cargo build -p muxd -p mux-attach
+    python3 scripts/test-muxd-upgrade.py
+
 # Everything CI gates on (Swift steps need the toolchain; see .forgejo/workflows/ci.yml)
 lint: check
     cargo fmt --check

@@ -14,11 +14,20 @@
 //! Plain threads, no async: stdin pump, winsize poll (200ms - coalesces
 //! during drags, same policy as ix's shell client), and the main thread
 //! draining the socket to stdout. Exit code mirrors the remote process.
+//!
+//! Socket EOF is not the end: only `ServerEvent::Exit` is. A daemon that
+//! goes away mid-session (a `muxd --upgrade` handoff, or a crash) is
+//! waited out and reattached to by name, which replays the screen. The
+//! two input threads outlive a reconnect - stdin cannot be read by two
+//! threads and a thread blocked in `read` cannot be cancelled - so they
+//! write through an [`Uplink`] whose socket the main loop swaps.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::process::exit;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use mux_proto::frame::{read_lane_frame, write_lane, FrameLimits};
@@ -33,6 +42,19 @@ fn socket_path() -> std::path::PathBuf {
     }
     peer::socket_path(nix::unistd::getuid().as_raw())
 }
+
+/// Reconnect pacing after the daemon goes away. A successor daemon binds
+/// the socket within milliseconds of the handoff, so start short.
+const RECONNECT_BACKOFF: Duration = Duration::from_millis(100);
+const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(2);
+const RECONNECT_GIVE_UP: Duration = Duration::from_secs(30);
+/// Reconnect attempts do not spawn a daemon at first. During a handoff
+/// the socket is briefly unanswered while the successor waits for the
+/// predecessor to exit; a client that raced in a fresh `muxd` there would
+/// bind the socket with no ptys and make the successor fail to start.
+/// Past this window no handoff is in flight, so a truly dead daemon does
+/// get replaced.
+const RESPAWN_AFTER: Duration = Duration::from_secs(5);
 
 /// Connect to muxd, spawning it first if the socket is dead.
 fn connect() -> Result<UnixStream> {
@@ -180,7 +202,12 @@ fn main() -> Result<()> {
     }
 
     let (host, name) = parse_target(&target.context("usage: mux-attach [host|local]:<name>")?)?;
-    run_attach(host, name, cwd, command)
+    run_attach(&Attach {
+        target: host,
+        name,
+        cwd,
+        command,
+    })
 }
 
 /// One-shot request/reply (list, kill).
@@ -229,31 +256,107 @@ fn run_control(target: Option<String>, mode: OpenMode) -> Result<()> {
     Ok(())
 }
 
-fn run_attach(
+/// The socket the input threads currently write to. `None` between a
+/// daemon going away and the reattach completing: input during that gap
+/// is dropped, the same as input typed at a pane whose daemon is wedged.
+#[derive(Clone)]
+struct Uplink(Arc<Mutex<Option<UnixStream>>>);
+
+impl Uplink {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(None)))
+    }
+
+    fn set(&self, stream: Option<UnixStream>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = stream;
+    }
+
+    /// Best effort: a failed write means this socket is already gone, and
+    /// the main loop's EOF is what drives the reconnect.
+    fn send(&self, lane: u8, payload: &[u8]) {
+        let mut guard = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(stream) = guard.as_mut() {
+            if write_lane(stream, lane, payload).is_err() || stream.flush().is_err() {
+                *guard = None;
+            }
+        }
+    }
+
+    fn shutdown_write(&self) {
+        let guard = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(stream) = guard.as_ref() {
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+        }
+    }
+}
+
+/// Why the relay for one connection ended.
+enum Relay {
+    /// The remote process exited: this is our exit code too.
+    Exited(i32),
+    /// Socket EOF with no `Exit` event: the daemon went away (upgrade or
+    /// crash) and the pty may well still be running under its successor.
+    DaemonGone,
+}
+
+/// What every (re)attach handshake repeats. Unchanged across a
+/// reconnect: same name means the successor daemon attaches us to the
+/// same pty rather than creating one.
+struct Attach {
     target: Option<String>,
     name: String,
     cwd: Option<String>,
     command: Vec<String>,
-) -> Result<()> {
-    let stream = connect()?;
-    let writer = stream.try_clone()?;
-    let mut reader = stream;
+}
 
+fn run_attach(attach: &Attach) -> Result<()> {
+    // The first connection is the user's command: its errors print
+    // normally, with no raw mode and no retry.
+    let mut stream = open_session(attach, connect()?)?;
+
+    let _raw = RawModeGuard::enable();
+    let uplink = Uplink::new();
+    let stdin_closed = Arc::new(AtomicBool::new(false));
+    spawn_input_threads(&uplink, &stdin_closed);
+
+    loop {
+        uplink.set(Some(stream.try_clone()?));
+        let relay = pump(&mut stream);
+        uplink.set(None);
+        match relay {
+            Relay::Exited(code) => exit(code),
+            // Our own pty died with the pane, so there is nothing left to
+            // reattach: the daemon keeps the pty for the next client.
+            Relay::DaemonGone if stdin_closed.load(Ordering::SeqCst) => exit(0),
+            Relay::DaemonGone => {}
+        }
+        stream = reconnect(attach, &stdin_closed)?;
+    }
+}
+
+/// Handshake on an open socket and check the reply.
+fn open_session(attach: &Attach, stream: UnixStream) -> Result<UnixStream> {
     let (cols, rows) = winsize();
-    let mut handshake_writer = writer.try_clone()?;
+    let mut writer = stream.try_clone()?;
     write_request(
-        &mut handshake_writer,
+        &mut writer,
         &OpenRequest {
             cols,
             rows,
             term: std::env::var("TERM").ok(),
             token: None,
-            target,
-            mode: OpenMode::Open { name, cwd, command },
+            target: attach.target.clone(),
+            // Same name every time: the daemon attaches us to the
+            // existing pty and replays its screen.
+            mode: OpenMode::Open {
+                name: attach.name.clone(),
+                cwd: attach.cwd.clone(),
+                command: attach.command.clone(),
+            },
         },
     )?;
 
-    // Reply first; errors print like a normal command, no raw mode yet.
+    let mut reader = stream;
     let Some(frame) = read_lane_frame(&mut reader, FrameLimits::default())? else {
         bail!("daemon closed during handshake");
     };
@@ -264,73 +367,98 @@ fn run_attach(
     if let Err(e) = reply {
         bail!("daemon error: {e}");
     }
+    Ok(reader)
+}
 
-    let _raw = RawModeGuard::enable();
+/// Wait out a daemon that went away and reattach by name.
+fn reconnect(attach: &Attach, stdin_closed: &AtomicBool) -> Result<UnixStream> {
+    let started = Instant::now();
+    let mut backoff = RECONNECT_BACKOFF;
+    loop {
+        // The pane died while we were waiting: nothing left to attach to.
+        if stdin_closed.load(Ordering::SeqCst) {
+            exit(0);
+        }
+        if started.elapsed() > RECONNECT_GIVE_UP {
+            bail!("muxd went away and did not come back");
+        }
+        std::thread::sleep(backoff);
+        backoff = (backoff * 2).min(RECONNECT_BACKOFF_MAX);
 
-    // stdin -> socket (input lane). EOF means our PTY died with the pane.
+        let socket = if started.elapsed() < RESPAWN_AFTER {
+            UnixStream::connect(socket_path()).ok()
+        } else {
+            connect().ok()
+        };
+        if let Some(socket) = socket {
+            if let Ok(stream) = open_session(attach, socket) {
+                return Ok(stream);
+            }
+        }
+    }
+}
+
+/// stdin -> input lane, and a winsize poll -> control lane (SIGWINCH
+/// coalesces during drags). Both live for the whole process and follow
+/// the uplink across reconnects.
+fn spawn_input_threads(uplink: &Uplink, stdin_closed: &Arc<AtomicBool>) {
     {
-        let mut writer = writer.try_clone()?;
+        let uplink = uplink.clone();
+        let stdin_closed = Arc::clone(stdin_closed);
         std::thread::spawn(move || {
             let mut stdin = std::io::stdin().lock();
             let mut buf = [0u8; 4096];
             loop {
                 match stdin.read(&mut buf) {
+                    // EOF means our PTY died with the pane.
                     Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if write_lane(&mut writer, IN_LANE_INPUT, &buf[..n]).is_err() {
-                            break;
-                        }
-                        if writer.flush().is_err() {
-                            break;
-                        }
-                    }
+                    Ok(n) => uplink.send(IN_LANE_INPUT, &buf[..n]),
                 }
             }
-            let _ = writer.shutdown(std::net::Shutdown::Write);
+            stdin_closed.store(true, Ordering::SeqCst);
+            uplink.shutdown_write();
         });
     }
 
-    // Winsize poll -> control lane (SIGWINCH coalesces during drags).
-    {
-        let mut writer = writer.try_clone()?;
-        let mut last = (cols, rows);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(200));
-            let now = winsize();
-            if now != last {
-                last = now;
-                let control = ClientControl::Resize {
-                    cols: now.0,
-                    rows: now.1,
-                };
-                if write_lane(&mut writer, IN_LANE_CONTROL, &peer::encode(&control)).is_err() {
-                    break;
-                }
-                let _ = writer.flush();
-            }
-        });
-    }
+    let uplink = uplink.clone();
+    let mut last = winsize();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(200));
+        let now = winsize();
+        if now != last {
+            last = now;
+            let control = ClientControl::Resize {
+                cols: now.0,
+                rows: now.1,
+            };
+            uplink.send(IN_LANE_CONTROL, &peer::encode(&control));
+        }
+    });
+}
 
-    // Socket -> stdout; events decide the exit code.
+/// Socket -> stdout for one connection.
+fn pump(reader: &mut UnixStream) -> Relay {
     let mut stdout = std::io::stdout().lock();
-    let mut exit_code = 0;
-    while let Some(frame) = read_lane_frame(&mut reader, FrameLimits::default())? {
+    loop {
+        // A read error mid-frame is a daemon that vanished, not a
+        // protocol failure worth killing the pane over.
+        let Ok(Some(frame)) = read_lane_frame(reader, FrameLimits::default()) else {
+            return Relay::DaemonGone;
+        };
         match frame.lane {
             OUT_LANE_OUTPUT => {
-                stdout.write_all(&frame.payload)?;
-                stdout.flush()?;
+                if stdout.write_all(&frame.payload).is_err() || stdout.flush().is_err() {
+                    return Relay::Exited(0);
+                }
             }
             OUT_LANE_EVENTS => match peer::decode::<ServerEvent>(&frame.payload) {
-                Ok(ServerEvent::Exit { code }) => exit_code = code,
-                Ok(ServerEvent::Detached) => exit_code = 0,
+                Ok(ServerEvent::Exit { code }) => return Relay::Exited(code),
+                Ok(ServerEvent::Detached) => return Relay::Exited(0),
                 Err(_) => {}
             },
             _ => {}
         }
     }
-
-    drop(stdout);
-    exit(exit_code);
 }
 
 fn write_request(stream: &mut UnixStream, request: &OpenRequest) -> Result<()> {

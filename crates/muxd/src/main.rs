@@ -2,26 +2,32 @@
 //! daemon itself lives in the library next door (lib.rs).
 //!
 //! Usage:
-//!   muxd [--socket PATH] [--listen-quic ADDR]
+//!   muxd [--socket PATH] [--listen-quic ADDR] [--upgrade]
 //!
 //! The unix socket is always on; `--listen-quic` additionally exposes
 //! the same protocol to the network (`ADDR` is `<ip>:<port>` or a bare
 //! `<ip>`, which takes the default QUIC port).
+//!
+//! `--upgrade` replaces a running daemon without killing a shell: the
+//! new process inherits the live PTY fds plus a screen snapshot per pty
+//! over `SCM_RIGHTS` (migrate.rs), then takes the socket.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use muxd::{manager, quic, server};
+use muxd::{manager, migrate, quic, server};
 
 struct Args {
     socket: PathBuf,
     listen_quic: Option<SocketAddr>,
+    upgrade: bool,
 }
 
 fn parse_args() -> Result<Args> {
     let mut socket = None;
     let mut listen_quic = None;
+    let mut upgrade = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -32,6 +38,7 @@ fn parse_args() -> Result<Args> {
                 let value = args.next().context("--listen-quic needs an address")?;
                 listen_quic = Some(parse_listen(&value)?);
             }
+            "--upgrade" => upgrade = true,
             other => bail!("unknown argument {other:?}"),
         }
     }
@@ -39,6 +46,7 @@ fn parse_args() -> Result<Args> {
         socket: socket
             .unwrap_or_else(|| mux_proto::peer::socket_path(nix::unistd::getuid().as_raw())),
         listen_quic,
+        upgrade,
     })
 }
 
@@ -71,6 +79,16 @@ async fn main() -> Result<()> {
     let args = parse_args()?;
     let manager = manager::Manager::default();
 
+    // Adopt first: the predecessor owns the socket until it hands over.
+    if args.upgrade {
+        migrate::adopt_from_predecessor(&manager).await;
+    }
+    let listener = server::bind(&args.socket).await?;
+    // Only the daemon that owns the socket publishes itself as the one a
+    // successor should ask for a handoff.
+    migrate::write_pidfile()?;
+    migrate::spawn_handoff_task(manager.clone());
+
     // The QUIC listener is a second door onto the same ptys: it shares
     // the manager and runs beside the socket, never instead of it.
     if let Some(addr) = args.listen_quic {
@@ -82,5 +100,5 @@ async fn main() -> Result<()> {
         });
     }
 
-    server::serve(manager, &args.socket).await
+    server::serve(manager, listener).await
 }
