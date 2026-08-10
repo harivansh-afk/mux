@@ -21,4 +21,4 @@ ghosttykit:
 
 # Build the app (run on the Mac)
 app:
-    cd app && xcodebuild -scheme Mux build
+    ./scripts/make-app.sh
