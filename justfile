@@ -8,6 +8,12 @@ test:
 check:
     cargo clippy --workspace --all-targets
 
+# Attach, SIGKILL the client, reattach, replay: runs against a throwaway
+# HOME and a private socket, never the daemon you are living in.
+e2e:
+    cargo build -p muxd -p mux-attach
+    python3 scripts/test-muxd-e2e.py
+
 # Everything CI gates on (Swift steps need the toolchain; see .forgejo/workflows/ci.yml)
 lint: check
     cargo fmt --check
