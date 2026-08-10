@@ -99,14 +99,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let controller = MuxWindowController(runtime: runtime)
             controllers.append(controller)
             if w.frame.count == 4 {
-                controller.window.setFrame(
+                restoreFrame(
                     NSRect(x: w.frame[0], y: w.frame[1], width: w.frame[2], height: w.frame[3]),
-                    display: false)
+                    on: controller.window)
             }
             controller.restoreSessions(w.sessions, active: w.activeSession)
             controller.window.makeKeyAndOrderFront(nil)
         }
         if controllers.isEmpty { newWindow(nil) }
+    }
+
+    /// Frames saved under a different display arrangement can land
+    /// off-screen, and borderless windows get no AppKit constraining.
+    /// Require a meaningful visible intersection, else recenter on the
+    /// main screen (clamped to fit).
+    private func restoreFrame(_ saved: NSRect, on window: NSWindow) {
+        var rect = saved
+        let visible = NSScreen.screens.contains { screen in
+            let overlap = screen.visibleFrame.intersection(rect)
+            return overlap.width >= 200 && overlap.height >= 200
+        }
+        if !visible, let screen = NSScreen.main {
+            let vf = screen.visibleFrame
+            rect.size.width = min(rect.width, vf.width)
+            rect.size.height = min(rect.height, vf.height)
+            rect.origin = NSPoint(
+                x: vf.midX - rect.width / 2,
+                y: vf.midY - rect.height / 2)
+        }
+        window.setFrame(rect, display: false)
     }
 
     @objc func closeKeyWindow(_ sender: Any?) {
