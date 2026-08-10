@@ -15,10 +15,16 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use mux_proto::peer;
 use quinn::{Endpoint, Incoming, RecvStream, SendStream, ServerConfig};
+
+/// Explicit rather than inherited from quinn (whose default happens to
+/// match): 30 seconds of silence from a client that keep-alives every
+/// few seconds means it is genuinely gone, and its ptys just detach.
+const MAX_IDLE: Duration = Duration::from_secs(30);
 
 use crate::manager::Manager;
 use crate::server::{self, Policy};
@@ -60,8 +66,11 @@ pub fn endpoint(addr: SocketAddr, identity: &Identity) -> Result<Endpoint> {
     tls.alpn_protocols = vec![peer::ALPN.to_vec()];
 
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls).context("quic tls")?;
-    Endpoint::server(ServerConfig::with_crypto(Arc::new(crypto)), addr)
-        .with_context(|| format!("bind {addr}"))
+    let mut config = ServerConfig::with_crypto(Arc::new(crypto));
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_idle_timeout(Some(MAX_IDLE.try_into().context("idle timeout")?));
+    config.transport_config(Arc::new(transport));
+    Endpoint::server(config, addr).with_context(|| format!("bind {addr}"))
 }
 
 /// Accept connections until the endpoint is closed.

@@ -32,6 +32,26 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Opening a stream on a cached connection must not hang: a connection
+/// whose network path silently died looks live until the idle timeout,
+/// and `open_bi` on it would stall a new pane for that whole window.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A terminal connection is idle almost all the time, and quinn's
+/// defaults (no keep-alive, 30s idle timeout) tear it down under every
+/// quiet pane - each one paying a redial plus reattach on the next
+/// keystroke. PINGs keep the connection and the path (NAT bindings,
+/// overlay tunnels) warm.
+const KEEP_ALIVE: Duration = Duration::from_secs(5);
+
+/// Also the ceiling on how long a pane freezes when the path dies
+/// without a CONNECTION_CLOSE (sleep/wake, network switch): silence
+/// this long despite keep-alives every [`KEEP_ALIVE`] means the peer
+/// or the path is genuinely gone, and reconnect + replay is automatic
+/// and cheap, so err toward declaring death early.
+const MAX_IDLE: Duration = Duration::from_secs(15);
 
 /// SNI for aliases that are not legal DNS names. The pin decides trust, so
 /// the name we send is cosmetic.
@@ -134,10 +154,30 @@ impl Broker {
             bail!("request too large ({len} bytes)");
         }
 
-        let (mut send, recv) = connection.open_bi().await.context("open QUIC stream")?;
-        send.write_u32_le(len).await.context("send handshake")?;
-        send.write_all(&payload).await.context("send handshake")?;
-        Ok(Stream { send, recv })
+        let opened = tokio::time::timeout(OPEN_TIMEOUT, async {
+            let (mut send, recv) = connection.open_bi().await.context("open QUIC stream")?;
+            send.write_u32_le(len).await.context("send handshake")?;
+            send.write_all(&payload).await.context("send handshake")?;
+            Ok::<_, anyhow::Error>(Stream { send, recv })
+        })
+        .await
+        .unwrap_or_else(|_| bail!("open stream timed out after {OPEN_TIMEOUT:?}"));
+        match opened {
+            Ok(stream) => Ok(stream),
+            // A cached connection that cannot open a stream is dead
+            // weight: evict it so the pane's automatic retry redials
+            // instead of hitting the same corpse.
+            Err(e) => {
+                self.evict(alias).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn evict(&self, alias: &str) {
+        if let Some(link) = self.links.lock().await.remove(alias) {
+            link.connection.close(0u32.into(), b"evicted");
+        }
     }
 
     /// The cached connection for `alias`, redialing when there is none or
@@ -194,7 +234,12 @@ impl Broker {
             SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))
         };
         let mut endpoint = quinn::Endpoint::client(bind).context("bind QUIC socket")?;
-        endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(crypto)));
+        let mut client = quinn::ClientConfig::new(Arc::new(crypto));
+        let mut transport = quinn::TransportConfig::default();
+        transport.keep_alive_interval(Some(KEEP_ALIVE));
+        transport.max_idle_timeout(Some(MAX_IDLE.try_into().context("idle timeout")?));
+        client.transport_config(Arc::new(transport));
+        endpoint.set_default_client_config(client);
 
         let sni = if ServerName::try_from(alias).is_ok() {
             alias
@@ -326,8 +371,9 @@ fn host_token(tokens: &Path, alias: &str) -> Result<String> {
 
 async fn resolve(addr: &str) -> Result<SocketAddr> {
     let addr = with_default_port(addr);
-    let resolved = tokio::net::lookup_host(&addr)
+    let resolved = tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host(&addr))
         .await
+        .map_err(|_| anyhow::anyhow!("resolve {addr}: timed out after {RESOLVE_TIMEOUT:?}"))?
         .with_context(|| format!("resolve {addr}"))?
         .next();
     resolved.with_context(|| format!("{addr} resolved to no address"))
