@@ -8,9 +8,10 @@ import AppKit
 ///   ctrl+b        arm prefix mode
 ///   prefix '      split right          prefix -      split down
 ///   prefix h/j/k/l  focus direction    prefix z      zoom toggle
-///   prefix x      close pane           prefix c      new window
+///   prefix x      close pane           prefix c      new session
+///   prefix 1..9   select session       prefix n/p    next/prev session
 ///   prefix r      resize mode          prefix esc    cancel
-///   prefix ?      help overlay         prefix ctrl+b send a literal ctrl+b
+///   prefix ?      keybinds overlay     prefix ctrl+b send a literal ctrl+b
 /// Held-ctrl aliasing: ctrl+<key> in prefix mode means <key> (the nvim-mux
 /// papercut fix: you rarely release ctrl between prefix and key).
 /// Resize mode: h/j/k/l nudge the enclosing split ratio, esc/enter/q exit.
@@ -154,9 +155,15 @@ final class PrefixEngine {
 
         case "z": controller?.toggleZoom()
         case "x": controller?.closeFocusedPane()
-        case "c": (NSApp.delegate as? AppDelegate)?.newWindow(nil)
         case "r": setMode(.resize)
         case "?": setMode(.help)
+
+        // Sessions.
+        case "c": controller?.newSession()
+        case "n": controller?.nextSession()
+        case "p": controller?.prevSession()
+        case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+            controller?.selectSession(Int(key)! - 1)
 
         case "\u{1b}": break // cancel
 

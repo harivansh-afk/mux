@@ -78,10 +78,56 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// Session hook: the rect sessions lay their trees out in.
     var paneBounds: CGRect { container.bounds }
 
-    /// Session hook: last pane in the session closed.
+    /// Session hook: last pane in the session closed. The session closes;
+    /// the last session closing closes the window.
     func sessionDidEmpty(_ session: Session) {
-        // Single-session windows close with their session.
-        window.close()
+        guard let index = sessions.firstIndex(where: { $0 === session }) else { return }
+        sessions.remove(at: index)
+        guard !sessions.isEmpty else {
+            window.close()
+            return
+        }
+        if index < activeSessionIndex {
+            activeSessionIndex -= 1
+        } else if activeSessionIndex >= sessions.count {
+            activeSessionIndex = sessions.count - 1
+        }
+        layoutPanes()
+        if let pane = activeSession?.focusedPane { focus(pane) }
+        saveState()
+    }
+
+    // MARK: - Session switching
+
+    /// prefix c: a new session with one pane, following the focused
+    /// pane's cwd.
+    func newSession() {
+        let cwd = activeSession?.focusedPane?.pwd
+        let session = Session(runtime: runtime, controller: self)
+        sessions.append(session)
+        activeSessionIndex = sessions.count - 1
+        session.addInitialPane(workingDirectory: cwd)
+        layoutPanes()
+        saveState()
+    }
+
+    /// prefix 1..9: select a session by position (0-based here).
+    func selectSession(_ index: Int) {
+        guard sessions.indices.contains(index), index != activeSessionIndex else { return }
+        activeSessionIndex = index
+        layoutPanes()
+        if let pane = activeSession?.focusedPane { focus(pane) }
+        saveState()
+    }
+
+    func nextSession() {
+        guard sessions.count > 1 else { return }
+        selectSession((activeSessionIndex + 1) % sessions.count)
+    }
+
+    func prevSession() {
+        guard sessions.count > 1 else { return }
+        selectSession((activeSessionIndex + sessions.count - 1) % sessions.count)
     }
 
     // MARK: - Tiling API (forwarded to the active session)
