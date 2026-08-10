@@ -15,18 +15,24 @@ final class PaneContainerView: NSView {
 }
 
 /// One window = window chrome (borderless NSWindow, mode bar, keybinds
-/// overlay, theming) plus an ordered list of sessions. Tiling state and
-/// pane lifecycle live in Session; the controller routes operations to
-/// the active session (or, for pane-originated events, to the session
-/// owning that pane).
+/// overlay, target picker, theming) plus an ordered list of sessions.
+/// Tiling state and pane lifecycle live in Session; the controller routes
+/// operations to the active session (or, for pane-originated events, to
+/// the session owning that pane).
+///
+/// The chrome itself lives in MuxWindowController+Overlays.swift.
 final class MuxWindowController: NSObject, NSWindowDelegate {
     let runtime: GhosttyRuntime
     private(set) var window: NSWindow!
-    private let container = PaneContainerView()
-    private let modeBar = ModeBarView()
-    private let sessionIndicator = ModeBarView()
-    private let helpOverlay = HelpOverlayView()
-    private var indicatorFlashTimer: Timer?
+
+    /// Internal (not private): the overlay chrome is managed by
+    /// MuxWindowController+Overlays.swift.
+    let container = PaneContainerView()
+    let modeBar = ModeBarView()
+    let sessionIndicator = ModeBarView()
+    let helpOverlay = HelpOverlayView()
+    let targetPicker = TargetPickerView()
+    var indicatorFlashTimer: Timer?
 
     private(set) var sessions: [Session] = []
     private(set) var activeSessionIndex = 0
@@ -236,123 +242,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         session(owning: pane)?.noteFocused(pane)
     }
 
-    // MARK: - Overlays
-
-    /// Show or hide the mode overlay. nil hides it. The bar is an overlay
-    /// on the bottom row: panes never reflow for it.
-    func setModeIndicator(_ segments: [ModeBarSegment]?) {
-        if let segments {
-            modeBar.render(segments)
-            modeBar.isHidden = false
-            // Keep the overlay above any panes added since last time.
-            modeBar.removeFromSuperview()
-            container.addSubview(modeBar)
-            positionModeBar()
-            showSessionIndicator()
-        } else {
-            modeBar.isHidden = true
-            if indicatorFlashTimer == nil {
-                sessionIndicator.isHidden = true
-            }
-        }
-    }
-
-    // MARK: - Session indicator
-
-    /// `1 2 3` with the active number highlighted. Mirrors the mode bar
-    /// at the bottom-right corner with the same concentric insets.
-    private var sessionSegments: [ModeBarSegment] {
-        var segments: [ModeBarSegment] = []
-        for index in sessions.indices {
-            if index > 0 {
-                segments.append(.dim(" "))
-            }
-            let label = "\(index + 1)"
-            segments.append(
-                index == activeSessionIndex ? .highlight(label) : .dim(label)
-            )
-        }
-        return segments
-    }
-
-    private func showSessionIndicator() {
-        indicatorFlashTimer?.invalidate()
-        indicatorFlashTimer = nil
-        sessionIndicator.render(sessionSegments)
-        sessionIndicator.isHidden = false
-        sessionIndicator.removeFromSuperview()
-        container.addSubview(sessionIndicator)
-        positionSessionIndicator()
-    }
-
-    /// Visible while a mode bar is up; a switch flashes it for a second
-    /// so normal use stays chrome-free.
-    private func flashSessionIndicator() {
-        showSessionIndicator()
-        indicatorFlashTimer = Timer.scheduledTimer(
-            withTimeInterval: 1.0, repeats: false
-        ) { [weak self] _ in
-            guard let self else { return }
-            indicatorFlashTimer = nil
-            if modeBar.isHidden {
-                sessionIndicator.isHidden = true
-            }
-        }
-    }
-
-    private func positionSessionIndicator() {
-        let bounds = container.bounds
-        let margin = ModeBarView.margin
-        let width = min(sessionIndicator.desiredWidth, bounds.width - margin * 2)
-        sessionIndicator.frame = NSRect(
-            x: bounds.width - margin - width,
-            y: bounds.height - ModeBarView.height - margin,
-            width: width,
-            height: ModeBarView.height
-        )
-    }
-
-    func showHelp() {
-        // Keep the overlay above any panes added since last time.
-        helpOverlay.removeFromSuperview()
-        container.addSubview(helpOverlay)
-        positionHelpOverlay()
-    }
-
-    func hideHelp() {
-        helpOverlay.removeFromSuperview()
-    }
-
-    func scrollHelp(by dy: CGFloat) {
-        helpOverlay.scroll(by: dy)
-    }
-
-    private func positionHelpOverlay() {
-        let bounds = container.bounds
-        let size = helpOverlay.desiredSize(in: bounds)
-        helpOverlay.frame = NSRect(
-            x: (bounds.width - size.width) / 2,
-            y: (bounds.height - size.height) / 2,
-            width: size.width,
-            height: size.height
-        )
-    }
-
-    /// Content-sized box floating at the bottom-left, inset by the same
-    /// margin from the left and bottom edges (container is flipped, so
-    /// the bottom is at maxY).
-    private func positionModeBar() {
-        let bounds = container.bounds
-        let margin = ModeBarView.margin
-        let width = min(modeBar.desiredWidth, bounds.width - margin * 2)
-        modeBar.frame = NSRect(
-            x: margin,
-            y: bounds.height - ModeBarView.height - margin,
-            width: width,
-            height: ModeBarView.height
-        )
-    }
-
     // MARK: - Layout
 
     func layoutPanes() {
@@ -367,6 +256,9 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
         if helpOverlay.superview != nil {
             positionHelpOverlay()
+        }
+        if targetPicker.superview != nil {
+            positionTargetPicker()
         }
 
         for (index, session) in sessions.enumerated() {
