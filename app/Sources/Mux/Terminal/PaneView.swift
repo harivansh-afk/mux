@@ -7,6 +7,20 @@ import GhosttyKit
 /// with the IME/preedit machinery deferred to a later milestone.
 final class PaneView: NSView {
     let id: UUID
+
+    /// Where this pane's terminal lives.
+    ///
+    /// - nil: the local daemon (`mux-attach local:<id>`).
+    /// - a host alias from ~/.config/mux/hosts.json: the local daemon
+    ///   relays the attach to that host (`mux-attach <alias>:<id>`).
+    /// - `ix:<vm>`: no daemon and no persistence at all, the pane simply
+    ///   execs `ix shell <vm>`.
+    let target: String?
+
+    /// `ix:<vm>` panes exec a plain command; there is no pty to attach to,
+    /// reconnect to, or kill.
+    static let ixPrefix = "ix:"
+
     private(set) var surface: ghostty_surface_t?
     weak var controller: MuxWindowController?
 
@@ -31,9 +45,11 @@ final class PaneView: NSView {
         id: UUID = UUID(),
         runtime: GhosttyRuntime,
         workingDirectory: String? = nil,
+        target: String? = nil,
         command: String? = nil
     ) {
         self.id = id
+        self.target = target
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -42,15 +58,14 @@ final class PaneView: NSView {
 
         // M2: every pane is a daemon pty named by the pane id. Attach
         // reconnects and replays; a missing pty is created at the saved
-        // cwd. Terminal content survives the app by construction.
-        var command = command
-        if command == nil, let attach = Self.attachBinary {
-            var parts = ["\"\(attach)\"", "local:\(id.uuidString)"]
-            if let workingDirectory {
-                parts += ["--cwd", "\"\(workingDirectory)\""]
-            }
-            command = parts.joined(separator: " ")
-        }
+        // cwd. Terminal content survives the app by construction. M3: a
+        // pane on a host alias is the same pty one hop away (the local
+        // daemon relays the attach), while `ix:<vm>` is a plain exec.
+        let command = command ?? defaultCommand(cwd: workingDirectory)
+
+        // A remote pane's cwd names a path on the remote host: it travels
+        // as --cwd and is never handed to the local surface.
+        let localWorkingDirectory = target == nil ? workingDirectory : nil
 
         var cfg = ghostty_surface_config_new()
         cfg.platform_tag = GHOSTTY_PLATFORM_MACOS
@@ -62,7 +77,7 @@ final class PaneView: NSView {
         cfg.font_size = 0 // inherit from config
         cfg.context = GHOSTTY_SURFACE_CONTEXT_SPLIT
 
-        surface = Self.withOptionalCString(workingDirectory) { wdPtr in
+        surface = Self.withOptionalCString(localWorkingDirectory) { wdPtr in
             Self.withOptionalCString(command) { cmdPtr -> ghostty_surface_t? in
                 cfg.working_directory = wdPtr
                 cfg.command = cmdPtr
@@ -86,6 +101,29 @@ final class PaneView: NSView {
         }
     }
 
+    /// The pty this pane attaches to: `local:<id>`, or `<alias>:<id>` for
+    /// a pane hosted on another machine. nil for `ix:<vm>` panes, which
+    /// have no pty on either side of the wire.
+    private var attachAddress: String? {
+        guard let target else { return "local:\(id.uuidString)" }
+        guard !target.hasPrefix(Self.ixPrefix) else { return nil }
+        return "\(target):\(id.uuidString)"
+    }
+
+    /// The pane's launch command. nil means "the user's shell": the dev
+    /// fallback when no relay binary is bundled.
+    private func defaultCommand(cwd: String?) -> String? {
+        if let target, target.hasPrefix(Self.ixPrefix) {
+            return "ix shell \"\(target.dropFirst(Self.ixPrefix.count))\""
+        }
+        guard let attach = Self.attachBinary, let attachAddress else { return nil }
+        var parts = ["\"\(attach)\"", "\"\(attachAddress)\""]
+        if let cwd {
+            parts += ["--cwd", "\"\(cwd)\""]
+        }
+        return parts.joined(separator: " ")
+    }
+
     /// Free the surface explicitly (kills the local child - the relay).
     /// The daemon pty behind it survives; call killRemote() too when the
     /// user actually closes the pane.
@@ -96,12 +134,13 @@ final class PaneView: NSView {
         }
     }
 
-    /// Kill the pane's daemon pty (deliberate close, not detach).
+    /// Kill the pane's pty (deliberate close, not detach). A no-op for
+    /// `ix:<vm>` panes: closing the surface already ends the process.
     func killRemote() {
-        guard let attach = Self.attachBinary else { return }
+        guard let attach = Self.attachBinary, let attachAddress else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: attach)
-        process.arguments = ["--kill", "local:\(id.uuidString)"]
+        process.arguments = ["--kill", attachAddress]
         try? process.run()
     }
 

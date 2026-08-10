@@ -27,9 +27,26 @@ Standard SwiftPM layout: all sources under `Sources/Mux/`, grouped by feature.
   per-pane {target, session id, cwd, launch argv, label, agent session ref},
   stable never-reused pane/tab ids, autosave on mutation. Restore = rebuild
   tree, re-exec each pane's command (M1: local shell at cwd; M2: mux-attach
-  target which replays the daemon's screen).
+  target which replays the daemon's screen). Also the host alias table read
+  from `~/.config/mux/hosts.json`.
 - `Sources/Mux/UI/` - window chrome: borderless `MuxWindow`, the window
-  controller, the floating mode bar, the help overlay, and theming.
+  controller, the floating mode bar, the help overlay, the target picker,
+  and theming.
+
+## Pane targets
+
+A pane's `target` says where its terminal lives; a snapshot without the
+field is a local pane, so old state files keep loading.
+
+- nil - the local daemon: `mux-attach "local:<pane>" [--cwd <dir>]`
+- a host alias from `~/.config/mux/hosts.json` - the same pty one hop away:
+  `mux-attach "<alias>:<pane>"`, relayed by the local daemon
+- `ix:<vm>` - no daemon and no persistence: the pane execs `ix shell <vm>`
+
+Splits, new sessions and new windows inherit the source pane's target, and
+its cwd only when the targets match (a path on one machine means nothing on
+another). `prefix t` opens the target picker: `local` plus the aliases, j/k
+to choose, enter to split right into the chosen host.
 
 ## Pane command per milestone
 
