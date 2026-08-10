@@ -1,8 +1,8 @@
 import Foundation
 
-/// Pure-data BSP split tree. Lean reimplementation of the model in ghostty's
-/// SplitTree.swift (MIT): leaves are pane IDs, splits carry direction+ratio.
-/// Codable by synthesis, so layout persistence is free.
+// Pure-data BSP split tree. Lean reimplementation of the model in ghostty's
+// SplitTree.swift (MIT): leaves are pane IDs, splits carry direction+ratio.
+// Codable by synthesis, so layout persistence is free.
 
 enum SplitDirection: String, Codable {
     /// Side by side (split created by "split right").
@@ -31,15 +31,15 @@ struct SplitBranch: Codable {
 extension SplitNode {
     var leaves: [UUID] {
         switch self {
-        case .leaf(let id): return [id]
-        case .split(let b): return b.first.leaves + b.second.leaves
+        case let .leaf(id): [id]
+        case let .split(b): b.first.leaves + b.second.leaves
         }
     }
 
     func contains(_ id: UUID) -> Bool {
         switch self {
-        case .leaf(let l): return l == id
-        case .split(let b): return b.first.contains(id) || b.second.contains(id)
+        case let .leaf(l): l == id
+        case let .split(b): b.first.contains(id) || b.second.contains(id)
         }
     }
 
@@ -53,17 +53,18 @@ extension SplitNode {
         newFirst: Bool = false
     ) -> SplitNode {
         switch self {
-        case .leaf(let id) where id == target:
+        case let .leaf(id) where id == target:
             let old = SplitNode.leaf(id)
             let new = SplitNode.leaf(newLeaf)
             return .split(SplitBranch(
                 direction: direction,
                 ratio: ratio,
                 first: newFirst ? new : old,
-                second: newFirst ? old : new))
+                second: newFirst ? old : new
+            ))
         case .leaf:
             return self
-        case .split(var b):
+        case var .split(b):
             b.first = b.first.inserting(newLeaf, at: target, direction: direction, ratio: ratio, newFirst: newFirst)
             b.second = b.second.inserting(newLeaf, at: target, direction: direction, ratio: ratio, newFirst: newFirst)
             return .split(b)
@@ -74,16 +75,16 @@ extension SplitNode {
     /// becomes empty.
     func removing(_ target: UUID) -> SplitNode? {
         switch self {
-        case .leaf(let id):
+        case let .leaf(id):
             return id == target ? nil : self
-        case .split(var b):
+        case var .split(b):
             let first = b.first.removing(target)
             let second = b.second.removing(target)
             switch (first, second) {
             case (nil, nil): return nil
             case (nil, let s?): return s
             case (let f?, nil): return f
-            case (let f?, let s?):
+            case let (f?, s?):
                 b.first = f
                 b.second = s
                 return .split(b)
@@ -95,9 +96,9 @@ extension SplitNode {
     /// flipped container view). `gap` is inserted between siblings.
     func layout(in bounds: CGRect, gap: CGFloat = 1.0) -> [UUID: CGRect] {
         switch self {
-        case .leaf(let id):
+        case let .leaf(id):
             return [id: bounds]
-        case .split(let b):
+        case let .split(b):
             var firstRect = bounds
             var secondRect = bounds
             switch b.direction {
@@ -130,12 +131,11 @@ extension SplitNode {
         var best: (UUID, CGFloat)? = nil
         for (candidate, rect) in rects where candidate != id {
             let c = CGPoint(x: rect.midX, y: rect.midY)
-            let eligible: Bool
-            switch direction {
-            case .left: eligible = c.x < center.x - 1
-            case .right: eligible = c.x > center.x + 1
-            case .up: eligible = c.y < center.y - 1
-            case .down: eligible = c.y > center.y + 1
+            let eligible: Bool = switch direction {
+            case .left: c.x < center.x - 1
+            case .right: c.x > center.x + 1
+            case .up: c.y < center.y - 1
+            case .down: c.y > center.y + 1
             }
             guard eligible else { continue }
             let dx = c.x - center.x, dy = c.y - center.y
@@ -158,7 +158,7 @@ extension SplitNode {
         switch self {
         case .leaf:
             return (self, false)
-        case .split(var b):
+        case var .split(b):
             // Depth-first: prefer the deepest matching split containing id.
             if b.first.contains(id) {
                 let (adjusted, found) = b.first.adjustingRatio(around: id, axis: axis, delta: delta)

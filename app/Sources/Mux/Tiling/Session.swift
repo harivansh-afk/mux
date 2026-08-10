@@ -60,8 +60,8 @@ final class Session {
         for id in snapshotTree.leaves {
             _ = makePane(id: id, workingDirectory: paneMeta[id]?.cwd)
         }
-        self.tree = snapshotTree
-        self.zoomedID = zoomed
+        tree = snapshotTree
+        zoomedID = zoomed
         controller?.layoutPanes()
         if let focused, let pane = panes[focused] {
             focus(pane)
@@ -92,7 +92,9 @@ final class Session {
         guard panes[pane.id] != nil else { return }
         panes.removeValue(forKey: pane.id)
         pane.removeFromSuperview()
-        if zoomedID == pane.id { zoomedID = nil }
+        if zoomedID == pane.id {
+            zoomedID = nil
+        }
 
         tree = tree?.removing(pane.id)
         guard let tree, let nextID = tree.leaves.first else {
@@ -107,8 +109,12 @@ final class Session {
     }
 
     func destroyAllSurfaces() {
-        for (_, pane) in panes { pane.destroySurface() }
-        for (_, pane) in panes { pane.removeFromSuperview() }
+        for (_, pane) in panes {
+            pane.destroySurface()
+        }
+        for (_, pane) in panes {
+            pane.removeFromSuperview()
+        }
         panes.removeAll()
         tree = nil
     }
@@ -131,12 +137,11 @@ final class Session {
         var target = SplitNode.neighbor(of: focusedID, direction: direction, rects: rects)
         if target == nil {
             // tmux-style edge fallback: wrap to the far side.
-            let opposite: FocusDirection
-            switch direction {
-            case .left: opposite = .right
-            case .right: opposite = .left
-            case .up: opposite = .down
-            case .down: opposite = .up
+            let opposite: FocusDirection = switch direction {
+            case .left: .right
+            case .right: .left
+            case .up: .down
+            case .down: .up
             }
             var candidate = focusedID
             while let next = SplitNode.neighbor(of: candidate, direction: opposite, rects: rects) {
@@ -190,7 +195,9 @@ final class Session {
     /// session hides all its panes; their processes keep running.
     func applyLayout(in bounds: CGRect, visible: Bool = true) {
         guard visible else {
-            for (_, pane) in panes { pane.isHidden = true }
+            for (_, pane) in panes {
+                pane.isHidden = true
+            }
             return
         }
         guard let tree else { return }

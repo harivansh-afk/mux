@@ -44,8 +44,12 @@ final class GhosttyRuntime {
     }
 
     deinit {
-        if let app { ghostty_app_free(app) }
-        if let config { ghostty_config_free(config) }
+        if let app {
+            ghostty_app_free(app)
+        }
+        if let config {
+            ghostty_config_free(config)
+        }
     }
 
     func tick() {
@@ -82,7 +86,7 @@ final class GhosttyRuntime {
         DispatchQueue.main.async { rt.tick() }
     }
 
-    private static func closeSurface(_ userdata: UnsafeMutableRawPointer?, processAlive: Bool) {
+    private static func closeSurface(_ userdata: UnsafeMutableRawPointer?, processAlive _: Bool) {
         guard let view = paneView(userdata) else { return }
         DispatchQueue.main.async {
             view.controller?.removePane(view)
@@ -93,7 +97,7 @@ final class GhosttyRuntime {
 
     private static func readClipboard(
         _ userdata: UnsafeMutableRawPointer?,
-        location: ghostty_clipboard_e,
+        location _: ghostty_clipboard_e,
         state: UnsafeMutableRawPointer?
     ) -> Bool {
         guard let view = paneView(userdata), let surface = view.surface else { return false }
@@ -115,16 +119,16 @@ final class GhosttyRuntime {
     }
 
     private static func writeClipboard(
-        _ userdata: UnsafeMutableRawPointer?,
-        location: ghostty_clipboard_e,
+        _: UnsafeMutableRawPointer?,
+        location _: ghostty_clipboard_e,
         content: UnsafePointer<ghostty_clipboard_content_s>?,
         len: Int,
-        confirm: Bool
+        confirm _: Bool
     ) {
         guard len > 0, let content else { return }
         // Prefer text/plain; fall back to the first entry.
         var chosen: ghostty_clipboard_content_s = content[0]
-        for i in 0..<len {
+        for i in 0 ..< len {
             let c = content[i]
             if let mime = c.mime, String(cString: mime) == "text/plain" {
                 chosen = c
@@ -141,7 +145,7 @@ final class GhosttyRuntime {
     // MARK: - Actions
 
     private static func action(
-        _ app: ghostty_app_t,
+        _: ghostty_app_t,
         target: ghostty_target_s,
         action: ghostty_action_s
     ) -> Bool {

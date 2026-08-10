@@ -32,13 +32,14 @@ final class PaneView: NSView {
         var cfg = ghostty_surface_config_new()
         cfg.platform_tag = GHOSTTY_PLATFORM_MACOS
         cfg.platform = ghostty_platform_u(
-            macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(self).toOpaque()))
+            macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(self).toOpaque())
+        )
         cfg.userdata = Unmanaged.passUnretained(self).toOpaque()
         cfg.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2.0)
         cfg.font_size = 0 // inherit from config
         cfg.context = GHOSTTY_SURFACE_CONTEXT_SPLIT
 
-        self.surface = Self.withOptionalCString(workingDirectory) { wdPtr in
+        surface = Self.withOptionalCString(workingDirectory) { wdPtr in
             Self.withOptionalCString(command) { cmdPtr -> ghostty_surface_t? in
                 cfg.working_directory = wdPtr
                 cfg.command = cmdPtr
@@ -51,10 +52,15 @@ final class PaneView: NSView {
         }
     }
 
-    required init?(coder: NSCoder) { fatalError("not supported") }
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("not supported")
+    }
 
     deinit {
-        if let surface { ghostty_surface_free(surface) }
+        if let surface {
+            ghostty_surface_free(surface)
+        }
     }
 
     /// Free the surface explicitly (kills the child process).
@@ -72,13 +78,17 @@ final class PaneView: NSView {
 
     func setTitle(_ title: String) {
         self.title = title
-        if focused { window?.title = title }
+        if focused {
+            window?.title = title
+        }
     }
 
     private static func withOptionalCString<T>(
         _ s: String?, _ body: (UnsafePointer<CChar>?) -> T
     ) -> T {
-        if let s { return s.withCString(body) }
+        if let s {
+            return s.withCString(body)
+        }
         return body(nil)
     }
 
@@ -104,22 +114,29 @@ final class PaneView: NSView {
         ghostty_surface_set_size(
             surface,
             UInt32(max(1, backing.width)),
-            UInt32(max(1, backing.height)))
+            UInt32(max(1, backing.height))
+        )
     }
 
     // MARK: - Focus
 
-    override var acceptsFirstResponder: Bool { true }
+    override var acceptsFirstResponder: Bool {
+        true
+    }
 
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
-        if ok { setFocus(true) }
+        if ok {
+            setFocus(true)
+        }
         return ok
     }
 
     override func resignFirstResponder() -> Bool {
         let ok = super.resignFirstResponder()
-        if ok { setFocus(false) }
+        if ok {
+            setFocus(false)
+        }
         return ok
     }
 
@@ -190,11 +207,13 @@ final class PaneView: NSView {
         // Heuristic from ghostty: control and command never contribute to
         // text translation; assume everything else did.
         key.consumed_mods = Self.ghosttyMods(
-            event.modifierFlags.subtracting([.control, .command]))
+            event.modifierFlags.subtracting([.control, .command])
+        )
         key.unshifted_codepoint = 0
         if event.type == .keyDown || event.type == .keyUp {
             if let chars = event.characters(byApplyingModifiers: []),
-               let cp = chars.unicodeScalars.first {
+               let cp = chars.unicodeScalars.first
+            {
                 key.unshifted_codepoint = cp.value
             }
         }
@@ -217,9 +236,10 @@ final class PaneView: NSView {
         if characters.count == 1, let scalar = characters.unicodeScalars.first {
             if scalar.value < 0x20 {
                 return event.characters(
-                    byApplyingModifiers: event.modifierFlags.subtracting(.control))
+                    byApplyingModifiers: event.modifierFlags.subtracting(.control)
+                )
             }
-            if scalar.value >= 0xF700 && scalar.value <= 0xF8FF {
+            if scalar.value >= 0xF700, scalar.value <= 0xF8FF {
                 return nil
             }
         }
@@ -228,22 +248,35 @@ final class PaneView: NSView {
 
     static func ghosttyMods(_ flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {
         var mods: UInt32 = GHOSTTY_MODS_NONE.rawValue
-        if flags.contains(.shift) { mods |= GHOSTTY_MODS_SHIFT.rawValue }
-        if flags.contains(.control) { mods |= GHOSTTY_MODS_CTRL.rawValue }
-        if flags.contains(.option) { mods |= GHOSTTY_MODS_ALT.rawValue }
-        if flags.contains(.command) { mods |= GHOSTTY_MODS_SUPER.rawValue }
-        if flags.contains(.capsLock) { mods |= GHOSTTY_MODS_CAPS.rawValue }
+        if flags.contains(.shift) {
+            mods |= GHOSTTY_MODS_SHIFT.rawValue
+        }
+        if flags.contains(.control) {
+            mods |= GHOSTTY_MODS_CTRL.rawValue
+        }
+        if flags.contains(.option) {
+            mods |= GHOSTTY_MODS_ALT.rawValue
+        }
+        if flags.contains(.command) {
+            mods |= GHOSTTY_MODS_SUPER.rawValue
+        }
+        if flags.contains(.capsLock) {
+            mods |= GHOSTTY_MODS_CAPS.rawValue
+        }
         return ghostty_input_mods_e(mods)
     }
 
     // MARK: - Mouse
 
     override func updateTrackingAreas() {
-        if let trackingArea { removeTrackingArea(trackingArea) }
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
         let area = NSTrackingArea(
             rect: bounds,
             options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self)
+            owner: self
+        )
         trackingArea = area
         addTrackingArea(area)
         super.updateTrackingAreas()
@@ -256,7 +289,8 @@ final class PaneView: NSView {
     ) {
         guard let surface else { return }
         _ = ghostty_surface_mouse_button(
-            surface, state, button, Self.ghosttyMods(event.modifierFlags))
+            surface, state, button, Self.ghosttyMods(event.modifierFlags)
+        )
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -290,13 +324,25 @@ final class PaneView: NSView {
         // libghostty expects top-left origin.
         ghostty_surface_mouse_pos(
             surface, pos.x, frame.height - pos.y,
-            Self.ghosttyMods(event.modifierFlags))
+            Self.ghosttyMods(event.modifierFlags)
+        )
     }
 
-    override func mouseMoved(with event: NSEvent) { reportMousePos(event) }
-    override func mouseDragged(with event: NSEvent) { reportMousePos(event) }
-    override func rightMouseDragged(with event: NSEvent) { reportMousePos(event) }
-    override func otherMouseDragged(with event: NSEvent) { reportMousePos(event) }
+    override func mouseMoved(with event: NSEvent) {
+        reportMousePos(event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        reportMousePos(event)
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        reportMousePos(event)
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        reportMousePos(event)
+    }
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
@@ -317,12 +363,11 @@ final class PaneView: NSView {
     // MARK: - Cursor
 
     func setCursorShape(_ shape: ghostty_action_mouse_shape_e) {
-        let cursor: NSCursor
-        switch shape {
-        case GHOSTTY_MOUSE_SHAPE_TEXT: cursor = .iBeam
-        case GHOSTTY_MOUSE_SHAPE_POINTER: cursor = .pointingHand
-        case GHOSTTY_MOUSE_SHAPE_CROSSHAIR: cursor = .crosshair
-        default: cursor = .arrow
+        let cursor: NSCursor = switch shape {
+        case GHOSTTY_MOUSE_SHAPE_TEXT: .iBeam
+        case GHOSTTY_MOUSE_SHAPE_POINTER: .pointingHand
+        case GHOSTTY_MOUSE_SHAPE_CROSSHAIR: .crosshair
+        default: .arrow
         }
         cursor.set()
     }

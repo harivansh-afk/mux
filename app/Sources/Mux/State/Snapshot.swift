@@ -1,8 +1,8 @@
 import Foundation
 
-/// Layout-and-identity persistence: structural facts are
-/// always saved (cheap, versioned JSON); screen contents are the daemon's
-/// job starting in M2. Restore resurrects the layout and per-pane cwd.
+// Layout-and-identity persistence: structural facts are
+// always saved (cheap, versioned JSON); screen contents are the daemon's
+// job starting in M2. Restore resurrects the layout and per-pane cwd.
 
 struct PaneSnapshot: Codable {
     var cwd: String?
@@ -45,8 +45,10 @@ private struct AppSnapshotV1: Decodable {
                 frame: w.frame,
                 sessions: [SessionSnapshot(
                     tree: w.tree, panes: w.panes,
-                    focused: w.focused, zoomed: w.zoomed)],
-                activeSession: 0)
+                    focused: w.focused, zoomed: w.zoomed
+                )],
+                activeSession: 0
+            )
         })
     }
 }
@@ -54,7 +56,8 @@ private struct AppSnapshotV1: Decodable {
 enum SnapshotStore {
     static var url: URL {
         let base = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            for: .applicationSupportDirectory, in: .userDomainMask
+        )[0]
         let dir = base.appendingPathComponent("mux", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("state.json")
