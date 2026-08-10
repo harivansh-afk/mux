@@ -184,15 +184,14 @@ extension MuxWindowController {
         for (sessionIndex, session) in sessions.enumerated() {
             for (paneIndex, paneID) in (session.tree?.leaves ?? []).enumerated() {
                 guard let pane = session.panes[paneID] else { continue }
-                var text = "\(sessionIndex + 1).\(paneIndex + 1)  \(pane.title)"
-                if let pwd = pane.pwd {
-                    text += "  \((pwd as NSString).abbreviatingWithTildeInPath)"
-                }
                 if groups[pane.target] == nil {
                     order.append(pane.target)
                 }
                 groups[pane.target, default: []].append(PanesOverlayView.Entry(
-                    sessionIndex: sessionIndex, paneID: paneID, text: text
+                    sessionIndex: sessionIndex,
+                    paneID: paneID,
+                    label: "\(sessionIndex + 1).\(paneIndex + 1)  \(pane.title)",
+                    detail: (pane.pwd as NSString?)?.abbreviatingWithTildeInPath ?? ""
                 ))
             }
         }
