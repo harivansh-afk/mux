@@ -121,16 +121,19 @@ fn main() {
 }
 
 fn ghostty_source_dir() -> PathBuf {
-    let source = std::env::var_os("GHOSTTY_SOURCE_DIR").unwrap_or_else(|| {
-        panic!(
-            "GHOSTTY_SOURCE_DIR is required to build ghostty-vt; Buck sets it from \
-             //crates/vm/guest/console/terminal:ghostty-source"
-        )
-    });
-    let source = PathBuf::from(source);
+    let source = std::env::var_os("GHOSTTY_SOURCE_DIR")
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|home| home.join("src/ghostty/src")))
+        .unwrap_or_else(|| {
+            panic!(
+                "GHOSTTY_SOURCE_DIR is required to build ghostty-vt; set it to the src directory \
+                 of a Ghostty checkout"
+            )
+        });
     assert!(
         source.exists(),
-        "GHOSTTY_SOURCE_DIR points to a missing path: {}",
+        "Ghostty source directory does not exist: {}; set GHOSTTY_SOURCE_DIR to the src directory \
+         of a Ghostty checkout",
         source.display()
     );
     source
@@ -206,7 +209,17 @@ fn find_zig() -> PathBuf {
         return PathBuf::from("zig");
     }
 
+    if let Some(zig) = home_dir().map(|home| home.join("tools/zig-0.16.0/zig")) {
+        if zig.is_file() {
+            return zig;
+        }
+    }
+
     panic!("zig not on PATH; set ZIG or add pkgs.zig to the build environment");
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 fn assert_zig_available(zig: &Path) {
