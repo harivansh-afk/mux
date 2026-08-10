@@ -90,15 +90,22 @@ async fn main() -> Result<()> {
     migrate::spawn_handoff_task(manager.clone());
 
     // The QUIC listener is a second door onto the same ptys: it shares
-    // the manager and runs beside the socket, never instead of it.
-    if let Some(addr) = args.listen_quic {
-        let manager = manager.clone();
-        tokio::spawn(async move {
-            if let Err(e) = quic::serve(manager, addr).await {
-                tracing::error!(error = %format!("{e:#}"), "quic listener stopped");
+    // the manager and runs beside the socket, never instead of it. When
+    // it was asked for, its death is the daemon's death: a muxd that
+    // silently serves only its unix socket looks healthy to a supervisor
+    // while every remote pane dials a closed port. Exiting instead lets
+    // Restart=on-failure retry until the bind succeeds (in practice the
+    // failure is at startup - a stale port holder - before any pty
+    // exists).
+    match args.listen_quic {
+        Some(addr) => {
+            let quic = quic::serve(manager.clone(), addr);
+            let unix = server::serve(manager, listener);
+            tokio::select! {
+                r = quic => r.context("quic listener stopped"),
+                r = unix => r,
             }
-        });
+        }
+        None => server::serve(manager, listener).await,
     }
-
-    server::serve(manager, listener).await
 }
