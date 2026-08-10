@@ -2,21 +2,54 @@
 //! daemon itself lives in the library next door (lib.rs).
 //!
 //! Usage:
-//!   muxd [--socket PATH]
+//!   muxd [--socket PATH] [--listen-quic ADDR]
+//!
+//! The unix socket is always on; `--listen-quic` additionally exposes
+//! the same protocol to the network (`ADDR` is `<ip>:<port>` or a bare
+//! `<ip>`, which takes the default QUIC port).
 
-use anyhow::Result;
-use muxd::{manager, server};
+use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 
-fn socket_path_from_args() -> std::path::PathBuf {
+use anyhow::{bail, Context, Result};
+use muxd::{manager, quic, server};
+
+struct Args {
+    socket: PathBuf,
+    listen_quic: Option<SocketAddr>,
+}
+
+fn parse_args() -> Result<Args> {
+    let mut socket = None;
+    let mut listen_quic = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--socket" {
-            if let Some(path) = args.next() {
-                return path.into();
+        match arg.as_str() {
+            "--socket" => {
+                socket = Some(PathBuf::from(args.next().context("--socket needs a path")?));
             }
+            "--listen-quic" => {
+                let value = args.next().context("--listen-quic needs an address")?;
+                listen_quic = Some(parse_listen(&value)?);
+            }
+            other => bail!("unknown argument {other:?}"),
         }
     }
-    mux_proto::peer::socket_path(nix::unistd::getuid().as_raw())
+    Ok(Args {
+        socket: socket
+            .unwrap_or_else(|| mux_proto::peer::socket_path(nix::unistd::getuid().as_raw())),
+        listen_quic,
+    })
+}
+
+fn parse_listen(value: &str) -> Result<SocketAddr> {
+    if let Ok(addr) = value.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    let ip: IpAddr = value
+        .parse()
+        .with_context(|| format!("bad --listen-quic address {value:?}"))?;
+    Ok(SocketAddr::new(ip, mux_proto::peer::DEFAULT_QUIC_PORT))
 }
 
 #[tokio::main]
@@ -35,6 +68,19 @@ async fn main() -> Result<()> {
         libc::signal(libc::SIGHUP, libc::SIG_IGN);
     }
 
-    let socket = socket_path_from_args();
-    server::serve(manager::Manager::default(), &socket).await
+    let args = parse_args()?;
+    let manager = manager::Manager::default();
+
+    // The QUIC listener is a second door onto the same ptys: it shares
+    // the manager and runs beside the socket, never instead of it.
+    if let Some(addr) = args.listen_quic {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            if let Err(e) = quic::serve(manager, addr).await {
+                tracing::error!(error = %format!("{e:#}"), "quic listener stopped");
+            }
+        });
+    }
+
+    server::serve(manager, &args.socket).await
 }
