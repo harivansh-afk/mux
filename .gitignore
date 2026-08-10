@@ -8,3 +8,4 @@ app/GhosttyKit/resources/
 app/.build/
 .worktrees/
 app/GhosttyKit/
+.claude/
