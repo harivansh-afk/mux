@@ -1,10 +1,9 @@
 import AppKit
 
 /// The keybinds overlay (prefix ?): a bordered box centered over the panes.
-/// Title row ("keybinds" left, an "esc close" badge right), then section
-/// blocks of key/description columns, then a dim footer with the overlay's
-/// own keys. Scrolls without a scrollbar; PrefixEngine drives scrolling and
-/// dismissal, the overlay never takes focus.
+/// Title row ("keybinds" left, an "esc close" badge right), then the section
+/// blocks laid out in columns side by side so everything fits at once - no
+/// scrolling. PrefixEngine drives dismissal; the overlay never takes focus.
 final class HelpOverlayView: NSView {
     private struct Section {
         let title: String
@@ -46,41 +45,38 @@ final class HelpOverlayView: NSView {
 
     private static let font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
     private static let boldFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)
-    private static let inset: CGFloat = 14
+    private static let inset: CGFloat = 16
     private static let rowHeight: CGFloat = 22
-    /// Width of the key column in characters; descriptions start after it.
-    private static let keyColumn = 18
+    private static let columnGap: CGFloat = 30
+    /// Key column width in characters; descriptions start after it.
+    private static let keyColumn = 17
 
     private let titleLabel = NSTextField(labelWithString: "keybinds")
     private let closeBadge = NSTextField(labelWithString: " esc close ")
     private let footerLabel = NSTextField(labelWithString: "")
-    private let scrollView = NSScrollView()
-    private let textView = NSTextView()
+    /// One multiline label per column of sections.
+    private let columnLabels: [NSTextField]
 
     override init(frame: NSRect) {
+        // Balance the sections across two order-preserving columns.
+        let groups = Self.partition(Self.sections, into: 2)
+        columnLabels = groups.map { _ in
+            let f = NSTextField(labelWithString: "")
+            f.maximumNumberOfLines = 0
+            f.cell?.wraps = false
+            f.cell?.isScrollable = false
+            return f
+        }
+        self.groups = groups
+
         super.init(frame: frame)
         wantsLayer = true
         layer?.borderWidth = 1
 
-        textView.isEditable = false
-        textView.isSelectable = false
-        textView.drawsBackground = false
-        textView.textContainerInset = .zero
-        textView.textContainer?.lineFragmentPadding = 0
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
-        textView.textContainer?.widthTracksTextView = true
-
-        scrollView.documentView = textView
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = false
-        scrollView.verticalScrollElasticity = .none
-
         addSubview(titleLabel)
         addSubview(closeBadge)
-        addSubview(scrollView)
         addSubview(footerLabel)
+        columnLabels.forEach(addSubview)
 
         render()
         NotificationCenter.default.addObserver(
@@ -94,26 +90,52 @@ final class HelpOverlayView: NSView {
         fatalError("not supported")
     }
 
-    /// Content-fitting size, capped to the container.
-    func desiredSize(in bounds: NSRect) -> NSSize {
-        guard let container = textView.textContainer, let lm = textView.layoutManager else {
-            return NSSize(width: 420, height: 320)
+    private let groups: [[Section]]
+
+    /// Split sections into `n` contiguous, order-preserving columns whose
+    /// heights are as even as possible (greedy on a running target).
+    private static func partition(_ sections: [Section], into n: Int) -> [[Section]] {
+        let weights = sections.map { $0.rows.count + 2 } // title + rows + gap
+        let total = weights.reduce(0, +)
+        let target = Double(total) / Double(n)
+        var groups: [[Section]] = []
+        var current: [Section] = []
+        var height = 0
+        var used = 0
+        for (i, section) in sections.enumerated() {
+            current.append(section)
+            height += weights[i]
+            let remainingCols = n - used - 1
+            let remainingSections = sections.count - i - 1
+            // Close the column once it reaches the running target, but leave
+            // at least one section for each remaining column.
+            if used < n - 1,
+               Double(height) >= target,
+               remainingSections > remainingCols
+            {
+                groups.append(current)
+                current = []
+                height = 0
+                used += 1
+            }
         }
-        lm.ensureLayout(for: container)
-        let content = lm.usedRect(for: container).size
-        let chrome = Self.inset * 2 + Self.rowHeight * 2 // title + footer rows
-        return NSSize(
-            width: min(content.width + Self.inset * 2, bounds.width - 48),
-            height: min(content.height + chrome, bounds.height * 0.75)
-        )
+        if !current.isEmpty {
+            groups.append(current)
+        }
+        return groups
     }
 
-    func scroll(by dy: CGFloat) {
-        let clip = scrollView.contentView
-        var origin = clip.bounds.origin
-        origin.y = max(0, min(origin.y + dy, textView.frame.height - clip.bounds.height))
-        clip.scroll(to: origin)
-        scrollView.reflectScrolledClipView(clip)
+    /// Fixed content size: title row + tallest column + footer row + insets.
+    func desiredSize(in _: NSRect) -> NSSize {
+        let widths = columnLabels.map(\.fittingSize.width)
+        let heights = columnLabels.map(\.fittingSize.height)
+        let bodyWidth = widths.reduce(0, +)
+            + Self.columnGap * CGFloat(max(0, columnLabels.count - 1))
+        let bodyHeight = heights.max() ?? 0
+        return NSSize(
+            width: Self.inset * 2 + bodyWidth,
+            height: Self.inset * 2 + Self.rowHeight * 2 + bodyHeight
+        )
     }
 
     override func layout() {
@@ -130,14 +152,16 @@ final class HelpOverlayView: NSView {
             y: bounds.height - inset - (row + closeBadge.frame.height) / 2
         )
         footerLabel.sizeToFit()
-        footerLabel.frame.origin = NSPoint(
-            x: inset, y: inset + (row - footerLabel.frame.height) / 2 - 4
-        )
-        scrollView.frame = NSRect(
-            x: inset, y: inset + row,
-            width: bounds.width - inset * 2,
-            height: bounds.height - inset * 2 - row * 2
-        )
+        footerLabel.frame.origin = NSPoint(x: inset, y: inset)
+
+        // Columns fill the band between the title and footer rows, top-aligned.
+        let bandTop = bounds.height - inset - row
+        var x = inset
+        for label in columnLabels {
+            let size = label.fittingSize
+            label.frame = NSRect(x: x, y: bandTop - size.height, width: size.width, height: size.height)
+            x += size.width + Self.columnGap
+        }
     }
 
     @objc private func render() {
@@ -157,28 +181,20 @@ final class HelpOverlayView: NSView {
                 .backgroundColor: palette.accent,
             ]
         )
+        footerLabel.attributedStringValue = NSAttributedString(
+            string: "esc close",
+            attributes: [.font: Self.font, .foregroundColor: palette.dim]
+        )
 
-        let footer = NSMutableAttributedString()
-        for (i, hint) in [("j/k", "scroll"), ("esc", "close")].enumerated() {
-            if i > 0 {
-                footer.append(NSAttributedString(
-                    string: "  \u{00B7}  ",
-                    attributes: [.font: Self.font, .foregroundColor: palette.dim]
-                ))
-            }
-            footer.append(NSAttributedString(
-                string: hint.0 + " ",
-                attributes: [.font: Self.boldFont, .foregroundColor: palette.accent]
-            ))
-            footer.append(NSAttributedString(
-                string: hint.1,
-                attributes: [.font: Self.font, .foregroundColor: palette.dim]
-            ))
+        for (label, group) in zip(columnLabels, groups) {
+            label.attributedStringValue = column(for: group, palette: palette)
         }
-        footerLabel.attributedStringValue = footer
+        needsLayout = true
+    }
 
+    private func column(for sections: [Section], palette: Palette) -> NSAttributedString {
         let buffer = NSMutableAttributedString()
-        for (i, section) in Self.sections.enumerated() {
+        for (i, section) in sections.enumerated() {
             buffer.append(NSAttributedString(
                 string: (i == 0 ? "" : "\n") + section.title + "\n",
                 attributes: [.font: Self.boldFont, .foregroundColor: palette.pink]
@@ -197,7 +213,6 @@ final class HelpOverlayView: NSView {
                 ))
             }
         }
-        textView.textStorage?.setAttributedString(buffer)
-        needsLayout = true
+        return buffer
     }
 }

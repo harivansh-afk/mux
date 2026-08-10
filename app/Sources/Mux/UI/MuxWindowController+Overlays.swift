@@ -107,10 +107,6 @@ extension MuxWindowController {
         helpOverlay.removeFromSuperview()
     }
 
-    func scrollHelp(by dy: CGFloat) {
-        helpOverlay.scroll(by: dy)
-    }
-
     func positionHelpOverlay() {
         center(helpOverlay, size: helpOverlay.desiredSize(in: container.bounds))
     }

@@ -53,7 +53,6 @@ final class PrefixEngine {
 
     private static let helpSegments: [ModeBarSegment] = [
         .badge("KEYBINDS"),
-        .key("j/k"), .dim(" scroll  "),
         .key("esc"), .dim(" close"),
     ]
 
@@ -147,13 +146,14 @@ final class PrefixEngine {
             }
 
         case .help:
+            // The overlay shows everything at once; any key closes it, so
+            // the momentary mode never swallows a keystroke you meant to type.
             switch key {
-            case "j", "\u{F701}": controller?.scrollHelp(by: 44); return nil
-            case "k", "\u{F700}": controller?.scrollHelp(by: -44); return nil
             case "\u{1b}", "q", "?", "\r":
                 setMode(.normal)
                 return nil
             default:
+                setMode(.normal)
                 return nil
             }
 
