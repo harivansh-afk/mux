@@ -28,3 +28,8 @@ ghosttykit:
 # Build the app (run on the Mac)
 app:
     ./scripts/make-app.sh
+
+# Two-daemon QUIC broker e2e (hermetic, loopback)
+quic-e2e:
+    cargo build -p muxd -p mux-attach
+    python3 scripts/test-muxd-quic-e2e.py
