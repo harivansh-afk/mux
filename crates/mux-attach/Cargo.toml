@@ -7,3 +7,5 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 mux-proto = { path = "../mux-proto" }
+nix.workspace = true
+libc = "0.2"
