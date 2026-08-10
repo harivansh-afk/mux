@@ -2,7 +2,6 @@
   "uucode": {
     "version": "0.2.0",
     "url": "https://deps.files.ghostty.org/uucode-2826a37a4562284fdacd8fa029d49509cc9bffcd.tar.gz",
-    "prefetch": "file",
-    "hash": "sha256-unused-fetched-by-zig"
+    "hash": "sha256-fnb8f6seescoxSs1u7PluMY5hBq/x/4aS8sTBQWUvJ4="
   }
 }

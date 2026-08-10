@@ -60,6 +60,44 @@ the local daemon holds one QUIC connection per host.
 There is no CLI to manage `hosts.json` yet - it is hand-edited JSON, read fresh
 every time the picker opens.
 
+## Deploy on NixOS
+
+To run `muxd` as a persistent systemd service on a NixOS box, add this repo as
+a flake input and import its module. The flake builds only `muxd` and
+`mux-attach` (never the Swift app), and compiles `crates/ghostty-vt`'s Zig half
+fully offline in the sandbox.
+
+    # flake.nix
+    {
+      inputs.mux.url = "git+https://git.harivan.sh/harivansh-afk/mux?ref=main";
+      # ... your other inputs, plus mux threaded into outputs ...
+    }
+
+    # a NixOS module / configuration.nix
+    { ... }: {
+      imports = [ mux.nixosModules.muxd ];
+      services.muxd = {
+        enable = true;
+        listen = "100.64.0.7:4433"; # a Tailscale (or otherwise private) IP:port
+        openFirewall = true;        # opens the UDP port (QUIC is UDP)
+      };
+    }
+
+The service runs as the `muxd` user with `HOME=/var/lib/muxd`. On first start
+it generates its cert and bearer token under
+`/var/lib/muxd/.local/state/muxd/` and logs the cert pin (`sha256:<base64>`) to
+the journal - `journalctl -u muxd` to read it.
+
+From there the Mac side is exactly the flow in [Remote hosts](#remote-hosts):
+copy `/var/lib/muxd/.local/state/muxd/token` off the box into
+`~/.local/state/mux/tokens/<alias>` (mode 0600) on the Mac, then name the host
+in `~/.config/mux/hosts.json`:
+
+    { "spark": { "addr": "100.64.0.7:4433" } }
+
+The first connection pins the cert trust-on-first-use into
+`~/.local/state/mux/known_hosts`.
+
 ## State model
 
 Layout and identity are client-owned (versioned JSON snapshots). 
