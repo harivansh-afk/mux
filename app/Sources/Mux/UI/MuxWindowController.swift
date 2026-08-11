@@ -28,7 +28,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// Internal (not private): the overlay chrome is managed by
     /// MuxWindowController+Overlays.swift.
     let container = PaneContainerView()
-    let modeBar = ModeBarView(boxed: true)
+    let modeBar = ModeBarView()
     let sessionIndicator = ModeBarView()
     let helpOverlay = HelpOverlayView()
     let panesOverlay = PanesOverlayView()

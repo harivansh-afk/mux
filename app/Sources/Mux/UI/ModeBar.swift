@@ -6,9 +6,10 @@ import AppKit
 /// span pairs: keys bold in accent, descriptions in the dim overlay color,
 /// all on panel_bg.
 ///
-/// Unlike a full-width status strip, the bar is a content-sized box floating
-/// at the bottom-left, inset by the same margin from the left and bottom
-/// edges of the terminal area; everything outside the box stays transparent.
+/// Unlike a full-width status strip, the bar is a content-sized box on
+/// panel_bg floating in a bottom corner (mode bar left, session indicator
+/// right), inset by the same margin from the nearest edges of the terminal
+/// area; everything outside the box stays transparent.
 struct ModeBarSegment {
     enum Kind {
         case badge
@@ -46,11 +47,6 @@ final class ModeBarView: NSView {
     /// so the box sits concentric with the corner.
     static let margin: CGFloat = 4
 
-    /// A boxed bar paints the panel background behind its text (the
-    /// bottom-left mode bar); a bare one floats text straight over the
-    /// terminal (the session indicator).
-    private let boxed: Bool
-
     /// The badge is the visual edge of the bar, so its inset inside the
     /// box must be identical on every side. The horizontal inset is
     /// therefore derived from the vertical slack
@@ -71,8 +67,7 @@ final class ModeBarView: NSView {
     private static let font = Chrome.font
     private static let boldFont = Chrome.boldFont
 
-    init(boxed: Bool = false) {
-        self.boxed = boxed
+    init() {
         super.init(frame: .zero)
         wantsLayer = true
         label.lineBreakMode = .byTruncatingTail
@@ -141,8 +136,7 @@ final class ModeBarView: NSView {
     }
 
     private func applyTheme() {
-        layer?.backgroundColor =
-            boxed ? ThemeManager.shared.palette.panelBg.cgColor : nil
+        layer?.backgroundColor = ThemeManager.shared.palette.panelBg.cgColor
     }
 
     override func layout() {
