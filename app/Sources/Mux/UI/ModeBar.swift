@@ -46,11 +46,16 @@ final class ModeBarView: NSView {
     /// so the box sits concentric with the corner.
     static let margin: CGFloat = 4
 
-    /// The box is transparent (bare text over the terminal), so the badge
-    /// is the visual edge of the bar: its inset inside the box must be
-    /// identical on every side. The horizontal inset is therefore derived
-    /// from the vertical slack ((height - label height) / 2), making left
-    /// gap == bottom gap exactly.
+    /// A boxed bar paints the panel background behind its text (the
+    /// bottom-left mode bar); a bare one floats text straight over the
+    /// terminal (the session indicator).
+    private let boxed: Bool
+
+    /// The badge is the visual edge of the bar, so its inset inside the
+    /// box must be identical on every side. The horizontal inset is
+    /// therefore derived from the vertical slack
+    /// ((height - label height) / 2), making left gap == bottom gap
+    /// exactly.
     private var textInset: CGFloat {
         max(0, (Self.height - label.fittingSize.height) / 2)
     }
@@ -66,11 +71,13 @@ final class ModeBarView: NSView {
     private static let font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
     private static let boldFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
+    init(boxed: Bool = false) {
+        self.boxed = boxed
+        super.init(frame: .zero)
         wantsLayer = true
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
+        applyTheme()
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeDidChange),
             name: .muxThemeDidChange, object: nil
@@ -129,7 +136,13 @@ final class ModeBarView: NSView {
     }
 
     @objc private func themeDidChange() {
+        applyTheme()
         render(segments)
+    }
+
+    private func applyTheme() {
+        layer?.backgroundColor =
+            boxed ? ThemeManager.shared.palette.panelBg.cgColor : nil
     }
 
     override func layout() {
