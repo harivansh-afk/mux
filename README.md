@@ -84,15 +84,18 @@ fully offline in the sandbox.
       imports = [ mux.nixosModules.muxd ];
       services.muxd = {
         enable = true;
+        user = "alice";             # the human who attaches: panes are this user's shells
         listen = "100.64.0.7:4433"; # a Tailscale (or otherwise private) IP:port
         openFirewall = true;        # opens the UDP port (QUIC is UDP)
       };
     }
 
-The service runs as the `muxd` user with `HOME=/var/lib/muxd`. On first start
-it generates its cert and bearer token under
-`/var/lib/muxd/.local/state/muxd/` and logs the cert pin (`sha256:<base64>`) to
-the journal - `journalctl -u muxd` to read it.
+muxd is a per-user daemon: every pane's shell runs as `user`, in their
+home, with their login shell - a system account would give every pane a
+`nologin` shell that exits immediately. On first start the daemon
+generates its cert and bearer token under `~user/.local/state/muxd/` and
+logs the cert pin (`sha256:<base64>`) to the journal - `journalctl -u
+muxd` to read it.
 
 From there the Mac side is exactly the flow in [Remote hosts](#remote-hosts):
 copy `/var/lib/muxd/.local/state/muxd/token` off the box into

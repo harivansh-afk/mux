@@ -34,7 +34,28 @@ fn winsize(cols: u16, rows: u16) -> Winsize {
 }
 
 fn user_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
+    if let Ok(shell) = std::env::var("SHELL") {
+        if !shell.is_empty() {
+            return shell;
+        }
+    }
+    // Daemons have no $SHELL: ask passwd, like login does. A service
+    // account's nologin surfaces verbatim rather than being masked -
+    // the daemon must run as the human whose shells it spawns.
+    // SAFETY: getpwuid returns a pointer to a static record or null;
+    // pw_shell, when present, is a NUL-terminated string.
+    let entry = unsafe { libc::getpwuid(libc::getuid()) };
+    if !entry.is_null() {
+        let shell = unsafe { (*entry).pw_shell };
+        if !shell.is_null() {
+            if let Ok(shell) = unsafe { std::ffi::CStr::from_ptr(shell) }.to_str() {
+                if !shell.is_empty() {
+                    return shell.to_string();
+                }
+            }
+        }
+    }
+    "/bin/zsh".to_string()
 }
 
 /// The tokio reactor requires it, and an inherited fd (migrate.rs) may
