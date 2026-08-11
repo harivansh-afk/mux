@@ -33,7 +33,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     let helpOverlay = HelpOverlayView()
     let targetPicker = TargetPickerView()
     let panesOverlay = PanesOverlayView()
-    var indicatorFlashTimer: Timer?
 
     private(set) var sessions: [Session] = []
     private(set) var activeSessionIndex = 0
@@ -66,10 +65,10 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         container.addSubview(modeBar)
         modeBar.isHidden = true
         container.addSubview(sessionIndicator)
-        sessionIndicator.isHidden = true
         self.window = window
 
         sessions = [Session(runtime: runtime, controller: self)]
+        updateSessionIndicator()
 
         applyTheme()
         NotificationCenter.default.addObserver(
@@ -119,7 +118,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         if let pane = activeSession?.focusedPane {
             focus(pane)
         }
-        flashSessionIndicator()
+        updateSessionIndicator()
         saveState()
     }
 
@@ -138,7 +137,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             workingDirectory: source?.pwd, cwdFrom: source?.id, target: source?.target
         )
         layoutPanes()
-        flashSessionIndicator()
+        updateSessionIndicator()
         saveState()
     }
 
@@ -150,7 +149,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         if let pane = activeSession?.focusedPane {
             focus(pane)
         }
-        flashSessionIndicator()
+        updateSessionIndicator()
         saveState()
     }
 
@@ -193,6 +192,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             )
         }
         layoutPanes()
+        updateSessionIndicator()
         if let pane = activeSession?.focusedPane {
             focus(pane)
         }
@@ -262,9 +262,13 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         if !modeBar.isHidden {
             positionModeBar()
         }
-        if !sessionIndicator.isHidden {
-            positionSessionIndicator()
+        // Always visible: keep it above panes added since the last layout
+        // and glued to the bottom-right through resizes.
+        if container.subviews.last !== sessionIndicator {
+            sessionIndicator.removeFromSuperview()
+            container.addSubview(sessionIndicator)
         }
+        positionSessionIndicator()
         if helpOverlay.superview != nil {
             positionHelpOverlay()
         }

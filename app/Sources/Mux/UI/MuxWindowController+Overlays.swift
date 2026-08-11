@@ -15,12 +15,8 @@ extension MuxWindowController {
             modeBar.removeFromSuperview()
             container.addSubview(modeBar)
             positionModeBar()
-            showSessionIndicator()
         } else {
             modeBar.isHidden = true
-            if indicatorFlashTimer == nil {
-                sessionIndicator.isHidden = true
-            }
         }
     }
 
@@ -57,29 +53,11 @@ extension MuxWindowController {
         return segments
     }
 
-    private func showSessionIndicator() {
-        indicatorFlashTimer?.invalidate()
-        indicatorFlashTimer = nil
+    /// Always visible at the bottom-right; re-rendered whenever sessions
+    /// are created, closed, switched or restored.
+    func updateSessionIndicator() {
         sessionIndicator.render(sessionSegments)
-        sessionIndicator.isHidden = false
-        sessionIndicator.removeFromSuperview()
-        container.addSubview(sessionIndicator)
         positionSessionIndicator()
-    }
-
-    /// Visible while a mode bar is up; a switch flashes it for a second
-    /// so normal use stays chrome-free.
-    func flashSessionIndicator() {
-        showSessionIndicator()
-        indicatorFlashTimer = Timer.scheduledTimer(
-            withTimeInterval: 1.0, repeats: false
-        ) { [weak self] _ in
-            guard let self else { return }
-            indicatorFlashTimer = nil
-            if modeBar.isHidden {
-                sessionIndicator.isHidden = true
-            }
-        }
     }
 
     func positionSessionIndicator() {
