@@ -82,6 +82,19 @@ final class GhosttyRuntime {
         ghostty_app_set_focus(app, focused)
     }
 
+    /// The user's focus-follows-mouse config, read straight from the
+    /// loaded ghostty config.
+    var focusFollowsMouse: Bool {
+        configBool("focus-follows-mouse")
+    }
+
+    private func configBool(_ key: String, default def: Bool = false) -> Bool {
+        guard let config else { return def }
+        var v = def
+        _ = ghostty_config_get(config, &v, key, UInt(key.utf8.count))
+        return v
+    }
+
     // MARK: - Callbacks
 
     private static func runtime(_ userdata: UnsafeMutableRawPointer?) -> GhosttyRuntime? {

@@ -66,6 +66,16 @@ final class PaneView: NSView {
     /// racing requests complete instead of stacking sheets.
     var clipboardConfirmationActive = false
 
+    // MARK: - Mouse state (used by PaneView+Input.swift)
+
+    /// True when we've consumed a left mouse-down only to move focus and
+    /// should suppress the matching mouse-up from being reported.
+    var suppressNextLeftMouseUp = false
+
+    /// The last force-click pressure stage, so stage 2 (force click) only
+    /// fires once per press.
+    var prevPressureStage = 0
+
     /// Local event monitor: cmd-modified keyUp events never reach the
     /// responder chain, so we forward them from here (ghostty does the
     /// same).
@@ -98,11 +108,16 @@ final class PaneView: NSView {
 
         wantsLayer = true
 
-        // Command-modified keyUp events never trigger the normal responder
-        // chain, so catch them with a local monitor and forward to keyUp.
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyUp]) {
+        // Local monitor, matching ghostty: cmd-modified keyUp events never
+        // trigger the responder chain, and a left mouse-down that only
+        // transfers pane focus must be consumed before it becomes a
+        // selection in the newly focused pane.
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyUp, .leftMouseDown]) {
             [weak self] event in self?.localEventHandler(event)
         }
+
+        // The UTTypes that can be dragged onto this view.
+        registerForDraggedTypes(Array(Self.dropTypes))
 
         guard let app = runtime.app else { return }
 
@@ -189,9 +204,52 @@ final class PaneView: NSView {
             keyUp(with: event)
             return nil
 
+        case .leftMouseDown:
+            return localEventLeftMouseDown(event)
+
         default:
             return event
         }
+    }
+
+    /// Ported from ghostty: clicking an unfocused pane transfers focus
+    /// without also starting a selection in it.
+    private func localEventLeftMouseDown(_ event: NSEvent) -> NSEvent? {
+        // We only want to process events that are on this window.
+        guard let window,
+              event.window != nil,
+              window == event.window else { return event }
+
+        // The clicked location in this window should be this view. Hit
+        // test through the window so overlays on top win.
+        guard let location = window.contentView?.convert(event.locationInWindow, from: nil)
+        else { return event }
+        guard window.contentView?.hitTest(location) == self else { return event }
+
+        // We always assume that we're resetting our mouse suppression
+        // unless we see the specific scenario below to set it.
+        suppressNextLeftMouseUp = false
+
+        // If we're already the first responder then no focus transfer is
+        // happening, so the click should continue as normal.
+        guard window.firstResponder !== self else { return event }
+
+        // If our window/app is already focused, then this click is only
+        // being used to transfer split focus. Consume it so it does not
+        // get forwarded to the terminal as a mouse click.
+        if NSApp.isActive, window.isKeyWindow {
+            window.makeFirstResponder(self)
+            suppressNextLeftMouseUp = true
+            return nil
+        }
+
+        // Make ourselves the first responder.
+        window.makeFirstResponder(self)
+
+        // We have to keep processing the event so that AppKit can properly
+        // focus the window and dispatch events. If you return nil here
+        // then nobody gets a windowDidBecomeKey event and so on.
+        return event
     }
 
     /// The pty this pane attaches to: `local:<id>`, or `<alias>:<id>` for
@@ -266,7 +324,9 @@ final class PaneView: NSView {
         controller?.saveState()
     }
 
-    private func bindingAction(_ action: String) {
+    /// Internal (not private): the context menu handlers in
+    /// PaneView+Input.swift drive ghostty through binding actions too.
+    func bindingAction(_ action: String) {
         guard let surface else { return }
         _ = action.withCString { ptr in
             ghostty_surface_binding_action(surface, ptr, UInt(action.utf8.count))
@@ -393,6 +453,14 @@ final class PaneView: NSView {
         guard focused != value else { return }
         focused = value
         hostBadge?.setFocused(value)
+
+        // If we lost our focus then remove the mouse event suppression so
+        // our mouse release event leaving the surface can properly be sent
+        // to stop things like mouse selection.
+        if !value {
+            suppressNextLeftMouseUp = false
+        }
+
         guard let surface else { return }
         ghostty_surface_set_focus(surface, value)
         if value {

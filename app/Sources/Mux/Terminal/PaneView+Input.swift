@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import GhosttyKit
 
 /// Input forwarding: keyboard, mouse, scroll, cursor. Ported from
@@ -494,40 +495,251 @@ extension PaneView {
         super.updateTrackingAreas()
     }
 
+    /// NSEvent.buttonNumber -> ghostty mouse button. From ghostty's
+    /// Ghostty.Input.MouseButton mapping.
+    private static func mouseButton(fromButtonNumber n: Int) -> ghostty_input_mouse_button_e {
+        switch n {
+        case 0: GHOSTTY_MOUSE_LEFT
+        case 1: GHOSTTY_MOUSE_RIGHT
+        case 2: GHOSTTY_MOUSE_MIDDLE
+        case 3: GHOSTTY_MOUSE_EIGHT // back button
+        case 4: GHOSTTY_MOUSE_NINE // forward button
+        case 5: GHOSTTY_MOUSE_SIX
+        case 6: GHOSTTY_MOUSE_SEVEN
+        case 7: GHOSTTY_MOUSE_FOUR
+        case 8: GHOSTTY_MOUSE_FIVE
+        case 9: GHOSTTY_MOUSE_TEN
+        case 10: GHOSTTY_MOUSE_ELEVEN
+        default: GHOSTTY_MOUSE_UNKNOWN
+        }
+    }
+
+    @discardableResult
     private func mouseButton(
         _ state: ghostty_input_mouse_state_e,
         button: ghostty_input_mouse_button_e,
         event: NSEvent
-    ) {
-        guard let surface else { return }
-        _ = ghostty_surface_mouse_button(
+    ) -> Bool {
+        guard let surface else { return false }
+        return ghostty_surface_mouse_button(
             surface, state, button, Self.ghosttyMods(event.modifierFlags)
         )
     }
 
     override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        // Focus transfer happens in the local event monitor (see
+        // PaneView.localEventLeftMouseDown), so this press is a real
+        // terminal click.
         mouseButton(GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT, event: event)
     }
 
     override func mouseUp(with event: NSEvent) {
+        // If this mouse-up corresponds to a focus-only click transfer,
+        // suppress it so we don't emit a release without a press.
+        if suppressNextLeftMouseUp {
+            suppressNextLeftMouseUp = false
+            return
+        }
+
+        // Always reset our pressure when the mouse goes up.
+        prevPressureStage = 0
+
         mouseButton(GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT, event: event)
+
+        // Release pressure.
+        if let surface {
+            ghostty_surface_mouse_pressure(surface, 0, 0)
+        }
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        mouseButton(GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT, event: event)
+        // Forward to the core; if it doesn't consume the press (mouse
+        // reporting off), fall through to super so menu(for:) shows the
+        // context menu.
+        if mouseButton(GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT, event: event) {
+            return
+        }
+        super.rightMouseDown(with: event)
     }
 
     override func rightMouseUp(with event: NSEvent) {
-        mouseButton(GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_RIGHT, event: event)
+        if mouseButton(GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_RIGHT, event: event) {
+            return
+        }
+        super.rightMouseUp(with: event)
     }
 
     override func otherMouseDown(with event: NSEvent) {
-        mouseButton(GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_MIDDLE, event: event)
+        mouseButton(
+            GHOSTTY_MOUSE_PRESS,
+            button: Self.mouseButton(fromButtonNumber: event.buttonNumber),
+            event: event
+        )
     }
 
     override func otherMouseUp(with event: NSEvent) {
-        mouseButton(GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_MIDDLE, event: event)
+        mouseButton(
+            GHOSTTY_MOUSE_RELEASE,
+            button: Self.mouseButton(fromButtonNumber: event.buttonNumber),
+            event: event
+        )
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+
+        // On mouse enter we need to reset our cursor position. This is
+        // super important because we set it to -1/-1 on mouseExit and lots
+        // of mouse logic (i.e. whether to send mouse reports) depends on
+        // the position being in the viewport if it is.
+        reportMousePos(event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard let surface else { return }
+
+        // If the mouse is being dragged then we don't have to emit this
+        // because we get mouse drag events even if we've already exited
+        // the viewport (i.e. mouseDragged).
+        if NSEvent.pressedMouseButtons != 0 {
+            return
+        }
+
+        // Negative values indicate the cursor has left the viewport.
+        ghostty_surface_mouse_pos(
+            surface, -1, -1, Self.ghosttyMods(event.modifierFlags)
+        )
+    }
+
+    override func pressureChange(with event: NSEvent) {
+        guard let surface else { return }
+
+        // Notify Ghostty first: this sets up state we need for later
+        // pressure handling (such as QuickLook).
+        ghostty_surface_mouse_pressure(surface, UInt32(event.stage), Double(event.pressure))
+
+        // Pressure stage 2 is force click. We only want to execute this on
+        // the initial transition to stage 2, and not for any repeated
+        // events.
+        guard prevPressureStage < 2 else { return }
+        prevPressureStage = event.stage
+        guard event.stage == 2 else { return }
+
+        // If the user has force click enabled then we do a quick look.
+        // There is no public API for this as far as I can tell.
+        guard UserDefaults.standard.bool(forKey: "com.apple.trackpad.forceClick") else { return }
+        quickLook(with: event)
+    }
+
+    override func quickLook(with event: NSEvent) {
+        guard let surface else { return super.quickLook(with: event) }
+
+        // Grab the text under the cursor.
+        var text = ghostty_text_s()
+        guard ghostty_surface_quicklook_word(surface, &text) else {
+            return super.quickLook(with: event)
+        }
+        defer { ghostty_surface_free_text(surface, &text) }
+        guard text.text_len > 0 else { return super.quickLook(with: event) }
+
+        // If we can get a font then we use the font. This should always
+        // work since we always have a primary font.
+        var attributes: [NSAttributedString.Key: Any] = [:]
+        if let fontRaw = ghostty_surface_quicklook_font(surface) {
+            // ghostty_surface_quicklook_font creates a copy of a CTFont;
+            // Swift auto-retains the value put in the dict, so release the
+            // original.
+            let font = Unmanaged<CTFont>.fromOpaque(fontRaw)
+            attributes[.font] = font.takeUnretainedValue()
+            font.release()
+        }
+
+        // Ghostty coordinate system is top-left, convert to bottom-left
+        // for AppKit.
+        let pt = NSPoint(x: text.tl_px_x, y: frame.size.height - text.tl_px_y)
+        let str = NSAttributedString(string: String(cString: text.text), attributes: attributes)
+        showDefinition(for: str, at: pt)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        // We only support right-click menus.
+        switch event.type {
+        case .rightMouseDown:
+            break
+
+        case .leftMouseDown:
+            if !event.modifierFlags.contains(.control) {
+                return nil
+            }
+
+            // AppKit calls menu BEFORE calling any mouse events. If mouse
+            // capturing is enabled then we never show the context menu so
+            // that we can handle ctrl+left-click in the terminal app.
+            guard let surface else { return nil }
+            if ghostty_surface_mouse_captured(surface) {
+                return nil
+            }
+
+            // If we return a non-nil menu then mouse events will never be
+            // processed by the core, so we need to manually send a right
+            // mouse down event.
+            _ = ghostty_surface_mouse_button(
+                surface,
+                GHOSTTY_MOUSE_PRESS,
+                GHOSTTY_MOUSE_RIGHT,
+                Self.ghosttyMods(event.modifierFlags)
+            )
+
+        default:
+            return nil
+        }
+
+        let menu = NSMenu()
+
+        // Only offer copy when there is a selection.
+        if hasSelection {
+            menu.addItem(withTitle: "Copy", action: #selector(copySelection(_:)), keyEquivalent: "")
+        }
+        menu.addItem(withTitle: "Paste", action: #selector(pasteFromClipboard(_:)), keyEquivalent: "")
+
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Split Right", action: #selector(contextSplitRight(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Split Down", action: #selector(contextSplitDown(_:)), keyEquivalent: "")
+
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Reset Terminal", action: #selector(resetTerminal(_:)), keyEquivalent: "")
+
+        return menu
+    }
+
+    private var hasSelection: Bool {
+        guard let surface else { return false }
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_selection(surface, &text) else { return false }
+        defer { ghostty_surface_free_text(surface, &text) }
+        return text.text_len > 0
+    }
+
+    // MARK: - Menu handlers
+
+    @objc func copySelection(_: Any?) {
+        bindingAction("copy_to_clipboard")
+    }
+
+    @objc func pasteFromClipboard(_: Any?) {
+        bindingAction("paste_from_clipboard")
+    }
+
+    @objc private func contextSplitRight(_: Any?) {
+        controller?.split(from: self, ghosttyDirection: GHOSTTY_SPLIT_DIRECTION_RIGHT)
+    }
+
+    @objc private func contextSplitDown(_: Any?) {
+        controller?.split(from: self, ghosttyDirection: GHOSTTY_SPLIT_DIRECTION_DOWN)
+    }
+
+    @objc private func resetTerminal(_: Any?) {
+        bindingAction("reset")
     }
 
     private func reportMousePos(_ event: NSEvent) {
@@ -542,6 +754,15 @@ extension PaneView {
 
     override func mouseMoved(with event: NSEvent) {
         reportMousePos(event)
+
+        // Handle focus-follows-mouse.
+        if let window,
+           window.isKeyWindow,
+           !focused,
+           GhosttyRuntime.shared?.focusFollowsMouse == true
+        {
+            window.makeFirstResponder(self)
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -802,5 +1023,47 @@ extension PaneView: NSTextInputClient {
             // in a preedit state so we can clear it.
             ghostty_surface_preedit(surface, nil, 0)
         }
+    }
+}
+
+// MARK: - NSDraggingDestination
+
+/// Dropping files or text onto a pane inserts it at the cursor, with file
+/// paths shell-escaped. Ported from ghostty.
+extension PaneView {
+    static let dropTypes: Set<NSPasteboard.PasteboardType> = [
+        .string,
+        .fileURL,
+    ]
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard let types = sender.draggingPasteboard.types else { return [] }
+
+        // If the dragging object contains none of our types then we return
+        // none. This shouldn't happen because AppKit should guarantee that
+        // we only receive types we registered for, but it's good to check.
+        if Set(types).isDisjoint(with: Self.dropTypes) {
+            return []
+        }
+
+        // We use copy to get the proper icon.
+        return .copy
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let pb = sender.draggingPasteboard
+
+        guard let content = pb.getOpinionatedStringContents() else { return false }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let surface else { return }
+            let len = content.utf8CString.count
+            guard len > 1 else { return }
+            content.withCString { ptr in
+                // len includes the null terminator so we subtract 1.
+                ghostty_surface_text(surface, ptr, UInt(len - 1))
+            }
+        }
+        return true
     }
 }
