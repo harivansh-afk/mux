@@ -125,6 +125,10 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
     };
     let cwd = params.cwd.map(CString::new).transpose()?;
     let term = CString::new(format!("TERM={}", params.term.unwrap_or("xterm-ghostty")))?;
+    // Panes are always rendered by a truecolor terminal; advertise it the
+    // way the renderer itself would (the daemon's own environment has no
+    // COLORTERM, and the child inherits it otherwise).
+    let colorterm = CString::new("COLORTERM=truecolor")?;
 
     match unsafe { nix::unistd::fork() }.context("fork")? {
         ForkResult::Parent { child } => {
@@ -158,6 +162,7 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
                     let _ = libc::chdir(dir.as_ptr());
                 }
                 libc::putenv(term.as_ptr().cast_mut());
+                libc::putenv(colorterm.as_ptr().cast_mut());
                 let argv_ptrs: Vec<*const libc::c_char> = exec_argv
                     .iter()
                     .map(|a| a.as_ptr())

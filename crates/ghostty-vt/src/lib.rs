@@ -286,6 +286,23 @@ mod tests {
     }
 
     #[test]
+    fn render_screen_bytes_preserves_truecolor_sgr() {
+        let mut term = Terminal::new(24, 80).expect("terminal creation");
+        term.feed(b"\x1b[38;2;10;200;30mrgb text");
+
+        let bytes = term.render_screen_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+
+        // Direct-color cells must replay as 24-bit SGR (either the
+        // semicolon or colon sub-parameter form), never quantized to
+        // a palette index.
+        assert!(
+            text.contains("38;2;10;200;30") || text.contains("38:2::10:200:30"),
+            "truecolor SGR lost in replay: {text:?}"
+        );
+    }
+
+    #[test]
     fn render_screen_bytes_uses_crlf() {
         let mut term = Terminal::new(4, 40).expect("terminal creation");
         // Feed two lines via CR+LF (as a PTY with ONLCR would produce)
