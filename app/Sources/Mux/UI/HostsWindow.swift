@@ -11,9 +11,12 @@ import AppKit
 ///
 /// `t` swaps the list for the ix templates a new VM is built from; enter
 /// there persists the default and comes back. All queries fire on open and
-/// fill in as they answer, so the box is usable immediately and re-centers
-/// itself as it grows. PrefixEngine owns the keys; the window never takes
-/// focus.
+/// fill in as they answer, so the box is usable immediately. Sizing is
+/// sticky so late answers don't walk the edges around: pending statuses
+/// reserve the width of a typical resolved one, the box only grows within
+/// one open, and each open starts from the last open's final size (a
+/// shrunken fleet corrects itself on the next open). PrefixEngine owns the
+/// keys; the window never takes focus.
 final class HostsWindowView: NSView {
     /// A host's live state as it reads on screen.
     private enum Status {
@@ -62,6 +65,10 @@ final class HostsWindowView: NSView {
     private static let rowHeight = Chrome.rowHeight
     /// Minimum gap between a row's name and its right-aligned status.
     private static let gap: CGFloat = 24
+    /// Width reserved for a pending status, sized to a typical resolved
+    /// probe, so an answer landing does not widen the box.
+    private static let statusReserve = ("ok 100ms  10 ptys" as NSString)
+        .size(withAttributes: [.font: font]).width
 
     private let titleLabel = NSTextField(labelWithString: "hosts")
     private let cancelBadge = NSTextField(labelWithString: " esc close ")
@@ -99,6 +106,13 @@ final class HostsWindowView: NSView {
     /// Called when late rows or a resolved status change the content size,
     /// so the controller can re-center the box.
     var onContentChange: (() -> Void)?
+
+    /// The largest size this open has needed: the box never shrinks while
+    /// it is up.
+    private var grownSize = NSSize.zero
+    /// The previous open's final size, used as this open's floor: the fleet
+    /// is stable, so the box usually appears at full size and stays put.
+    private var carriedSize = NSSize.zero
 
     private var rows: [Row] {
         pickingTemplate ? templateRows : hostRows
@@ -159,6 +173,8 @@ final class HostsWindowView: NSView {
     func reload() {
         generation += 1
         let generation = generation
+        carriedSize = grownSize
+        grownSize = .zero
         copied = false
         digest = nil
         pickingTemplate = false
@@ -192,8 +208,6 @@ final class HostsWindowView: NSView {
                       })
                 else { return }
                 hostRows[row].status = Self.status(of: probe)
-                // A resolved status is wider than the pending "...", so the
-                // box has to re-fit or the alias beside it truncates.
                 refresh()
             }
         }
@@ -296,17 +310,30 @@ final class HostsWindowView: NSView {
 
     // MARK: - Layout
 
-    /// Content-fitting size, capped to the container.
+    /// Content-fitting size, capped to the container. Monotonic within one
+    /// open and floored by the previous open's final size, so late answers
+    /// re-render in place instead of walking the edges around.
     func desiredSize(in bounds: NSRect) -> NSSize {
-        let body = zip(mainLabels, metaLabels)
-            .map { $0.fittingSize.width + Self.gap + $1.fittingSize.width }.max() ?? 0
+        let current = rows
+        var body: CGFloat = 0
+        for (i, main) in mainLabels.enumerated() where metaLabels.indices.contains(i) {
+            var meta = metaLabels[i].fittingSize.width
+            if current.indices.contains(i), case .pending = current[i].status {
+                meta = max(meta, Self.statusReserve)
+            }
+            body = max(body, main.fittingSize.width + Self.gap + meta)
+        }
         let title = titleLabel.fittingSize.width + Self.gap + cancelBadge.fittingSize.width
-        let width = max(body, title, footerLabel.fittingSize.width)
+        let width = max(body, title, footerLabel.fittingSize.width) + Self.inset * 2
         // Title row, the rows themselves, then the footer row.
-        let height = Self.rowHeight * CGFloat(rows.count + 2) + Self.inset * 2
+        let height = Self.rowHeight * CGFloat(current.count + 2) + Self.inset * 2
+        grownSize = NSSize(
+            width: max(grownSize.width, width),
+            height: max(grownSize.height, height)
+        )
         return NSSize(
-            width: min(width + Self.inset * 2, bounds.width - 48),
-            height: min(height, bounds.height * 0.9)
+            width: min(max(grownSize.width, carriedSize.width), bounds.width - 48),
+            height: min(max(grownSize.height, carriedSize.height), bounds.height * 0.9)
         )
     }
 

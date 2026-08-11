@@ -96,7 +96,8 @@ extension MuxWindowController {
 
     /// prefix t: where a pane can live - local, the aliases with a live
     /// probe, the ix VMs. Every query fires on open, so the box fills in as
-    /// answers arrive and re-centers itself when it grows.
+    /// answers arrive; the view's sticky sizing keeps the box from moving
+    /// while they land.
     func showHostsWindow() {
         hostsWindow.onContentChange = { [weak self] in self?.positionHostsWindow() }
         hostsWindow.reload()
