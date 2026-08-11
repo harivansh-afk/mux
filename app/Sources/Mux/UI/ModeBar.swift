@@ -68,8 +68,8 @@ final class ModeBarView: NSView {
     private let label = NSTextField(labelWithString: "")
     private var segments: [ModeBarSegment] = []
 
-    private static let font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
-    private static let boldFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)
+    private static let font = Chrome.font
+    private static let boldFont = Chrome.boldFont
 
     init(boxed: Bool = false) {
         self.boxed = boxed

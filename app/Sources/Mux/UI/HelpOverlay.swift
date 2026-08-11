@@ -55,10 +55,10 @@ final class HelpOverlayView: NSView {
         ]),
     ]
 
-    private static let font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
-    private static let boldFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)
+    private static let font = Chrome.font
+    private static let boldFont = Chrome.boldFont
     private static let inset: CGFloat = 16
-    private static let rowHeight: CGFloat = 22
+    private static let rowHeight = Chrome.rowHeight
     private static let columnGap: CGFloat = 30
     /// Key column width in characters; descriptions start after it.
     private static let keyColumn = 17

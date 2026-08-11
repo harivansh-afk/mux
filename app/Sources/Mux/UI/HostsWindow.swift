@@ -56,10 +56,10 @@ final class HostsWindowView: NSView {
         }
     }
 
-    private static let font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
-    private static let boldFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)
+    private static let font = Chrome.font
+    private static let boldFont = Chrome.boldFont
     private static let inset: CGFloat = 14
-    private static let rowHeight: CGFloat = 22
+    private static let rowHeight = Chrome.rowHeight
     /// Minimum gap between a row's name and its right-aligned status.
     private static let gap: CGFloat = 24
 

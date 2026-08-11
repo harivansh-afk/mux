@@ -14,6 +14,16 @@ enum Appearance {
     case dark
 }
 
+/// The one monospaced font (and row height) for all mux chrome:
+/// overlays, mode bar, hosts window, session indicator. Sized here so
+/// they cannot drift per-view.
+enum Chrome {
+    static let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    static let boldFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+    /// Row height for list-style overlays (help, panes, hosts).
+    static let rowHeight: CGFloat = 26
+}
+
 struct Palette {
     /// Overlay/bar background (= terminal background).
     let panelBg: NSColor

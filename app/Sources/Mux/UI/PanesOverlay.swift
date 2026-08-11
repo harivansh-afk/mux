@@ -28,10 +28,10 @@ final class PanesOverlayView: NSView {
         let current: Bool
     }
 
-    private static let font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
-    private static let boldFont = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .bold)
+    private static let font = Chrome.font
+    private static let boldFont = Chrome.boldFont
     private static let inset: CGFloat = 16
-    private static let rowHeight: CGFloat = 26
+    private static let rowHeight = Chrome.rowHeight
 
     private let titleLabel = NSTextField(labelWithString: "panes")
     private let countLabel = NSTextField(labelWithString: "")

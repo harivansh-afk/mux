@@ -10,7 +10,7 @@ final class HostBadgeView: NSView {
     /// Inset from the pane's top and right edges.
     static let margin: CGFloat = 4
 
-    private static let font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .bold)
+    private static let font = Chrome.boldFont
     private static let unfocusedAlpha: CGFloat = 0.55
 
     private let label = NSTextField(labelWithString: "")
