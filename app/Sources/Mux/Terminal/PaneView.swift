@@ -62,6 +62,10 @@ final class PaneView: NSView {
     /// action. Used to place the IME candidate window.
     var cellSize = NSSize(width: 8, height: 16)
 
+    /// True while a clipboard confirmation sheet is up for this pane, so
+    /// racing requests complete instead of stacking sheets.
+    var clipboardConfirmationActive = false
+
     /// Local event monitor: cmd-modified keyUp events never reach the
     /// responder chain, so we forward them from here (ghostty does the
     /// same).

@@ -30,12 +30,12 @@ final class GhosttyRuntime {
 
         var runtime = ghostty_runtime_config_s(
             userdata: Unmanaged.passUnretained(self).toOpaque(),
-            supports_selection_clipboard: false,
+            supports_selection_clipboard: true,
             wakeup_cb: { ud in GhosttyRuntime.wakeup(ud) },
             action_cb: { app, target, action in GhosttyRuntime.action(app!, target: target, action: action) },
             read_clipboard_cb: { ud, loc, state in GhosttyRuntime.readClipboard(ud, location: loc, state: state) },
-            confirm_read_clipboard_cb: { ud, str, state, _ in
-                GhosttyRuntime.confirmReadClipboard(ud, string: str, state: state)
+            confirm_read_clipboard_cb: { ud, str, state, request in
+                GhosttyRuntime.confirmReadClipboard(ud, string: str, state: state, request: request)
             },
             write_clipboard_cb: { ud, loc, content, len, confirm in
                 GhosttyRuntime.writeClipboard(ud, location: loc, content: content, len: len, confirm: confirm)
@@ -117,11 +117,16 @@ final class GhosttyRuntime {
 
     private static func readClipboard(
         _ userdata: UnsafeMutableRawPointer?,
-        location _: ghostty_clipboard_e,
+        location: ghostty_clipboard_e,
         state: UnsafeMutableRawPointer?
     ) -> Bool {
         guard let view = paneView(userdata), let surface = view.surface else { return false }
-        let str = NSPasteboard.general.string(forType: .string) ?? ""
+        guard let pasteboard = NSPasteboard.ghostty(location) else { return false }
+
+        // Return false if there is no text-like clipboard content so
+        // performable paste bindings can pass through to the terminal.
+        guard let str = pasteboard.getOpinionatedStringContents() else { return false }
+
         str.withCString { ptr in
             ghostty_surface_complete_clipboard_request(surface, ptr, state, false)
         }
@@ -131,35 +136,144 @@ final class GhosttyRuntime {
     private static func confirmReadClipboard(
         _ userdata: UnsafeMutableRawPointer?,
         string: UnsafePointer<CChar>?,
-        state: UnsafeMutableRawPointer?
+        state: UnsafeMutableRawPointer?,
+        request: ghostty_clipboard_request_e
     ) {
-        // M1: no confirmation dialog; complete the request as confirmed.
-        guard let view = paneView(userdata), let surface = view.surface else { return }
-        ghostty_surface_complete_clipboard_request(surface, string, state, true)
+        guard let view = paneView(userdata) else { return }
+        guard let string, let contents = String(cString: string, encoding: .utf8) else { return }
+        DispatchQueue.main.async {
+            presentClipboardConfirmation(
+                view: view,
+                contents: contents,
+                request: request,
+                state: state,
+                pasteboard: nil
+            )
+        }
     }
 
     private static func writeClipboard(
-        _: UnsafeMutableRawPointer?,
-        location _: ghostty_clipboard_e,
+        _ userdata: UnsafeMutableRawPointer?,
+        location: ghostty_clipboard_e,
         content: UnsafePointer<ghostty_clipboard_content_s>?,
         len: Int,
-        confirm _: Bool
+        confirm: Bool
     ) {
-        guard len > 0, let content else { return }
-        // Prefer text/plain; fall back to the first entry.
-        var chosen: ghostty_clipboard_content_s = content[0]
+        guard let pasteboard = NSPasteboard.ghostty(location) else { return }
+        guard let content, len > 0 else { return }
+
+        var items: [(mime: String, data: String)] = []
         for i in 0 ..< len {
-            let c = content[i]
-            if let mime = c.mime, String(cString: mime) == "text/plain" {
-                chosen = c
-                break
+            guard let mime = content[i].mime, let data = content[i].data else { continue }
+            items.append((String(cString: mime), String(cString: data)))
+        }
+        guard !items.isEmpty else { return }
+
+        if !confirm {
+            // Declare all types, then set data for each.
+            let types = items.compactMap { NSPasteboard.PasteboardType(mimeType: $0.mime) }
+            pasteboard.declareTypes(types, owner: nil)
+            for item in items {
+                guard let type = NSPasteboard.PasteboardType(mimeType: item.mime) else { continue }
+                pasteboard.setString(item.data, forType: type)
+            }
+            return
+        }
+
+        // For confirmation, use the text/plain content if it exists.
+        guard let textPlain = items.first(where: { $0.mime == "text/plain" }) else { return }
+        guard let view = paneView(userdata) else { return }
+        DispatchQueue.main.async {
+            presentClipboardConfirmation(
+                view: view,
+                contents: textPlain.data,
+                request: GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE,
+                state: nil,
+                pasteboard: pasteboard
+            )
+        }
+    }
+
+    /// The ghostty-equivalent clipboard confirmation, as a native alert
+    /// sheet: unsafe pastes and OSC 52 reads/writes prompt before touching
+    /// the terminal or the clipboard.
+    private static func presentClipboardConfirmation(
+        view: PaneView,
+        contents: String,
+        request: ghostty_clipboard_request_e,
+        state: UnsafeMutableRawPointer?,
+        pasteboard: NSPasteboard?
+    ) {
+        // Complete a request that races an existing prompt instead of
+        // stacking sheets (ghostty does the same). confirmed=true only
+        // marks the request answered; the empty string denies it.
+        if view.clipboardConfirmationActive {
+            if let surface = view.surface, request != GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE {
+                ghostty_surface_complete_clipboard_request(surface, "", state, true)
+            }
+            return
+        }
+
+        let alert = NSAlert()
+        switch request {
+        case GHOSTTY_CLIPBOARD_REQUEST_PASTE:
+            alert.messageText = "Warning: Potentially Unsafe Paste"
+            alert.informativeText =
+                "Pasting this text to the terminal may be dangerous as it looks like some commands may be executed."
+            alert.addButton(withTitle: "Paste")
+            alert.addButton(withTitle: "Cancel")
+        case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ:
+            alert.messageText = "Authorize Clipboard Access"
+            alert.informativeText =
+                "An application is attempting to read from the clipboard. The current clipboard contents are shown below."
+            alert.addButton(withTitle: "Allow")
+            alert.addButton(withTitle: "Deny")
+        default:
+            alert.messageText = "Authorize Clipboard Access"
+            alert.informativeText =
+                "An application is attempting to write to the clipboard. The content to write is shown below."
+            alert.addButton(withTitle: "Allow")
+            alert.addButton(withTitle: "Deny")
+        }
+        alert.alertStyle = .warning
+
+        // Content preview, scrollable like ghostty's confirmation window.
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 400, height: 120)
+        if let textView = scroll.documentView as? NSTextView {
+            textView.string = contents
+            textView.isEditable = false
+            textView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        }
+        alert.accessoryView = scroll
+
+        let complete: (Bool) -> Void = { confirmed in
+            view.clipboardConfirmationActive = false
+            switch request {
+            case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE:
+                guard confirmed else { return }
+                let pb = pasteboard ?? .general
+                pb.declareTypes([.string], owner: nil)
+                pb.setString(contents, forType: .string)
+            default:
+                // confirmed=true marks the request answered either way; a
+                // denied read completes with an empty string.
+                guard let surface = view.surface else { return }
+                let str = confirmed ? contents : ""
+                str.withCString { ptr in
+                    ghostty_surface_complete_clipboard_request(surface, ptr, state, true)
+                }
             }
         }
-        guard let data = chosen.data else { return }
-        let str = String(cString: data)
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(str, forType: .string)
+
+        view.clipboardConfirmationActive = true
+        if let window = view.window {
+            alert.beginSheetModal(for: window) { response in
+                complete(response == .alertFirstButtonReturn)
+            }
+        } else {
+            complete(alert.runModal() == .alertFirstButtonReturn)
+        }
     }
 
     // MARK: - Actions
