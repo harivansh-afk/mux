@@ -267,7 +267,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             positionModeBar()
         }
         // Always visible: keep it above panes added since the last layout
-        // and glued to the bottom-right through resizes.
+        // and glued to the top-right through resizes.
         if container.subviews.last !== sessionIndicator {
             sessionIndicator.removeFromSuperview()
             container.addSubview(sessionIndicator)
