@@ -1,10 +1,11 @@
 import AppKit
 import GhosttyKit
+import UserNotifications
 
 /// One terminal pane: an NSView whose layer libghostty renders into (Metal,
 /// IOSurface-backed sublayer, renderer thread owned by libghostty).
-/// Input forwarding adapted from ghostty's SurfaceView_AppKit.swift (MIT),
-/// with the IME/preedit machinery deferred to a later milestone.
+/// Input forwarding ported from ghostty's SurfaceView_AppKit.swift (MIT),
+/// including the NSTextInputClient/IME machinery.
 final class PaneView: NSView {
     let id: UUID
 
@@ -42,7 +43,69 @@ final class PaneView: NSView {
     /// Internal (not private): managed by updateTrackingAreas in
     /// PaneView+Input.swift.
     var trackingArea: NSTrackingArea?
-    private var focused: Bool = false
+    private(set) var focused: Bool = false
+
+    // MARK: - Keyboard / IME state (used by PaneView+Input.swift)
+
+    /// In-progress IME composition (preedit) text.
+    var markedText = NSMutableAttributedString()
+
+    /// Set to non-nil during keyDown to accumulate insertText contents
+    /// produced by interpretKeyEvents.
+    var keyTextAccumulator: [String]?
+
+    /// Records the timestamp of the last command/control event seen by
+    /// performKeyEquivalent so doCommand(by:) can redispatch it for
+    /// encoding. See ghostty's SurfaceView for the full story.
+    var lastPerformKeyEvent: TimeInterval?
+
+    /// The renderer's cell size in points, reported via the CELL_SIZE
+    /// action. Used to place the IME candidate window.
+    var cellSize = NSSize(width: 8, height: 16)
+
+    /// True while a clipboard confirmation sheet is up for this pane, so
+    /// racing requests complete instead of stacking sheets.
+    var clipboardConfirmationActive = false
+
+    // MARK: - Mouse state (used by PaneView+Input.swift)
+
+    /// True when we've consumed a left mouse-down only to move focus and
+    /// should suppress the matching mouse-up from being reported.
+    var suppressNextLeftMouseUp = false
+
+    /// The last force-click pressure stage, so stage 2 (force click) only
+    /// fires once per press.
+    var prevPressureStage = 0
+
+    // MARK: - Secure input / notifications state
+
+    /// Whether the surface sits on a password prompt (SECURE_INPUT action).
+    /// While true and focused, keyboard input is protected from event
+    /// taps via the Carbon secure input API, like ghostty.
+    var passwordInput: Bool = false {
+        didSet {
+            let input = SecureInput.shared
+            let id = ObjectIdentifier(self)
+            if passwordInput {
+                input.setScoped(id, focused: focused)
+            } else {
+                input.removeScoped(id)
+            }
+        }
+    }
+
+    /// Delivered notification identifiers for this pane, removed when the
+    /// pane gains focus (ghostty does the same).
+    private var notificationIdentifiers: Set<String> = []
+
+    /// Coalesces rapid terminal title changes to avoid flicker (ghostty
+    /// uses the same 75ms window).
+    private var titleChangeTimer: Timer?
+
+    /// Local event monitor: cmd-modified keyUp events never reach the
+    /// responder chain, so we forward them from here (ghostty does the
+    /// same).
+    private var eventMonitor: Any?
 
     /// The bundled stdio relay. nil (dev builds without the bundle step)
     /// falls back to a plain local shell - panes then don't survive the
@@ -70,6 +133,17 @@ final class PaneView: NSView {
         super.init(frame: initialFrame)
 
         wantsLayer = true
+
+        // Local monitor, matching ghostty: cmd-modified keyUp events never
+        // trigger the responder chain, and a left mouse-down that only
+        // transfers pane focus must be consumed before it becomes a
+        // selection in the newly focused pane.
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyUp, .leftMouseDown]) {
+            [weak self] event in self?.localEventHandler(event)
+        }
+
+        // The UTTypes that can be dragged onto this view.
+        registerForDraggedTypes(Array(Self.dropTypes))
 
         guard let app = runtime.app else { return }
 
@@ -138,9 +212,76 @@ final class PaneView: NSView {
     }
 
     deinit {
+        if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+        }
+        SecureInput.shared.removeScoped(ObjectIdentifier(self))
+        if !notificationIdentifiers.isEmpty {
+            UNUserNotificationCenter.current()
+                .removeDeliveredNotifications(withIdentifiers: Array(notificationIdentifiers))
+        }
+        titleChangeTimer?.invalidate()
         if let surface {
             ghostty_surface_free(surface)
         }
+    }
+
+    private func localEventHandler(_ event: NSEvent) -> NSEvent? {
+        switch event.type {
+        case .keyUp:
+            // We only care about events with "command" because all others
+            // trigger the normal responder chain.
+            guard event.modifierFlags.contains(.command) else { return event }
+            guard focused else { return event }
+            keyUp(with: event)
+            return nil
+
+        case .leftMouseDown:
+            return localEventLeftMouseDown(event)
+
+        default:
+            return event
+        }
+    }
+
+    /// Ported from ghostty: clicking an unfocused pane transfers focus
+    /// without also starting a selection in it.
+    private func localEventLeftMouseDown(_ event: NSEvent) -> NSEvent? {
+        // We only want to process events that are on this window.
+        guard let window,
+              event.window != nil,
+              window == event.window else { return event }
+
+        // The clicked location in this window should be this view. Hit
+        // test through the window so overlays on top win.
+        guard let location = window.contentView?.convert(event.locationInWindow, from: nil)
+        else { return event }
+        guard window.contentView?.hitTest(location) == self else { return event }
+
+        // We always assume that we're resetting our mouse suppression
+        // unless we see the specific scenario below to set it.
+        suppressNextLeftMouseUp = false
+
+        // If we're already the first responder then no focus transfer is
+        // happening, so the click should continue as normal.
+        guard window.firstResponder !== self else { return event }
+
+        // If our window/app is already focused, then this click is only
+        // being used to transfer split focus. Consume it so it does not
+        // get forwarded to the terminal as a mouse click.
+        if NSApp.isActive, window.isKeyWindow {
+            window.makeFirstResponder(self)
+            suppressNextLeftMouseUp = true
+            return nil
+        }
+
+        // Make ourselves the first responder.
+        window.makeFirstResponder(self)
+
+        // We have to keep processing the event so that AppKit can properly
+        // focus the window and dispatch events. If you return nil here
+        // then nobody gets a windowDidBecomeKey event and so on.
+        return event
     }
 
     /// The pty this pane attaches to: `local:<id>`, or `<alias>:<id>` for
@@ -215,7 +356,9 @@ final class PaneView: NSView {
         controller?.saveState()
     }
 
-    private func bindingAction(_ action: String) {
+    /// Internal (not private): the context menu handlers in
+    /// PaneView+Input.swift drive ghostty through binding actions too.
+    func bindingAction(_ action: String) {
         guard let surface else { return }
         _ = action.withCString { ptr in
             ghostty_surface_binding_action(surface, ptr, UInt(action.utf8.count))
@@ -223,9 +366,60 @@ final class PaneView: NSView {
     }
 
     func setTitle(_ title: String) {
-        self.title = title
-        if focused {
-            window?.title = title
+        // Coalesce rapid changes: very quick title updates cause an
+        // unpleasant flicker. The timer is short enough that it still
+        // feels instant (ghostty uses the same interval).
+        titleChangeTimer?.invalidate()
+        titleChangeTimer = Timer.scheduledTimer(
+            withTimeInterval: 0.075,
+            repeats: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.title = title
+            if focused {
+                window?.title = title
+            }
+        }
+    }
+
+    /// Post a desktop notification for this pane (OSC 9 / OSC 777),
+    /// ported from ghostty: delivered notifications are tracked so they
+    /// clear when the pane gains focus, and notifications for a focused
+    /// pane expire after a few seconds.
+    func showUserNotification(title: String, body: String) {
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+            guard granted else { return }
+
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.subtitle = self?.title ?? ""
+            content.body = body
+            content.sound = .default
+
+            let uuid = UUID().uuidString
+            let request = UNNotificationRequest(identifier: uuid, content: content, trigger: nil)
+            center.add(request) { error in
+                if let error {
+                    NSLog("error scheduling user notification: \(error)")
+                    return
+                }
+
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    notificationIdentifiers.insert(uuid)
+
+                    // If we're focused then remove the notification after
+                    // a few seconds; on focus gain they clear immediately.
+                    if focused {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                            self?.notificationIdentifiers.remove(uuid)
+                            UNUserNotificationCenter.current()
+                                .removeDeliveredNotifications(withIdentifiers: [uuid])
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -342,6 +536,27 @@ final class PaneView: NSView {
         guard focused != value else { return }
         focused = value
         hostBadge?.setFocused(value)
+
+        // If we lost our focus then remove the mouse event suppression so
+        // our mouse release event leaving the surface can properly be sent
+        // to stop things like mouse selection.
+        if !value {
+            suppressNextLeftMouseUp = false
+        }
+
+        // Update our secure input state if we are a password input.
+        if passwordInput {
+            SecureInput.shared.setScoped(ObjectIdentifier(self), focused: value)
+        }
+
+        // Remove any delivered notifications for this pane once it has
+        // the user's attention.
+        if value, !notificationIdentifiers.isEmpty {
+            UNUserNotificationCenter.current()
+                .removeDeliveredNotifications(withIdentifiers: Array(notificationIdentifiers))
+            notificationIdentifiers = []
+        }
+
         guard let surface else { return }
         ghostty_surface_set_focus(surface, value)
         if value {
