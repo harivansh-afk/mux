@@ -3,8 +3,8 @@ import GhosttyKit
 
 /// One terminal pane: an NSView whose layer libghostty renders into (Metal,
 /// IOSurface-backed sublayer, renderer thread owned by libghostty).
-/// Input forwarding adapted from ghostty's SurfaceView_AppKit.swift (MIT),
-/// with the IME/preedit machinery deferred to a later milestone.
+/// Input forwarding ported from ghostty's SurfaceView_AppKit.swift (MIT),
+/// including the NSTextInputClient/IME machinery.
 final class PaneView: NSView {
     let id: UUID
 
@@ -42,7 +42,30 @@ final class PaneView: NSView {
     /// Internal (not private): managed by updateTrackingAreas in
     /// PaneView+Input.swift.
     var trackingArea: NSTrackingArea?
-    private var focused: Bool = false
+    private(set) var focused: Bool = false
+
+    // MARK: - Keyboard / IME state (used by PaneView+Input.swift)
+
+    /// In-progress IME composition (preedit) text.
+    var markedText = NSMutableAttributedString()
+
+    /// Set to non-nil during keyDown to accumulate insertText contents
+    /// produced by interpretKeyEvents.
+    var keyTextAccumulator: [String]?
+
+    /// Records the timestamp of the last command/control event seen by
+    /// performKeyEquivalent so doCommand(by:) can redispatch it for
+    /// encoding. See ghostty's SurfaceView for the full story.
+    var lastPerformKeyEvent: TimeInterval?
+
+    /// The renderer's cell size in points, reported via the CELL_SIZE
+    /// action. Used to place the IME candidate window.
+    var cellSize = NSSize(width: 8, height: 16)
+
+    /// Local event monitor: cmd-modified keyUp events never reach the
+    /// responder chain, so we forward them from here (ghostty does the
+    /// same).
+    private var eventMonitor: Any?
 
     /// The bundled stdio relay. nil (dev builds without the bundle step)
     /// falls back to a plain local shell - panes then don't survive the
@@ -70,6 +93,12 @@ final class PaneView: NSView {
         super.init(frame: initialFrame)
 
         wantsLayer = true
+
+        // Command-modified keyUp events never trigger the normal responder
+        // chain, so catch them with a local monitor and forward to keyUp.
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyUp]) {
+            [weak self] event in self?.localEventHandler(event)
+        }
 
         guard let app = runtime.app else { return }
 
@@ -138,8 +167,26 @@ final class PaneView: NSView {
     }
 
     deinit {
+        if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+        }
         if let surface {
             ghostty_surface_free(surface)
+        }
+    }
+
+    private func localEventHandler(_ event: NSEvent) -> NSEvent? {
+        switch event.type {
+        case .keyUp:
+            // We only care about events with "command" because all others
+            // trigger the normal responder chain.
+            guard event.modifierFlags.contains(.command) else { return event }
+            guard focused else { return event }
+            keyUp(with: event)
+            return nil
+
+        default:
+            return event
         }
     }
 

@@ -11,6 +11,10 @@ final class GhosttyRuntime {
     var app: ghostty_app_t?
     var config: ghostty_config_t?
 
+    /// Keyboard layout switches must reach libghostty so it reloads its
+    /// key mapping (ghostty does the same).
+    private var keyboardObserver: NSObjectProtocol?
+
     init?() {
         if ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) != GHOSTTY_SUCCESS {
             NSLog("ghostty_init failed")
@@ -45,9 +49,21 @@ final class GhosttyRuntime {
         }
         self.app = app
         ghostty_app_set_focus(app, NSApp.isActive)
+
+        keyboardObserver = NotificationCenter.default.addObserver(
+            forName: NSTextInputContext.keyboardSelectionDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let app = self?.app else { return }
+            ghostty_app_keyboard_changed(app)
+        }
     }
 
     deinit {
+        if let keyboardObserver {
+            NotificationCenter.default.removeObserver(keyboardObserver)
+        }
         if let app {
             ghostty_app_free(app)
         }
@@ -214,6 +230,17 @@ final class GhosttyRuntime {
             DispatchQueue.main.async { view.setCursorShape(shape) }
             return true
 
+        case GHOSTTY_ACTION_CELL_SIZE:
+            guard let view else { return false }
+            let size = action.action.cell_size
+            let backingSize = NSSize(width: Double(size.width), height: Double(size.height))
+            DispatchQueue.main.async { [weak view] in
+                guard let view else { return }
+                // Reported in pixels; the IME candidate window wants points.
+                view.cellSize = view.convertFromBacking(backingSize)
+            }
+            return true
+
         case GHOSTTY_ACTION_RING_BELL:
             NSSound.beep()
             return true
@@ -224,8 +251,7 @@ final class GhosttyRuntime {
             return true
 
         // Silently accepted: informational or irrelevant to a multiplexer M1.
-        case GHOSTTY_ACTION_CELL_SIZE,
-             GHOSTTY_ACTION_SIZE_LIMIT,
+        case GHOSTTY_ACTION_SIZE_LIMIT,
              GHOSTTY_ACTION_INITIAL_SIZE,
              GHOSTTY_ACTION_RESET_WINDOW_SIZE,
              GHOSTTY_ACTION_CONFIG_CHANGE,
