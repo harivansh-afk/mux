@@ -41,7 +41,7 @@ struct ModeBarSegment {
 
 final class ModeBarView: NSView {
     /// One terminal-ish row.
-    static let height: CGFloat = 22
+    static let height = Chrome.barHeight
     /// Equal inset from the left and bottom edges of the terminal area,
     /// so the box sits concentric with the corner.
     static let margin: CGFloat = 4

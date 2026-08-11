@@ -6,7 +6,7 @@ import AppKit
 /// quiet default; remote is the exception worth marking. The focused
 /// pane's chip is fully opaque, unfocused ones recede.
 final class HostBadgeView: NSView {
-    static let height: CGFloat = 18
+    static let height = Chrome.barHeight
     /// Inset from the pane's top and right edges.
     static let margin: CGFloat = 4
 

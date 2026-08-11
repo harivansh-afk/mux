@@ -14,14 +14,26 @@ enum Appearance {
     case dark
 }
 
-/// The one monospaced font (and row height) for all mux chrome:
-/// overlays, mode bar, hosts window, session indicator. Sized here so
-/// they cannot drift per-view.
+/// The single knob for every piece of text outside the terminal panes:
+/// overlays, mode bar, hosts window, session indicator, host badge.
+/// One face (Berkeley Mono, falling back to the system monospaced font
+/// if not installed), one size; all chrome metrics derive from it.
 enum Chrome {
-    static let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-    static let boldFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+    static let fontSize: CGFloat = 22
+
+    static let font =
+        NSFont(name: "BerkeleyMono-Regular", size: fontSize)
+            ?? .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+    static let boldFont =
+        NSFont(name: "BerkeleyMono-Bold", size: fontSize)
+            ?? .monospacedSystemFont(ofSize: fontSize, weight: .bold)
+
     /// Row height for list-style overlays (help, panes, hosts).
-    static let rowHeight: CGFloat = 26
+    static let rowHeight: CGFloat = fontSize * 2
+    /// Height of the floating bars (mode bar, session indicator, host
+    /// badge): line height plus breathing room, so labels center
+    /// instead of clipping.
+    static let barHeight: CGFloat = fontSize + 12
 }
 
 struct Palette {
