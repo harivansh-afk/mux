@@ -47,8 +47,8 @@ final class HostBadgeView: NSView {
     }
 
     @objc private func render() {
+        // Bare text, no box: the pink on the terminal is marker enough.
         let palette = ThemeManager.shared.palette
-        layer?.backgroundColor = palette.panelBg.cgColor
         label.attributedStringValue = NSAttributedString(
             string: host,
             attributes: [.font: Self.font, .foregroundColor: palette.pink]

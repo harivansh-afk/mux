@@ -46,10 +46,11 @@ final class ModeBarView: NSView {
     /// so the box sits concentric with the corner.
     static let margin: CGFloat = 4
 
-    /// The box bg is the terminal bg, so the badge is the visual edge of
-    /// the bar: its inset inside the box must be identical on every side.
-    /// The horizontal inset is therefore derived from the vertical slack
-    /// ((height - label height) / 2), making left gap == bottom gap exactly.
+    /// The box is transparent (bare text over the terminal), so the badge
+    /// is the visual edge of the bar: its inset inside the box must be
+    /// identical on every side. The horizontal inset is therefore derived
+    /// from the vertical slack ((height - label height) / 2), making left
+    /// gap == bottom gap exactly.
     private var textInset: CGFloat {
         max(0, (Self.height - label.fittingSize.height) / 2)
     }
@@ -70,7 +71,6 @@ final class ModeBarView: NSView {
         wantsLayer = true
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
-        applyTheme()
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeDidChange),
             name: .muxThemeDidChange, object: nil
@@ -129,12 +129,7 @@ final class ModeBarView: NSView {
     }
 
     @objc private func themeDidChange() {
-        applyTheme()
         render(segments)
-    }
-
-    private func applyTheme() {
-        layer?.backgroundColor = ThemeManager.shared.palette.panelBg.cgColor
     }
 
     override func layout() {
