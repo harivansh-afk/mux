@@ -17,12 +17,18 @@ enum HostsConfig {
             .appendingPathComponent(".config/mux/hosts.json")
     }
 
-    /// Alias names in stable order. A missing or malformed file is not an
-    /// error - it means the user has no remote hosts yet.
+    /// Alias names in stable order.
     static func aliases() -> [String] {
+        entries().map(\.alias)
+    }
+
+    /// Alias plus the address the daemon dials, in stable order: the hosts
+    /// overlay shows both. A missing or malformed file is not an error - it
+    /// means the user has no remote hosts yet.
+    static func entries() -> [(alias: String, addr: String)] {
         guard let data = try? Data(contentsOf: url),
               let hosts = try? JSONDecoder().decode([String: HostEntry].self, from: data)
         else { return [] }
-        return hosts.keys.sorted()
+        return hosts.sorted { $0.key < $1.key }.map { ($0.key, $0.value.addr) }
     }
 }

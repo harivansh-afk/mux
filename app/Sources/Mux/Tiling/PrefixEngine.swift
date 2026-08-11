@@ -13,12 +13,15 @@ import AppKit
 ///   prefix r      resize mode          prefix esc    cancel
 ///   prefix t      target picker        prefix ctrl+b send a literal ctrl+b
 ///   prefix f      panes by host        prefix ?      keybinds overlay
+///   prefix s      hosts overlay
 /// Held-ctrl aliasing: ctrl+<key> in prefix mode means <key> (the nvim-mux
 /// papercut fix: you rarely release ctrl between prefix and key).
 /// Resize mode: h/j/k/l nudge the enclosing split ratio, esc/enter/q exit.
 /// Target mode: j/k choose the machine the next pane lives on, enter
 /// splits right into it, esc cancels.
 /// Panes mode: j/k walk every pane grouped by host, enter jumps to it.
+/// Hosts mode: j/k walk the hosts and ix VMs with their live status, enter
+/// splits right into one, c copies this client's identity digest.
 ///
 /// Mode changes drive the bottom mode bar on the active window.
 final class PrefixEngine {
@@ -29,6 +32,7 @@ final class PrefixEngine {
         case help
         case pickTarget
         case pickPane
+        case hosts
     }
 
     private(set) var mode: Mode = .normal
@@ -72,6 +76,14 @@ final class PrefixEngine {
         .key("esc"), .dim(" cancel"),
     ]
 
+    private static let hostsSegments: [ModeBarSegment] = [
+        .badge("HOSTS"),
+        .key("j/k"), .dim(" choose  "),
+        .key("enter"), .dim(" split  "),
+        .key("c"), .dim(" copy digest  "),
+        .key("esc"), .dim(" close"),
+    ]
+
     /// Resolves the controller of the key window.
     private var controller: MuxWindowController? {
         (NSApp.delegate as? AppDelegate)?.keyController
@@ -97,6 +109,7 @@ final class PrefixEngine {
         indicatorController?.hideHelp()
         indicatorController?.hideTargetPicker()
         indicatorController?.hidePanesOverlay()
+        indicatorController?.hideHostsOverlay()
         indicatorController = nil
         switch newMode {
         case .normal:
@@ -119,6 +132,10 @@ final class PrefixEngine {
             indicatorController = controller
             indicatorController?.setModeIndicator(Self.paneSegments)
             indicatorController?.showPanesOverlay()
+        case .hosts:
+            indicatorController = controller
+            indicatorController?.setModeIndicator(Self.hostsSegments)
+            indicatorController?.showHostsOverlay()
         }
     }
 
@@ -202,6 +219,25 @@ final class PrefixEngine {
             default:
                 return nil
             }
+
+        case .hosts:
+            switch key {
+            case "j", "\u{F701}": controller?.moveHostsOverlay(by: 1); return nil
+            case "k", "\u{F700}": controller?.moveHostsOverlay(by: -1); return nil
+            // Copying leaves the overlay up: the digest stays on screen as
+            // confirmation of what landed on the clipboard.
+            case "c": controller?.copyClientDigest(); return nil
+            case "\r":
+                // Commit before the mode change tears the overlay down.
+                controller?.commitHostsOverlay()
+                setMode(.normal)
+                return nil
+            case "\u{1b}", "q":
+                setMode(.normal)
+                return nil
+            default:
+                return nil
+            }
         }
     }
 
@@ -220,6 +256,7 @@ final class PrefixEngine {
         case "r": setMode(.resize)
         case "t": setMode(.pickTarget)
         case "f": setMode(.pickPane)
+        case "s": setMode(.hosts)
         case "?": setMode(.help)
         // Sessions.
         case "c": controller?.newSession()

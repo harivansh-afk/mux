@@ -27,6 +27,10 @@ struct Palette {
     let text: NSColor
     /// The active-item highlight (session indicator's current number).
     let pink: NSColor
+    /// Live status in the hosts overlay: a host that answered.
+    let ok: NSColor
+    /// Live status in the hosts overlay: a host that did not.
+    let bad: NSColor
     /// Pane separator lines. Derived from the terminal background exactly
     /// like ghostty's default `split-divider-color` (Ghostty.Config.swift
     /// splitDividerColor): darken a light background by 0.08, a dark one
@@ -43,6 +47,8 @@ struct Palette {
             dim: NSColor(hex: 0x504945),
             text: NSColor(hex: 0xD4BE98),
             pink: NSColor(hex: 0xD3869B),
+            ok: NSColor(hex: 0xA9B665),
+            bad: NSColor(hex: 0xEA6962),
             divider: bg.ghosttyDividerColor
         )
     }()
@@ -56,6 +62,8 @@ struct Palette {
             dim: NSColor(hex: 0xA89984),
             text: NSColor(hex: 0x3C3836),
             pink: NSColor(hex: 0x8F3F71),
+            ok: NSColor(hex: 0x6C782E),
+            bad: NSColor(hex: 0xC14A4A),
             divider: bg.ghosttyDividerColor
         )
     }()

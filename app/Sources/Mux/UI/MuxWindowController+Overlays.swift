@@ -1,7 +1,8 @@
 import AppKit
 
 /// The window's chrome: the floating mode bar, the session indicator, the
-/// keybinds overlay and the target picker. All of them are overlays on the
+/// keybinds overlay, the target picker and the panes and hosts overlays.
+/// All of them are overlays on the
 /// pane area - panes never reflow for them - and none of them ever takes
 /// focus: PrefixEngine owns the keys and drives them from the outside.
 extension MuxWindowController {
@@ -93,8 +94,10 @@ extension MuxWindowController {
     // MARK: - Target picker
 
     /// prefix t: pick where the next pane's terminal should live. The list
-    /// is re-read from hosts.json on every open.
+    /// is re-read from hosts.json on every open, and grows when the ix CLI
+    /// reports its VMs a moment later.
     func showTargetPicker() {
+        targetPicker.onContentChange = { [weak self] in self?.positionTargetPicker() }
         targetPicker.reload()
         targetPicker.removeFromSuperview()
         container.addSubview(targetPicker)
@@ -117,6 +120,48 @@ extension MuxWindowController {
 
     func positionTargetPicker() {
         center(targetPicker, size: targetPicker.desiredSize(in: container.bounds))
+    }
+
+    // MARK: - Hosts overlay
+
+    /// prefix s: the machines a pane can live on, with live status. Every
+    /// query (host probes, the ix listing, the client digest) is kicked off
+    /// on open, so the box fills in as answers arrive and re-centers itself
+    /// when it grows.
+    func showHostsOverlay() {
+        hostsOverlay.onContentChange = { [weak self] in self?.positionHostsOverlay() }
+        hostsOverlay.reload()
+        hostsOverlay.removeFromSuperview()
+        container.addSubview(hostsOverlay)
+        positionHostsOverlay()
+    }
+
+    func hideHostsOverlay() {
+        hostsOverlay.removeFromSuperview()
+    }
+
+    func moveHostsOverlay(by delta: Int) {
+        hostsOverlay.move(by: delta)
+        positionHostsOverlay()
+    }
+
+    /// c: the client identity digest onto the clipboard, for pasting into
+    /// the host's authorized list.
+    func copyClientDigest() {
+        hostsOverlay.copyDigest()
+        positionHostsOverlay()
+    }
+
+    /// Enter: split the focused pane rightwards into the highlighted host
+    /// or VM. Rows that cannot host a pane are not selectable, so a nil
+    /// selection means there is nothing to open (not "local").
+    func commitHostsOverlay() {
+        guard let target = hostsOverlay.selection else { return }
+        split(direction: .horizontal, target: .explicit(target))
+    }
+
+    func positionHostsOverlay() {
+        center(hostsOverlay, size: hostsOverlay.desiredSize(in: container.bounds))
     }
 
     // MARK: - Panes overlay

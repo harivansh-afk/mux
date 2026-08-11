@@ -21,6 +21,7 @@ final class HelpOverlayView: NSView {
             ("r", "resize mode"),
             ("t", "target picker"),
             ("f", "panes by host"),
+            ("s", "hosts and ix vms"),
             ("?", "keybinds"),
             ("esc", "cancel"),
         ]),
@@ -37,6 +38,12 @@ final class HelpOverlayView: NSView {
             ("j / k", "choose host"),
             ("enter", "split right into it"),
             ("esc / q", "cancel"),
+        ]),
+        Section(title: "hosts  prefix s", rows: [
+            ("j / k", "choose host or vm"),
+            ("enter", "open pane there"),
+            ("c", "copy client digest"),
+            ("esc / q", "close"),
         ]),
         Section(title: "panes  prefix f", rows: [
             ("j / k", "choose pane (by host)"),
