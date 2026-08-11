@@ -27,6 +27,18 @@ final class PaneView: NSView {
     /// view's layer), laid out by Session next to the pane's frame.
     let hostBadge: HostBadgeView?
 
+    /// The semi-transparent wash over this pane while it is part of a
+    /// split and unfocused: ghostty's unfocused-split-opacity. A sibling
+    /// view like the host badge (libghostty owns the pane's layer),
+    /// laid out by Session over the pane's frame.
+    let dimOverlay = PaneDimOverlay()
+
+    /// True when the pane participates in a multi-pane layout (set by
+    /// Session during layout); a lone pane never dims.
+    var dimmable = false {
+        didSet { updateDimVisibility() }
+    }
+
     private(set) var surface: ghostty_surface_t?
     weak var controller: MuxWindowController?
 
@@ -133,6 +145,11 @@ final class PaneView: NSView {
         super.init(frame: initialFrame)
 
         wantsLayer = true
+
+        dimOverlay.wantsLayer = true
+        dimOverlay.layer?.backgroundColor = runtime.unfocusedSplitFill
+            .withAlphaComponent(runtime.unfocusedSplitDimAlpha).cgColor
+        dimOverlay.isHidden = true
 
         // Local monitor, matching ghostty: cmd-modified keyUp events never
         // trigger the responder chain, and a left mouse-down that only
@@ -557,11 +574,25 @@ final class PaneView: NSView {
             notificationIdentifiers = []
         }
 
+        updateDimVisibility()
+
         guard let surface else { return }
         ghostty_surface_set_focus(surface, value)
         if value {
             window?.title = title
             controller?.noteFocused(self)
         }
+    }
+
+    private func updateDimVisibility() {
+        dimOverlay.isHidden = focused || !dimmable
+    }
+}
+
+/// The unfocused-pane wash. Never participates in hit testing: clicks go
+/// straight through to the pane below (like ghostty's overlay rectangle).
+final class PaneDimOverlay: NSView {
+    override func hitTest(_: NSPoint) -> NSView? {
+        nil
     }
 }
