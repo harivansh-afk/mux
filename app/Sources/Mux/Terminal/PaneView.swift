@@ -27,6 +27,13 @@ final class PaneView: NSView {
     ///   the app.
     let target: String?
 
+    /// A command to run in the pty instead of the user's shell, as argv.
+    /// Only VM creation uses it (`ix new -n <name> <template>`), and only
+    /// for the pane that does the creating: it is deliberately not
+    /// persisted, so a restored pane derives `ix shell <name>` from its
+    /// target instead - which is right, because by then the VM exists.
+    private let ptyCommand: [String]?
+
     /// The host chip shown at this pane's top-right corner; nil for local
     /// panes. A sibling view in the pane container (libghostty owns this
     /// view's layer), laid out by Session next to the pane's frame.
@@ -127,12 +134,13 @@ final class PaneView: NSView {
         workingDirectory: String? = nil,
         cwdFrom: UUID? = nil,
         target: String? = nil,
-        command: String? = nil,
+        ptyCommand: [String]? = nil,
         initialFrame: CGRect = .zero,
         fontDelta: Int = 0
     ) {
         self.id = id
         self.target = target
+        self.ptyCommand = ptyCommand
         self.fontDelta = fontDelta
         hostBadge = target.map { HostBadgeView(host: $0) }
         super.init(frame: initialFrame)
@@ -158,7 +166,7 @@ final class PaneView: NSView {
         // pane on a host alias is the same pty one hop away (the local
         // daemon relays the attach), and an `ix:<vm>` pane is a local pty
         // whose command is `ix shell` instead of the user's shell.
-        let command = command ?? defaultCommand(cwd: workingDirectory, cwdFrom: cwdFrom)
+        let command = defaultCommand(cwd: workingDirectory, cwdFrom: cwdFrom)
 
         // A remote pane's cwd names a path on the remote host: it travels
         // as --cwd and is never handed to the local surface.
@@ -307,18 +315,21 @@ final class PaneView: NSView {
     /// the new shell inherits, resolved daemon-side - no shell
     /// integration needed. An explicit `cwd` wins.
     private func defaultCommand(cwd: String?, cwdFrom: UUID? = nil) -> String? {
-        let vm = IX.vm(of: target)
+        // An ix pane runs `ix shell <vm>` in its pty unless the caller named
+        // something else to run there (VM creation runs `ix new` instead,
+        // and the shell it drops you into is the pane).
+        let inPty = ptyCommand ?? IX.vm(of: target).map { [IX.binary, "shell", $0] }
         guard let attach = Muxd.attachBinary else {
-            // No relay bundled: an ix pane is a plain exec (no persistence),
-            // and a local pane is just the user's shell.
-            return vm.map { "\"\(IX.binary)\" shell \"\($0)\"" }
+            // No relay bundled: run it directly (no persistence), or fall
+            // back to the user's shell for a plain local pane.
+            return inPty.map(Self.quote)
         }
         var parts = ["\"\(attach)\"", "\"\(attachAddress)\""]
-        if let vm {
+        if let inPty {
             // `-- cmd` makes the pty run that command instead of the shell.
             // No cwd: the pty's working directory is this machine's and
             // means nothing inside the VM.
-            parts += ["--", "\"\(IX.binary)\"", "shell", "\"\(vm)\""]
+            parts += ["--", Self.quote(inPty)]
             return parts.joined(separator: " ")
         }
         if let cwd {
@@ -328,6 +339,13 @@ final class PaneView: NSView {
             parts += ["--cwd-from", "\"\(cwdFrom.uuidString)\""]
         }
         return parts.joined(separator: " ")
+    }
+
+    /// argv as one command line for libghostty, which hands the string to a
+    /// shell. Every word is double-quoted, so paths with spaces and flake
+    /// refs with `#` survive intact.
+    private static func quote(_ argv: [String]) -> String {
+        argv.map { "\"\($0)\"" }.joined(separator: " ")
     }
 
     /// Free the surface explicitly (kills the local child - the relay).

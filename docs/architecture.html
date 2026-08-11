@@ -425,14 +425,17 @@ pty; detach/reattach; app restart restores screens. Self-upgrade via SCM_RIGHTS 
 <td>killed Mux.app mid-<code>btop</code>, reopened: same pid, exact screen replayed</td></tr>
 <tr><td><b>M3</b> <span class="pill now">done</span></td><td>Remote: muxd on spark over QUIC (quinn;
 never ssh/mosh/plain TCP), local muxd as per-host connection broker; declarative token enrollment
-(client digest in the host's flake, no secret transfer); hosts overlay (<code>prefix s</code>: live
-probe per host, running ix VMs, client digest); ix VMs as local muxd ptys running
-<code>ix shell</code></td><td>one window, three panes: mac zsh, spark nvim, ix VM build - visually
+(client digest in the host's flake, no secret transfer); one hosts window (<code>prefix h</code>: live
+probe per host, ix VMs, client digest, new-VM creation with a default template); ix VMs as local
+muxd ptys running <code>ix shell</code> (creation: <code>ix new -n</code>, so the pane's
+<code>ix:&lt;name&gt;</code> target self-heals to <code>ix shell</code>)</td><td>one window, three panes: mac zsh, spark nvim, ix VM build - visually
 indistinguishable; wifi-to-hotspot hop mid-session and the spark pane never blinks; kill the app
 and the ix pane's build is still scrolling on reattach</td></tr>
-<tr><td><b>M4</b> <span class="pill later"></span></td><td>Native ix protocol client in mux-attach
-(QUIC + connect token); wire-compat golden tests. Blocked on golden-byte fixtures from a live
-VM</td><td>attach to an ix VM with no ix CLI installed</td></tr>
+<tr><td><b>M4</b> <span class="pill later"></span></td><td>Native ix protocol client in the local
+muxd broker (panes never dial the network; mux-attach stays dumb), QUIC + a short-lived connect
+token minted by ix per dial - consume ix auth, never emulate login; wire-compat golden tests.
+Blocked on an ix-side token-mint verb and golden-byte fixtures from a live VM</td><td>attach to an
+ix VM with no ix CLI installed</td></tr>
 <tr><td><b>M5</b> <span class="pill later"></span></td><td>Taste: agent identity + lifecycle states on
 panes, workspace-scoped env, <code>mux</code> JSON CLI (<code>MUX_ENV</code> coords in every pane),
 subagent spiral, mosh-style predictive echo (port <code>crates/term/predict</code>, 1,107 LOC,
