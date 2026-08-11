@@ -91,9 +91,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// without overlap, so ordering against other panes never matters.
     func attach(_ pane: PaneView) {
         container.addSubview(pane)
-        // Overlay above the pane, badge above the overlay so the host
-        // chip stays readable while the pane dims.
-        container.addSubview(pane.dimOverlay)
         if let badge = pane.hostBadge {
             container.addSubview(badge)
         }
