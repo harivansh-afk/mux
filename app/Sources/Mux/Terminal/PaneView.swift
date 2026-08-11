@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import UserNotifications
 
 /// One terminal pane: an NSView whose layer libghostty renders into (Metal,
 /// IOSurface-backed sublayer, renderer thread owned by libghostty).
@@ -75,6 +76,31 @@ final class PaneView: NSView {
     /// The last force-click pressure stage, so stage 2 (force click) only
     /// fires once per press.
     var prevPressureStage = 0
+
+    // MARK: - Secure input / notifications state
+
+    /// Whether the surface sits on a password prompt (SECURE_INPUT action).
+    /// While true and focused, keyboard input is protected from event
+    /// taps via the Carbon secure input API, like ghostty.
+    var passwordInput: Bool = false {
+        didSet {
+            let input = SecureInput.shared
+            let id = ObjectIdentifier(self)
+            if passwordInput {
+                input.setScoped(id, focused: focused)
+            } else {
+                input.removeScoped(id)
+            }
+        }
+    }
+
+    /// Delivered notification identifiers for this pane, removed when the
+    /// pane gains focus (ghostty does the same).
+    private var notificationIdentifiers: Set<String> = []
+
+    /// Coalesces rapid terminal title changes to avoid flicker (ghostty
+    /// uses the same 75ms window).
+    private var titleChangeTimer: Timer?
 
     /// Local event monitor: cmd-modified keyUp events never reach the
     /// responder chain, so we forward them from here (ghostty does the
@@ -189,6 +215,12 @@ final class PaneView: NSView {
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
         }
+        SecureInput.shared.removeScoped(ObjectIdentifier(self))
+        if !notificationIdentifiers.isEmpty {
+            UNUserNotificationCenter.current()
+                .removeDeliveredNotifications(withIdentifiers: Array(notificationIdentifiers))
+        }
+        titleChangeTimer?.invalidate()
         if let surface {
             ghostty_surface_free(surface)
         }
@@ -334,9 +366,60 @@ final class PaneView: NSView {
     }
 
     func setTitle(_ title: String) {
-        self.title = title
-        if focused {
-            window?.title = title
+        // Coalesce rapid changes: very quick title updates cause an
+        // unpleasant flicker. The timer is short enough that it still
+        // feels instant (ghostty uses the same interval).
+        titleChangeTimer?.invalidate()
+        titleChangeTimer = Timer.scheduledTimer(
+            withTimeInterval: 0.075,
+            repeats: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.title = title
+            if focused {
+                window?.title = title
+            }
+        }
+    }
+
+    /// Post a desktop notification for this pane (OSC 9 / OSC 777),
+    /// ported from ghostty: delivered notifications are tracked so they
+    /// clear when the pane gains focus, and notifications for a focused
+    /// pane expire after a few seconds.
+    func showUserNotification(title: String, body: String) {
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+            guard granted else { return }
+
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.subtitle = self?.title ?? ""
+            content.body = body
+            content.sound = .default
+
+            let uuid = UUID().uuidString
+            let request = UNNotificationRequest(identifier: uuid, content: content, trigger: nil)
+            center.add(request) { error in
+                if let error {
+                    NSLog("error scheduling user notification: \(error)")
+                    return
+                }
+
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    notificationIdentifiers.insert(uuid)
+
+                    // If we're focused then remove the notification after
+                    // a few seconds; on focus gain they clear immediately.
+                    if focused {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                            self?.notificationIdentifiers.remove(uuid)
+                            UNUserNotificationCenter.current()
+                                .removeDeliveredNotifications(withIdentifiers: [uuid])
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -459,6 +542,19 @@ final class PaneView: NSView {
         // to stop things like mouse selection.
         if !value {
             suppressNextLeftMouseUp = false
+        }
+
+        // Update our secure input state if we are a password input.
+        if passwordInput {
+            SecureInput.shared.setScoped(ObjectIdentifier(self), focused: value)
+        }
+
+        // Remove any delivered notifications for this pane once it has
+        // the user's attention.
+        if value, !notificationIdentifiers.isEmpty {
+            UNUserNotificationCenter.current()
+                .removeDeliveredNotifications(withIdentifiers: Array(notificationIdentifiers))
+            notificationIdentifiers = []
         }
 
         guard let surface else { return }

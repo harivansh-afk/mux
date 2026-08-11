@@ -23,9 +23,7 @@ final class GhosttyRuntime {
 
         // Loads the user's regular ghostty config: fonts, theme, padding,
         // keybinds all carry over for free.
-        guard let config = ghostty_config_new() else { return nil }
-        ghostty_config_load_default_files(config)
-        ghostty_config_finalize(config)
+        guard let config = Self.loadConfig() else { return nil }
         self.config = config
 
         var runtime = ghostty_runtime_config_s(
@@ -72,6 +70,48 @@ final class GhosttyRuntime {
         }
     }
 
+    /// Load the user's ghostty config from the default files, following
+    /// `config-file` includes like ghostty, and surface any diagnostics
+    /// instead of failing silently.
+    private static func loadConfig() -> ghostty_config_t? {
+        guard let config = ghostty_config_new() else { return nil }
+        ghostty_config_load_default_files(config)
+        ghostty_config_load_recursive_files(config)
+        ghostty_config_finalize(config)
+
+        let count = ghostty_config_diagnostics_count(config)
+        for i in 0 ..< count {
+            let diag = ghostty_config_get_diagnostic(config, i)
+            NSLog("ghostty config diagnostic: \(String(cString: diag.message))")
+        }
+
+        return config
+    }
+
+    /// The RELOAD_CONFIG action: rebuild the config from files (or reuse
+    /// the current one for a soft reload) and hand it to every layer of
+    /// the core.
+    func reloadConfig(soft: Bool) {
+        guard let app else { return }
+
+        if soft {
+            if let config {
+                ghostty_app_update_config(app, config)
+            }
+            return
+        }
+
+        guard let newConfig = Self.loadConfig() else {
+            NSLog("failed to reload ghostty configuration")
+            return
+        }
+        ghostty_app_update_config(app, newConfig)
+        if let config {
+            ghostty_config_free(config)
+        }
+        config = newConfig
+    }
+
     func tick() {
         guard let app else { return }
         ghostty_app_tick(app)
@@ -86,6 +126,12 @@ final class GhosttyRuntime {
     /// loaded ghostty config.
     var focusFollowsMouse: Bool {
         configBool("focus-follows-mouse")
+    }
+
+    /// Whether password prompts automatically enable secure input
+    /// (ghostty's auto-secure-input, default true).
+    var autoSecureInput: Bool {
+        configBool("auto-secure-input", default: true)
     }
 
     private func configBool(_ key: String, default def: Bool = false) -> Bool {
@@ -373,18 +419,74 @@ final class GhosttyRuntime {
             return true
 
         case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
-            // M1: surface it as a beep; real notifications later.
-            NSSound.beep()
+            guard let view else { return false }
+            let n = action.action.desktop_notification
+            let title = n.title.map { String(cString: $0) } ?? ""
+            let body = n.body.map { String(cString: $0) } ?? ""
+            DispatchQueue.main.async {
+                view.showUserNotification(
+                    title: title.isEmpty ? "mux" : title, body: body
+                )
+            }
             return true
 
-        // Silently accepted: informational or irrelevant to a multiplexer M1.
+        case GHOSTTY_ACTION_OPEN_URL:
+            let v = action.action.open_url
+            guard let ptr = v.url else { return false }
+            let data = Data(bytes: ptr, count: Int(v.len))
+            guard let url = String(data: data, encoding: .utf8) else { return false }
+            let kind = v.kind
+            DispatchQueue.main.async { openURL(url, kind: kind) }
+            return true
+
+        case GHOSTTY_ACTION_MOUSE_VISIBILITY:
+            // mouse-hide-while-typing; the cursor reveals itself on the
+            // next move, so hidden is the only transition to drive.
+            let visible = action.action.mouse_visibility == GHOSTTY_MOUSE_VISIBLE
+            DispatchQueue.main.async {
+                NSCursor.setHiddenUntilMouseMoves(!visible)
+            }
+            return true
+
+        case GHOSTTY_ACTION_SECURE_INPUT:
+            let mode = action.action.secure_input
+            let view = view
+            DispatchQueue.main.async {
+                switch target.tag {
+                case GHOSTTY_TARGET_APP:
+                    switch mode {
+                    case GHOSTTY_SECURE_INPUT_ON: SecureInput.shared.global = true
+                    case GHOSTTY_SECURE_INPUT_OFF: SecureInput.shared.global = false
+                    default: SecureInput.shared.global.toggle()
+                    }
+
+                default:
+                    guard let view else { return }
+                    guard GhosttyRuntime.shared?.autoSecureInput ?? true else { return }
+                    switch mode {
+                    case GHOSTTY_SECURE_INPUT_ON: view.passwordInput = true
+                    case GHOSTTY_SECURE_INPUT_OFF: view.passwordInput = false
+                    default: view.passwordInput.toggle()
+                    }
+                }
+            }
+            return true
+
+        case GHOSTTY_ACTION_RELOAD_CONFIG:
+            let soft = action.action.reload_config.soft
+            DispatchQueue.main.async {
+                GhosttyRuntime.shared?.reloadConfig(soft: soft)
+            }
+            return true
+
+        // Silently accepted: informational, or intentionally divergent
+        // (mux owns its window chrome, tiling and mode UI, so core-driven
+        // chrome like COLOR_CHANGE and KEY_SEQUENCE stays with mux).
         case GHOSTTY_ACTION_SIZE_LIMIT,
              GHOSTTY_ACTION_INITIAL_SIZE,
              GHOSTTY_ACTION_RESET_WINDOW_SIZE,
              GHOSTTY_ACTION_CONFIG_CHANGE,
-             GHOSTTY_ACTION_RELOAD_CONFIG,
              GHOSTTY_ACTION_RENDERER_HEALTH,
-             GHOSTTY_ACTION_MOUSE_VISIBILITY,
              GHOSTTY_ACTION_MOUSE_OVER_LINK,
              GHOSTTY_ACTION_KEY_SEQUENCE,
              GHOSTTY_ACTION_COLOR_CHANGE,
@@ -398,6 +500,46 @@ final class GhosttyRuntime {
 
         default:
             return false
+        }
+    }
+
+    // MARK: - URL opening
+
+    /// Open a URL from the core (cmd+click on links, OSC 8 hyperlinks).
+    /// OSC 8 targets are producer-controlled terminal output: anything
+    /// that isn't a plain web or mail link prompts before reaching Launch
+    /// Services (a reduced form of ghostty's untrusted URL policy).
+    private static func openURL(_ value: String, kind: ghostty_action_open_url_kind_e) {
+        // If the URL doesn't have a valid scheme we assume it's a file
+        // path (cmd+click on a path in terminal output).
+        let url: URL
+        if let candidate = URL(string: value), candidate.scheme != nil {
+            url = candidate
+        } else {
+            let expandedPath = NSString(string: value).standardizingPath
+            url = URL(fileURLWithPath: expandedPath)
+        }
+
+        guard kind == GHOSTTY_ACTION_OPEN_URL_KIND_OSC8 else {
+            NSWorkspace.shared.open(url)
+            return
+        }
+
+        switch url.scheme?.lowercased() {
+        case "http", "https", "mailto":
+            NSWorkspace.shared.open(url)
+
+        default:
+            let alert = NSAlert()
+            alert.messageText = "Open Untrusted Link?"
+            alert.informativeText =
+                "A program in the terminal is linking to:\n\(value)\n\nOnly open targets you trust."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Open")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 }
