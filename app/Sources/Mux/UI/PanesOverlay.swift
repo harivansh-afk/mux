@@ -4,18 +4,20 @@ import AppKit
 /// proportional margins - listing every pane grouped by the host its
 /// terminal lives on, local first, then hosts by name. Host headings carry
 /// a right-aligned pane count; a pane row is branch glyphs plus
-/// `<session>.<pane>  title` on the left and its cwd right-aligned, with a
-/// diamond in the gutter marking the pane you came from. j/k move a
-/// full-width highlight bar across pane rows (headers are skipped), enter
-/// jumps to the selected pane, esc cancels. Rebuilt from the live session
-/// model every time it opens; PrefixEngine drives it and it never takes
-/// focus.
+/// `<session>.<pane> : <cwd dir> : <title>` with pink separators, the
+/// title being what the program in the pane reports (agents like claude
+/// title themselves with their session name), and a diamond in the gutter
+/// marking the pane you came from. j/k move a full-width highlight bar
+/// across pane rows (headers are skipped), enter jumps to the selected
+/// pane, esc cancels. Rebuilt from the live session model every time it
+/// opens; PrefixEngine drives it and it never takes focus.
 final class PanesOverlayView: NSView {
     struct Entry {
         let sessionIndex: Int
         let paneID: UUID
-        let label: String
-        let detail: String
+        /// `session.pane`, directory name, title - empty parts dropped;
+        /// rendered joined by pink ` : `.
+        let parts: [String]
     }
 
     private struct Row {
@@ -28,10 +30,10 @@ final class PanesOverlayView: NSView {
         let current: Bool
     }
 
-    private static let font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
-    private static let boldFont = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .bold)
+    private static let font = Chrome.font
+    private static let boldFont = Chrome.boldFont
     private static let inset: CGFloat = 16
-    private static let rowHeight: CGFloat = 26
+    private static let rowHeight = Chrome.rowHeight
 
     private let titleLabel = NSTextField(labelWithString: "panes")
     private let countLabel = NSTextField(labelWithString: "")
@@ -82,8 +84,8 @@ final class PanesOverlayView: NSView {
                 rows.append(Row(
                     entry: entry,
                     glyph: position == count - 1 ? "\u{2570}\u{2500} " : "\u{251C}\u{2500} ",
-                    text: entry.label,
-                    meta: entry.detail,
+                    text: "",
+                    meta: "",
                     current: entry.paneID == selected
                 ))
             }
@@ -230,13 +232,21 @@ final class PanesOverlayView: NSView {
                         .foregroundColor: selected ? palette.accentContrast : palette.dim,
                     ]
                 ))
-                main.append(NSAttributedString(
-                    string: row.text,
-                    attributes: [
-                        .font: selected || row.current ? Self.boldFont : Self.font,
-                        .foregroundColor: selected ? palette.accentContrast : palette.text,
-                    ]
-                ))
+                for (position, part) in (row.entry?.parts ?? []).enumerated() {
+                    if position > 0 {
+                        main.append(NSAttributedString(
+                            string: " : ",
+                            attributes: [.font: Self.font, .foregroundColor: palette.pink]
+                        ))
+                    }
+                    main.append(NSAttributedString(
+                        string: part,
+                        attributes: [
+                            .font: selected || row.current ? Self.boldFont : Self.font,
+                            .foregroundColor: selected ? palette.accentContrast : palette.text,
+                        ]
+                    ))
+                }
             }
             mainLabels[i].attributedStringValue = main
             metaLabels[i].attributedStringValue = NSAttributedString(

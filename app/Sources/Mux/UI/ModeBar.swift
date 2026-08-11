@@ -41,7 +41,7 @@ struct ModeBarSegment {
 
 final class ModeBarView: NSView {
     /// One terminal-ish row.
-    static let height: CGFloat = 22
+    static let height = Chrome.barHeight
     /// Equal inset from the left and bottom edges of the terminal area,
     /// so the box sits concentric with the corner.
     static let margin: CGFloat = 4
@@ -68,8 +68,8 @@ final class ModeBarView: NSView {
     private let label = NSTextField(labelWithString: "")
     private var segments: [ModeBarSegment] = []
 
-    private static let font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
-    private static let boldFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)
+    private static let font = Chrome.font
+    private static let boldFont = Chrome.boldFont
 
     init(boxed: Bool = false) {
         self.boxed = boxed

@@ -230,14 +230,31 @@ extension MuxWindowController {
                 groups[pane.target, default: []].append(PanesOverlayView.Entry(
                     sessionIndex: sessionIndex,
                     paneID: paneID,
-                    label: "\(sessionIndex + 1).\(paneIndex + 1)  \(pane.title)",
-                    detail: (pane.pwd as NSString?)?.abbreviatingWithTildeInPath ?? ""
+                    parts: [
+                        "\(sessionIndex + 1).\(paneIndex + 1)",
+                        (pane.pwd as NSString?)?.lastPathComponent ?? "",
+                        Self.sessionTitle(pane.title),
+                    ].filter { !$0.isEmpty }
                 ))
             }
         }
         // nil (local) sorts as "" - first; aliases are alphanumeric-led.
         order.sort { ($0 ?? "") < ($1 ?? "") }
         return order.map { ($0, groups[$0] ?? []) }
+    }
+
+    /// The pane title as a session name. Coding agents title the terminal
+    /// with a state glyph before their session summary - claude uses
+    /// `\u{2733}` when idle and a braille spinner (U+2800-U+28FF) while
+    /// working - so a leading glyph from that set is dropped.
+    private static func sessionTitle(_ raw: String) -> String {
+        var title = raw.trimmingCharacters(in: .whitespaces)
+        if let first = title.unicodeScalars.first,
+           first.value == 0x2733 || (0x2800...0x28FF).contains(first.value) {
+            title = String(title.unicodeScalars.dropFirst())
+                .trimmingCharacters(in: .whitespaces)
+        }
+        return title
     }
 
     /// Centered boxes (keybinds, picker) share one placement rule.

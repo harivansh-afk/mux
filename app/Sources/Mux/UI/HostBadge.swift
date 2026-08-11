@@ -6,11 +6,11 @@ import AppKit
 /// quiet default; remote is the exception worth marking. The focused
 /// pane's chip is fully opaque, unfocused ones recede.
 final class HostBadgeView: NSView {
-    static let height: CGFloat = 18
+    static let height = Chrome.barHeight
     /// Inset from the pane's top and right edges.
     static let margin: CGFloat = 4
 
-    private static let font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .bold)
+    private static let font = Chrome.boldFont
     private static let unfocusedAlpha: CGFloat = 0.55
 
     private let label = NSTextField(labelWithString: "")
