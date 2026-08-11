@@ -43,19 +43,38 @@ A pane on another machine runs the same `muxd` there and reaches it over QUIC.
 The local daemon is the broker: panes always speak to the local unix socket, and
 the local daemon holds one QUIC connection per host.
 
-1. On the remote box, run `muxd --listen-quic <addr>:4433`. On first start it
-   generates a cert and a bearer token under `~/.local/state/muxd/` and logs the
-   cert pin as `sha256:<base64>`.
-2. On the Mac, name the host in `~/.config/mux/hosts.json`:
+Enrollment is declarative: the Mac has one client identity token, and each host
+is told (in its own config) which client digests it accepts. No secret ever
+crosses machines.
+
+1. On the Mac, print the client digest (generating
+   `~/.local/state/mux/token` on first use):
+
+       muxd client-digest        # -> sha256:<64 hex>
+
+   The hosts overlay (`prefix s`) shows the same digest; `c` copies it.
+2. On the remote box, authorize that digest. On NixOS set
+   `services.muxd.authorizedTokenDigests` (see below); elsewhere run
+   `muxd --listen-quic <addr>:4433 --authorized-tokens <file>` where the file
+   holds one `sha256:<hex>` digest per line.
+3. On the Mac, name the host in `~/.config/mux/hosts.json`:
 
        { "spark": { "addr": "100.64.0.7:4433" } }
 
-3. Copy the remote's token to `~/.local/state/mux/tokens/spark` (0600). The first
-   connection pins the cert trust-on-first-use into `~/.local/state/mux/known_hosts`;
-   a later cert change is refused until you clear that line.
 4. In the app, `prefix t` lists `local` plus every alias. Pick `spark` and the
    split lives there; kill the app and the remote pty (and its scrollback) is
    still there on reattach.
+
+The first connection pins the host cert trust-on-first-use into
+`~/.local/state/mux/known_hosts`; a later cert change is refused until you
+clear that line. A per-host token at `~/.local/state/mux/tokens/<alias>`
+(0600) still overrides the client token when present - that is the old manual
+flow, kept for hosts you cannot configure declaratively.
+
+`prefix s` opens the hosts overlay: every alias with its address and a live
+probe (`ok <rtt>ms`, or why not - unreachable, pin mismatch, token rejected),
+your running ix VMs, and the client digest. Enter opens a pane on the
+selected host or VM.
 
 Splits and new sessions inherit the focused pane's host, so work started on
 `spark` stays on `spark` until you pick a different target. Remote panes carry
@@ -63,8 +82,11 @@ a chip in their top-right corner (a host-colored dot plus the alias); local
 panes stay unmarked. `prefix f` opens an overlay of every pane grouped by
 host - enter jumps to the selected pane, switching session if needed.
 
-There is no CLI to manage `hosts.json` yet - it is hand-edited JSON, read fresh
-every time the picker opens.
+`hosts.json` is deliberately hand-edited JSON, read fresh every time the picker
+or the hosts overlay opens - one line per host, and the fleet is small by
+design. ix VMs are never listed there: the app discovers them live via
+`ix ls`, and a pane on a VM is a local muxd pty running `ix shell <vm>` - so
+it survives the app like every other pane.
 
 ## Deploy on NixOS
 
@@ -87,25 +109,22 @@ fully offline in the sandbox.
         user = "alice";             # the human who attaches: panes are this user's shells
         listen = "100.64.0.7:4433"; # a Tailscale (or otherwise private) IP:port
         openFirewall = true;        # opens the UDP port (QUIC is UDP)
+        # `muxd client-digest` on the Mac prints this. Digests are not
+        # secrets: they can live in your flake and in the nix store.
+        authorizedTokenDigests = [ "sha256:..." ];
       };
     }
 
 muxd is a per-user daemon: every pane's shell runs as `user`, in their
 home, with their login shell - a system account would give every pane a
 `nologin` shell that exits immediately. On first start the daemon
-generates its cert and bearer token under `~user/.local/state/muxd/` and
-logs the cert pin (`sha256:<base64>`) to the journal - `journalctl -u
-muxd` to read it.
+generates its cert under `~user/.local/state/muxd/` and logs the cert pin
+(`sha256:<base64>`) to the journal - `journalctl -u muxd` to read it.
 
 From there the Mac side is exactly the flow in [Remote hosts](#remote-hosts):
-copy `/var/lib/muxd/.local/state/muxd/token` off the box into
-`~/.local/state/mux/tokens/<alias>` (mode 0600) on the Mac, then name the host
-in `~/.config/mux/hosts.json`:
-
-    { "spark": { "addr": "100.64.0.7:4433" } }
-
-The first connection pins the cert trust-on-first-use into
-`~/.local/state/mux/known_hosts`.
+name the host in `~/.config/mux/hosts.json` and connect - the client token
+is already authorized by the flake, and the first connection pins the cert
+trust-on-first-use into `~/.local/state/mux/known_hosts`.
 
 ## State model
 
@@ -123,6 +142,8 @@ lets one session span machines.
 M1 local-only app (done); M2 local muxd - kill the app mid-htop, reopen, htop is
 still there (done; M2.5 daemon self-upgrade via SCM_RIGHTS pending); M3 remote
 muxd over QUIC streams (quinn - never ssh/mosh/plain TCP; the local muxd brokers
-one connection per host) + ix VMs via `ix shell` relay; M4 native ix client
-(their codec encoding + connect-token dial; same session protocol); M5 agent
-identity, workspace env, JSON CLI, predictive echo.
+one connection per host), declarative token enrollment, hosts overlay, and ix
+VMs as local muxd ptys running `ix shell` (done); M4 native ix client (their
+codec encoding + connect-token dial; same session protocol - blocked on
+golden-byte fixtures); M5 agent identity, workspace env, JSON CLI, predictive
+echo.
