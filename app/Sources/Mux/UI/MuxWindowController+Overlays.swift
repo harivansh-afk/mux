@@ -38,7 +38,7 @@ extension MuxWindowController {
     // MARK: - Session indicator
 
     /// `1 2 3` with the active number highlighted. Mirrors the mode bar
-    /// at the bottom-right corner with the same concentric insets.
+    /// at the top-right corner with the same concentric insets.
     private var sessionSegments: [ModeBarSegment] {
         var segments: [ModeBarSegment] = []
         for index in sessions.indices {
@@ -53,20 +53,21 @@ extension MuxWindowController {
         return segments
     }
 
-    /// Always visible at the bottom-right; re-rendered whenever sessions
+    /// Always visible at the top-right; re-rendered whenever sessions
     /// are created, closed, switched or restored.
     func updateSessionIndicator() {
         sessionIndicator.render(sessionSegments)
         positionSessionIndicator()
     }
 
+    /// Top-right corner (the container is flipped, so the top is minY).
     func positionSessionIndicator() {
         let bounds = container.bounds
         let margin = ModeBarView.margin
         let width = min(sessionIndicator.desiredWidth, bounds.width - margin * 2)
         sessionIndicator.frame = NSRect(
             x: bounds.width - margin - width,
-            y: bounds.height - ModeBarView.height - margin,
+            y: margin,
             width: width,
             height: ModeBarView.height
         )
