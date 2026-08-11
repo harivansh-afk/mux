@@ -118,7 +118,10 @@ final class Session {
         case .inherit: source.target
         case let .explicit(explicit): explicit
         }
-        let sameHost = newTarget == source.target
+        // An ix pane's pty runs `ix shell` on this machine, so its working
+        // directory is wherever the daemon started and says nothing about
+        // where you are inside the VM: never inherit it.
+        let sameHost = newTarget == source.target && IX.vm(of: newTarget) == nil
         // Splits inherit the source pane's font zoom, matching ghostty's
         // window-inherit-font-size default.
         let newPane = makePane(

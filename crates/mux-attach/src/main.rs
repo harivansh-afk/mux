@@ -10,6 +10,22 @@
 //!   mux-attach local:<name> [--cwd DIR] [-- cmd args...]   attach or create
 //!   mux-attach --list                                       list ptys
 //!   mux-attach --kill local:<name>                          kill a pty
+//!   mux-attach probe <alias>                                check a host
+//!
+//! `probe` is the health check Mux.app runs per host. It relays a `List`
+//! through the local daemon's broker, so one call exercises dial, pin,
+//! token and protocol version end to end, and prints exactly one line of
+//! JSON on stdout - exit 0 when the host answered, 1 otherwise:
+//!
+//! ```text
+//! {"alias":"spark","ok":true,"rtt_ms":12,"ptys":2}
+//! {"alias":"spark","ok":false,"class":"token-rejected","error":"..."}
+//! ```
+//!
+//! `class` is one of `unreachable`, `pin-mismatch`, `token-rejected`,
+//! `version-mismatch`, `no-host` (the alias is not in `hosts.json`) or
+//! `error`. `rtt_ms` covers request to reply only, never the daemon
+//! spawn that may precede it.
 //!
 //! Plain threads, no async: stdin pump, winsize poll (200ms - coalesces
 //! during drags, same policy as ix's shell client), and the main thread
@@ -166,6 +182,13 @@ fn main() -> Result<()> {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // A subcommand, not a flag: `probe` reports through its JSON line and
+    // its exit code, never through the flag parser's error path.
+    if args.first().map(String::as_str) == Some("probe") {
+        let alias = args.get(1).context("usage: mux-attach probe <alias>")?;
+        exit(probe(alias));
+    }
+
     let mut target: Option<String> = None;
     let mut cwd: Option<String> = None;
     let mut cwd_from: Option<String> = None;
@@ -261,6 +284,107 @@ fn run_control(target: Option<String>, mode: OpenMode) -> Result<()> {
         Err(e) => bail!("daemon error: {e}"),
     }
     Ok(())
+}
+
+/// One line of `mux-attach probe` output. A struct, not a `json!`
+/// literal: serde writes the fields in declaration order, which is the
+/// order the module doc promises.
+#[derive(serde::Serialize)]
+struct Probe<'a> {
+    alias: &'a str,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rtt_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ptys: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    class: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'a str>,
+}
+
+/// Probe `alias` and print the result; returns the process exit code.
+fn probe(alias: &str) -> i32 {
+    let (listed, error) = match ask(alias) {
+        Ok(listed) => (Some(listed), None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
+    let result = Probe {
+        alias,
+        ok: error.is_none(),
+        rtt_ms: listed.as_ref().map(|l| l.rtt.as_millis()),
+        ptys: listed.as_ref().map(|l| l.ptys),
+        class: error.as_deref().map(classify),
+        error: error.as_deref(),
+    };
+    // The struct is plain data, so encoding cannot fail.
+    println!("{}", serde_json::to_string(&result).unwrap_or_default());
+    i32::from(error.is_some())
+}
+
+/// What a successful probe measured.
+struct Listed {
+    rtt: Duration,
+    ptys: usize,
+}
+
+/// Relay a `List` to `alias` and time the round trip. Connecting is
+/// outside the timing: it may spawn the local daemon, which says nothing
+/// about the host being probed.
+fn ask(alias: &str) -> Result<Listed> {
+    let mut stream = connect()?;
+    let (cols, rows) = winsize();
+    let started = Instant::now();
+    write_request(
+        &mut stream,
+        &OpenRequest {
+            version: mux_proto::peer::PROTOCOL_VERSION,
+            cols,
+            rows,
+            term: None,
+            token: None,
+            target: Some(alias.to_string()),
+            mode: OpenMode::List,
+        },
+    )?;
+    let Some(frame) = read_lane_frame(&mut stream, FrameLimits::default())? else {
+        bail!("daemon closed without a reply");
+    };
+    let rtt = started.elapsed();
+    match peer::decode::<OpenReply>(&frame.payload)? {
+        Ok(Opened::Listed { ptys }) => Ok(Listed {
+            rtt,
+            ptys: ptys.len(),
+        }),
+        Ok(other) => bail!("unexpected reply: {other:?}"),
+        // The daemon's own words, verbatim: `classify` reads them and the
+        // user sees them.
+        Err(message) => bail!(message),
+    }
+}
+
+/// Sort a failure into the `class` Mux.app switches on.
+///
+/// The markers are substrings of messages produced elsewhere: "cannot
+/// reach", "unknown host", "no host registry at" and "invalid host
+/// alias" by muxd's broker, "host key changed for" by its TOFU verifier,
+/// "authentication failed" and "protocol version mismatch" by the remote
+/// daemon's admission. Order matters - the broker wraps a pin failure in
+/// its own "cannot reach" context, so the specific marker has to win.
+fn classify(error: &str) -> &'static str {
+    const CLASSES: [(&str, &str); 7] = [
+        ("host key changed for ", "pin-mismatch"),
+        ("authentication failed", "token-rejected"),
+        ("protocol version mismatch", "version-mismatch"),
+        ("unknown host ", "no-host"),
+        ("no host registry at ", "no-host"),
+        ("invalid host alias ", "no-host"),
+        ("cannot reach ", "unreachable"),
+    ];
+    CLASSES
+        .iter()
+        .find(|(marker, _)| error.contains(marker))
+        .map_or("error", |(_, class)| class)
 }
 
 /// The socket the input threads currently write to. `None` between a
@@ -484,4 +608,78 @@ fn write_request(stream: &mut UnixStream, request: &OpenRequest) -> Result<()> {
     stream.write_all(&bytes)?;
     stream.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The inputs are the messages muxd actually produces, copied from
+    /// the sites named in `classify`'s doc comment. If one of those is
+    /// reworded, this test is where it shows up.
+    #[test]
+    fn failures_are_classified() {
+        let cases = [
+            (
+                "spark: cannot reach spark at spark.lan:4433: resolve spark.lan:4433",
+                "unreachable",
+            ),
+            (
+                "spark: cannot reach spark at 10.0.0.1:4433: host key changed for spark: pinned sha256:A, presented sha256:B",
+                "pin-mismatch",
+            ),
+            ("daemon error: authentication failed", "token-rejected"),
+            (
+                "protocol version mismatch: daemon v4, client v3 - upgrade or restart the daemon (muxd --upgrade)",
+                "version-mismatch",
+            ),
+            (
+                "spark: unknown host \"spark\" in /home/me/.config/mux/hosts.json; known hosts: box",
+                "no-host",
+            ),
+            (
+                "spark: no host registry at /home/me/.config/mux/hosts.json; add {\"spark\": {\"addr\": \"<host>:4433\"}}",
+                "no-host",
+            ),
+            (
+                "sp ark: invalid host alias \"sp ark\": letters, digits, '.', '_' and '-' only",
+                "no-host",
+            ),
+            ("daemon closed without a reply", "error"),
+        ];
+        for (error, class) in cases {
+            assert_eq!(classify(error), class, "{error}");
+        }
+    }
+
+    /// The JSON shape is Mux.app's contract: both key sets exactly, in
+    /// the order the module doc prints them.
+    #[test]
+    fn probe_json_is_the_documented_shape() {
+        let ok = Probe {
+            alias: "spark",
+            ok: true,
+            rtt_ms: Some(12),
+            ptys: Some(2),
+            class: None,
+            error: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&ok).unwrap(),
+            r#"{"alias":"spark","ok":true,"rtt_ms":12,"ptys":2}"#
+        );
+
+        let failed = Probe {
+            alias: "spark",
+            ok: false,
+            rtt_ms: None,
+            ptys: None,
+            class: Some("token-rejected"),
+            error: Some("authentication \"failed\""),
+        };
+        assert_eq!(
+            serde_json::to_string(&failed).unwrap(),
+            r#"{"alias":"spark","ok":false,"class":"token-rejected","error":"authentication \"failed\""}"#
+        );
+    }
 }

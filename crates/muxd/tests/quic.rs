@@ -26,7 +26,8 @@ async fn quic_listener_serves_authenticated_clients() {
     std::env::set_var("HOME", &home);
 
     let identity = muxd::tls::load_or_generate_identity().expect("identity");
-    let token = muxd::tls::load_or_generate_token().expect("token");
+    let token =
+        muxd::tls::load_or_generate_token(&mux_proto::paths::daemon_token()).expect("token");
     assert_eq!(token.len(), 64, "32 random bytes, hex encoded");
     // The pin is copied verbatim into a client's known_hosts, so its
     // shape is a contract: sha256: plus padded standard base64 of a
@@ -46,16 +47,27 @@ async fn quic_listener_serves_authenticated_clients() {
     assert_eq!(mode(&state.join("token")), 0o600, "token is 0600");
     // Second load reuses the files rather than rotating them out from
     // under clients that already pinned.
-    assert_eq!(token, muxd::tls::load_or_generate_token().expect("token"));
+    assert_eq!(
+        token,
+        muxd::tls::load_or_generate_token(&mux_proto::paths::daemon_token()).expect("token")
+    );
+
+    // A client enrolled by digest only: the daemon never sees "enrolled"
+    // itself, just the line `muxd client-digest` would have printed for
+    // it. This is the whole point of --authorized-tokens.
+    let authorized = home.join("authorized-tokens");
+    std::fs::write(
+        &authorized,
+        format!("# the macbook\n{}\n", muxd::tls::digest_line("enrolled")),
+    )
+    .expect("write authorized tokens");
+    let admitted =
+        muxd::tls::load_admitted(muxd::tls::digest(&token), Some(&authorized)).expect("admitted");
 
     let manager = muxd::manager::Manager::default();
     let endpoint = muxd::quic::endpoint(loopback(), &identity).expect("bind");
     let addr = endpoint.local_addr().expect("local addr");
-    tokio::spawn(muxd::quic::accept(
-        manager.clone(),
-        endpoint,
-        muxd::tls::digest(&token),
-    ));
+    tokio::spawn(muxd::quic::accept(manager.clone(), endpoint, admitted));
 
     let client = client_endpoint();
     let connection = client
@@ -74,7 +86,16 @@ async fn quic_listener_serves_authenticated_clients() {
     let reply = read_reply(&mut recv).await;
     assert_eq!(reply, Err("authentication failed".to_string()));
 
-    // (b) The real token attaches, and the pty is wired both ways.
+    // (b) An enrolled client's token is admitted the same as the
+    // daemon's own, with no file ever copied between the two machines.
+    let (mut send, mut recv) = connection.open_bi().await.expect("open_bi");
+    write_request(&mut send, &request(Some("enrolled"), None, OpenMode::List)).await;
+    match read_reply(&mut recv).await {
+        Ok(Opened::Listed { .. }) => {}
+        other => panic!("an enrolled token must be admitted, got {other:?}"),
+    }
+
+    // (c) The daemon's own token attaches, and the pty is wired both ways.
     let (mut send, mut recv) = connection.open_bi().await.expect("open_bi");
     write_request(
         &mut send,
@@ -85,6 +106,7 @@ async fn quic_listener_serves_authenticated_clients() {
                 name: "cat".into(),
                 cwd: None,
                 command: vec!["/bin/cat".into()],
+                cwd_from: None,
             },
         ),
     )
@@ -107,7 +129,7 @@ async fn quic_listener_serves_authenticated_clients() {
         "cat should echo back: {echoed:?}"
     );
 
-    // (c) A relay request is refused: routing is the local daemon's job.
+    // (d) A relay request is refused: routing is the local daemon's job.
     let (mut send, mut recv) = connection.open_bi().await.expect("open_bi");
     write_request(
         &mut send,

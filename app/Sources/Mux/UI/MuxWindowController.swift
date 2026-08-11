@@ -33,6 +33,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     let helpOverlay = HelpOverlayView()
     let targetPicker = TargetPickerView()
     let panesOverlay = PanesOverlayView()
+    let hostsOverlay = HostsOverlayView()
 
     private(set) var sessions: [Session] = []
     private(set) var activeSessionIndex = 0

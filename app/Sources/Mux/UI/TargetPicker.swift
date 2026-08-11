@@ -1,10 +1,11 @@
 import AppKit
 
 /// The target picker (prefix t): a bordered box centered over the panes,
-/// listing `local` plus the host aliases from ~/.config/mux/hosts.json.
-/// Title row ("target" left, an "esc cancel" badge right), then one row per
-/// choice with the highlighted one in pink. PrefixEngine drives the
-/// highlight and the commit; the picker never takes focus.
+/// listing `local`, the host aliases from ~/.config/mux/hosts.json, and the
+/// running `ix:<vm>` VMs. Title row ("target" left, an "esc cancel" badge
+/// right), then one row per choice with the highlighted one in pink.
+/// PrefixEngine drives the highlight and the commit; the picker never takes
+/// focus.
 final class TargetPickerView: NSView {
     private static let font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
     private static let boldFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .bold)
@@ -15,10 +16,18 @@ final class TargetPickerView: NSView {
     private let cancelBadge = NSTextField(labelWithString: " esc cancel ")
     private var rowLabels: [NSTextField] = []
 
-    /// `local` first, then the aliases. Reloaded every time the picker
-    /// opens, so editing hosts.json needs no restart.
+    /// `local` first, then the aliases, then the ix VMs. Reloaded every
+    /// time the picker opens, so editing hosts.json needs no restart.
     private var options: [String] = ["local"]
     private var index = 0
+
+    /// Bumped on every open, so a slow `ix ls` answering after the picker
+    /// was closed and reopened cannot append rows to the new list.
+    private var generation = 0
+
+    /// Called when late-arriving rows change the content size, so the
+    /// controller can re-center the box.
+    var onContentChange: (() -> Void)?
 
     /// The chosen pane target: nil for `local` (see PaneView.target).
     var selection: String? {
@@ -46,6 +55,24 @@ final class TargetPickerView: NSView {
     func reload() {
         options = ["local"] + HostsConfig.aliases()
         index = 0
+        rebuildRows()
+
+        // The ix CLI takes a moment to answer, so its VMs are appended when
+        // they arrive: the picker is usable for local and hosts the instant
+        // it opens, and no ix CLI just means no ix rows.
+        generation += 1
+        let generation = generation
+        IX.list { [weak self] vms in
+            guard let self, generation == self.generation else { return }
+            let running = vms.filter(\.isRunning).map { IX.prefix + $0.name }
+            guard !running.isEmpty else { return }
+            options += running
+            rebuildRows()
+            onContentChange?()
+        }
+    }
+
+    private func rebuildRows() {
         for label in rowLabels {
             label.removeFromSuperview()
         }

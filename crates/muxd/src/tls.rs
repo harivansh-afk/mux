@@ -1,4 +1,4 @@
-//! The daemon's QUIC identity and bearer token: load-or-generate, on
+//! Bearer tokens and the daemon's QUIC identity: load-or-generate, on
 //! disk at the locations `mux_proto::paths` documents.
 //!
 //! There is no CA. The certificate is self-signed and clients pin the
@@ -7,18 +7,32 @@
 //! out-of-band copying. The token is the second factor: a certificate
 //! proves which daemon answered, the token proves the caller is allowed
 //! to talk to it.
+//!
+//! Tokens are the same recipe on both sides - 32 random bytes as hex,
+//! 0600 - because both sides hold one: the daemon its own, a client its
+//! single identity. Only digests travel, so enrolling a client is
+//! pasting the output of `muxd client-digest` into the daemon's
+//! `--authorized-tokens` file.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
+use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use base64::Engine as _;
-use mux_proto::paths;
 use rand::RngCore as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use sha2::{Digest as _, Sha256};
+
+use mux_proto::paths;
+
+/// Every token digest a listener admits: its own, plus whatever
+/// `--authorized-tokens` enrolled. Shared by every connection handler,
+/// hence the `Arc`.
+pub type Admitted = Arc<HashSet<[u8; 32]>>;
 
 /// A key is a secret; a certificate is not, but nothing else needs to
 /// read either, so both are owner-only.
@@ -40,6 +54,14 @@ pub struct Identity {
 #[must_use]
 pub fn digest(secret: &str) -> [u8; 32] {
     Sha256::digest(secret.as_bytes()).into()
+}
+
+/// The printable form of [`digest`]: `sha256:<64 lowercase hex>`, one
+/// line of an authorized-tokens file. This is what `muxd client-digest`
+/// prints and the only thing about a token that ever leaves its machine.
+#[must_use]
+pub fn digest_line(secret: &str) -> String {
+    format!("sha256:{}", hex(&digest(secret)))
 }
 
 /// Read `cert.pem`/`key.pem`, generating a self-signed pair on first
@@ -83,14 +105,15 @@ pub fn load_or_generate_identity() -> Result<Identity> {
     })
 }
 
-/// Read the bearer token, generating 32 random bytes (hex) on first use.
+/// Read the bearer token at `path`, generating 32 random bytes (hex) on
+/// first use. Both the daemon's own token and a client's identity are
+/// this, at the two paths `paths` names.
 ///
 /// # Errors
 ///
 /// Writing the token file or its parent directory.
-pub fn load_or_generate_token() -> Result<String> {
-    let path = paths::daemon_token();
-    if let Ok(existing) = fs::read_to_string(&path) {
+pub fn load_or_generate_token(path: &Path) -> Result<String> {
+    if let Ok(existing) = fs::read_to_string(path) {
         let token = existing.trim();
         if !token.is_empty() {
             return Ok(token.to_string());
@@ -99,9 +122,60 @@ pub fn load_or_generate_token() -> Result<String> {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     let token = hex(&bytes);
-    write_secret(&path, token.as_bytes())?;
+    write_secret(path, token.as_bytes())?;
     tracing::info!(path = %path.display(), "generated bearer token");
     Ok(token)
+}
+
+/// The digests a `--authorized-tokens` file enrolls, on top of `own`
+/// (the daemon's token always admits itself).
+///
+/// # Errors
+///
+/// The file is unreadable, or a line is not `sha256:<64 hex>`.
+pub fn load_admitted(own: [u8; 32], authorized: Option<&Path>) -> Result<Admitted> {
+    let mut digests = HashSet::from([own]);
+    if let Some(path) = authorized {
+        let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let enrolled = parse_digests(&text).with_context(|| format!("parse {}", path.display()))?;
+        tracing::info!(path = %path.display(), count = enrolled.len(), "authorized tokens");
+        digests.extend(enrolled);
+    }
+    Ok(Arc::new(digests))
+}
+
+/// One `sha256:<64 lowercase hex>` per line; blank lines and `#`
+/// comments are ignored. A malformed line is an error rather than a skip:
+/// a typo that silently locked a client out would look exactly like a
+/// rejected token.
+fn parse_digests(text: &str) -> Result<Vec<[u8; 32]>> {
+    let mut digests = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let hex = line
+            .strip_prefix("sha256:")
+            .with_context(|| format!("line {}: expected sha256:<64 hex>, got {line:?}", n + 1))?;
+        if hex.len() != 64
+            || !hex
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            bail!(
+                "line {}: expected 64 lowercase hex digits, got {hex:?}",
+                n + 1
+            );
+        }
+        let mut digest = [0u8; 32];
+        for (byte, pair) in digest.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+            let pair = std::str::from_utf8(pair).expect("hex is ascii");
+            *byte = u8::from_str_radix(pair, 16).expect("checked hex digits");
+        }
+        digests.push(digest);
+    }
+    Ok(digests)
 }
 
 fn generate(cert_path: &Path, key_path: &Path) -> Result<(String, String)> {
@@ -155,4 +229,52 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
         out
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The file format is what a user pastes into their host config, so
+    /// every shape it tolerates is spelled out here.
+    #[test]
+    fn authorized_tokens_file_parses() {
+        let a = digest_line("client-a");
+        let b = digest_line("client-b");
+        let text = format!("# the macbook\n{a}\n\n  {b}  \n");
+
+        let parsed = parse_digests(&text).unwrap();
+        assert_eq!(parsed, vec![digest("client-a"), digest("client-b")]);
+    }
+
+    #[test]
+    fn a_malformed_digest_is_an_error() {
+        for bad in [
+            "deadbeef",                              // no prefix
+            "sha256:",                               // no digest
+            "sha256:xyz",                            // too short
+            &format!("sha256:{}", "A".repeat(64)),   // uppercase hex
+            &format!("sha256:{}", "ab".repeat(33)),  // too long
+            &format!("{}\nnope", digest_line("ok")), // a good line does not excuse a bad one
+        ] {
+            assert!(parse_digests(bad).is_err(), "{bad:?} should not parse");
+        }
+    }
+
+    /// `sha256:<64 hex>` of the token, and it round-trips back to the
+    /// digest the admission check compares.
+    #[test]
+    fn digest_line_round_trips() {
+        let line = digest_line("s3cret");
+        let hex = line.strip_prefix("sha256:").expect("prefix");
+        assert_eq!(hex.len(), 64);
+        assert_eq!(parse_digests(&line).unwrap(), vec![digest("s3cret")]);
+    }
+
+    #[test]
+    fn admitted_always_holds_the_daemons_own_token() {
+        let admitted = load_admitted(digest("mine"), None).unwrap();
+        assert!(admitted.contains(&digest("mine")));
+        assert!(!admitted.contains(&digest("theirs")));
+    }
 }
