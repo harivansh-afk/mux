@@ -14,13 +14,11 @@ final class PaneView: NSView {
     /// - nil: the local daemon (`mux-attach local:<id>`).
     /// - a host alias from ~/.config/mux/hosts.json: the local daemon
     ///   relays the attach to that host (`mux-attach <alias>:<id>`).
-    /// - `ix:<vm>`: no daemon and no persistence at all, the pane simply
-    ///   execs `ix shell <vm>`.
+    /// - `ix:<vm>`: a local daemon pty whose command is `ix shell <vm>`
+    ///   instead of the user's shell, so the VM's session persists exactly
+    ///   like a local one - the pty, and the `ix shell` inside it, outlive
+    ///   the app.
     let target: String?
-
-    /// `ix:<vm>` panes exec a plain command; there is no pty to attach to,
-    /// reconnect to, or kill.
-    static let ixPrefix = "ix:"
 
     /// The host chip shown at this pane's top-right corner; nil for local
     /// panes. A sibling view in the pane container (libghostty owns this
@@ -116,15 +114,6 @@ final class PaneView: NSView {
     /// same).
     private var eventMonitor: Any?
 
-    /// The bundled stdio relay. nil (dev builds without the bundle step)
-    /// falls back to a plain local shell - panes then don't survive the
-    /// app, but everything else works.
-    static let attachBinary: String? = {
-        guard let dir = Bundle.main.executableURL?.deletingLastPathComponent() else { return nil }
-        let path = dir.appendingPathComponent("mux-attach").path
-        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
-    }()
-
     init(
         id: UUID = UUID(),
         runtime: GhosttyRuntime,
@@ -160,7 +149,8 @@ final class PaneView: NSView {
         // reconnects and replays; a missing pty is created at the saved
         // cwd. Terminal content survives the app by construction. M3: a
         // pane on a host alias is the same pty one hop away (the local
-        // daemon relays the attach), while `ix:<vm>` is a plain exec.
+        // daemon relays the attach), and an `ix:<vm>` pane is a local pty
+        // whose command is `ix shell` instead of the user's shell.
         let command = command ?? defaultCommand(cwd: workingDirectory, cwdFrom: cwdFrom)
 
         // A remote pane's cwd names a path on the remote host: it travels
@@ -293,12 +283,14 @@ final class PaneView: NSView {
         return event
     }
 
-    /// The pty this pane attaches to: `local:<id>`, or `<alias>:<id>` for
-    /// a pane hosted on another machine. nil for `ix:<vm>` panes, which
-    /// have no pty on either side of the wire.
-    private var attachAddress: String? {
-        guard let target else { return "local:\(id.uuidString)" }
-        guard !target.hasPrefix(Self.ixPrefix) else { return nil }
+    /// The pty this pane attaches to: `<alias>:<id>` for a pane hosted on
+    /// another machine, `local:<id>` otherwise. An `ix:<vm>` pane is local
+    /// too - the pty runs `ix shell` here, and the VM is on the far end of
+    /// that command, not of the attach.
+    private var attachAddress: String {
+        guard let target, !target.hasPrefix(IX.prefix) else {
+            return "local:\(id.uuidString)"
+        }
         return "\(target):\(id.uuidString)"
     }
 
@@ -308,11 +300,20 @@ final class PaneView: NSView {
     /// the new shell inherits, resolved daemon-side - no shell
     /// integration needed. An explicit `cwd` wins.
     private func defaultCommand(cwd: String?, cwdFrom: UUID? = nil) -> String? {
-        if let target, target.hasPrefix(Self.ixPrefix) {
-            return "ix shell \"\(target.dropFirst(Self.ixPrefix.count))\""
+        let vm = IX.vm(of: target)
+        guard let attach = Muxd.attachBinary else {
+            // No relay bundled: an ix pane is a plain exec (no persistence),
+            // and a local pane is just the user's shell.
+            return vm.map { "\"\(IX.binary)\" shell \"\($0)\"" }
         }
-        guard let attach = Self.attachBinary, let attachAddress else { return nil }
         var parts = ["\"\(attach)\"", "\"\(attachAddress)\""]
+        if let vm {
+            // `-- cmd` makes the pty run that command instead of the shell.
+            // No cwd: the pty's working directory is this machine's and
+            // means nothing inside the VM.
+            parts += ["--", "\"\(IX.binary)\"", "shell", "\"\(vm)\""]
+            return parts.joined(separator: " ")
+        }
         if let cwd {
             parts += ["--cwd", "\"\(cwd)\""]
         }
@@ -332,10 +333,11 @@ final class PaneView: NSView {
         }
     }
 
-    /// Kill the pane's pty (deliberate close, not detach). A no-op for
-    /// `ix:<vm>` panes: closing the surface already ends the process.
+    /// Kill the pane's pty (deliberate close, not detach). For an ix pane
+    /// that ends the `ix shell` the pty is running, and with it the session
+    /// on the VM.
     func killRemote() {
-        guard let attach = Self.attachBinary, let attachAddress else { return }
+        guard let attach = Muxd.attachBinary else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: attach)
         process.arguments = ["--kill", attachAddress]
