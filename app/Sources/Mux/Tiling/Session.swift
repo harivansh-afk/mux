@@ -5,6 +5,23 @@ import AppKit
 enum NewPaneTarget {
     case inherit
     case explicit(String?)
+
+    /// The target the new pane gets, given the pane it comes from.
+    func resolved(from source: PaneView?) -> String? {
+        switch self {
+        case .inherit: source?.target
+        case let .explicit(explicit): explicit
+        }
+    }
+
+    /// Whether the new pane may inherit the source pane's live working
+    /// directory: only when it stays on the same machine (a path from
+    /// another machine means nothing here), and never for an ix pty, whose
+    /// cwd is the local one `ix shell` started in.
+    func inheritsDirectory(from source: PaneView?) -> Bool {
+        let target = resolved(from: source)
+        return target == source?.target && IX.vm(of: target) == nil
+    }
 }
 
 /// One session: a split tree of panes with its focus and zoom state.
@@ -56,11 +73,13 @@ final class Session {
 
     private func makePane(
         id: UUID = UUID(), workingDirectory: String? = nil, cwdFrom: UUID? = nil,
-        target: String? = nil, initialFrame: CGRect = .zero, fontDelta: Int = 0
+        target: String? = nil, ptyCommand: [String]? = nil,
+        initialFrame: CGRect = .zero, fontDelta: Int = 0
     ) -> PaneView {
         let pane = PaneView(
             id: id, runtime: runtime, workingDirectory: workingDirectory, cwdFrom: cwdFrom,
-            target: target, initialFrame: initialFrame, fontDelta: fontDelta
+            target: target, ptyCommand: ptyCommand, initialFrame: initialFrame,
+            fontDelta: fontDelta
         )
         pane.controller = controller
         panes[pane.id] = pane
@@ -100,36 +119,35 @@ final class Session {
         }
     }
 
+    /// `before` puts the new pane on the left/top side of the split, which
+    /// is how the hosts window offers all four directions.
     func split(
         from pane: PaneView? = nil,
         direction: SplitDirection,
-        target: NewPaneTarget = .inherit
+        before: Bool = false,
+        target: NewPaneTarget = .inherit,
+        ptyCommand: [String]? = nil
     ) {
         guard let source = pane ?? focusedPane else { return }
         guard let tree else { return }
         zoomedID = nil
         // New panes inherit the source pane's target, and its working
-        // directory only when the targets match: a path from another
-        // machine means nothing here, and vice versa. The directory is
-        // resolved daemon-side from the source pane's live process
-        // (cwdFrom); pwd (OSC 7, when shell integration provides it) is
-        // an explicit override.
-        let newTarget: String? = switch target {
-        case .inherit: source.target
-        case let .explicit(explicit): explicit
-        }
-        // An ix pane's pty runs `ix shell` on this machine, so its working
-        // directory is wherever the daemon started and says nothing about
-        // where you are inside the VM: never inherit it.
-        let sameHost = newTarget == source.target && IX.vm(of: newTarget) == nil
+        // directory only when they stay on the same machine. The directory
+        // is resolved daemon-side from the source pane's live process
+        // (cwdFrom); pwd (OSC 7, when shell integration provides it) is an
+        // explicit override.
+        let sameHost = target.inheritsDirectory(from: source)
         // Splits inherit the source pane's font zoom, matching ghostty's
         // window-inherit-font-size default.
         let newPane = makePane(
             workingDirectory: sameHost ? source.pwd : nil,
             cwdFrom: sameHost ? source.id : nil,
-            target: newTarget, fontDelta: source.fontDelta
+            target: target.resolved(from: source), ptyCommand: ptyCommand,
+            fontDelta: source.fontDelta
         )
-        self.tree = tree.inserting(newPane.id, at: source.id, direction: direction)
+        self.tree = tree.inserting(
+            newPane.id, at: source.id, direction: direction, newFirst: before
+        )
         controller?.layoutPanes()
         focus(newPane)
         controller?.saveState()

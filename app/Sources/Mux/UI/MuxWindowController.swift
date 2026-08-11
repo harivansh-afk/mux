@@ -31,9 +31,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     let modeBar = ModeBarView(boxed: true)
     let sessionIndicator = ModeBarView()
     let helpOverlay = HelpOverlayView()
-    let targetPicker = TargetPickerView()
     let panesOverlay = PanesOverlayView()
-    let hostsOverlay = HostsOverlayView()
+    let hostsWindow = HostsWindowView()
 
     private(set) var sessions: [Session] = []
     private(set) var activeSessionIndex = 0
@@ -129,17 +128,20 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - Session switching
 
-    /// prefix c: a new session with one pane, following the focused
-    /// pane's target and cwd.
-    func newSession() {
-        // The new session's pane inherits the focused pane's host and
-        // working directory (resolved daemon-side from its live process).
+    /// prefix c: a new session with one pane. It follows the focused pane's
+    /// host and working directory (resolved daemon-side from its live
+    /// process), or the machine the hosts window named - in which case
+    /// there is no directory to inherit.
+    func newSession(target: NewPaneTarget = .inherit) {
         let source = activeSession?.focusedPane
+        let sameHost = target.inheritsDirectory(from: source)
         let session = Session(runtime: runtime, controller: self)
         sessions.append(session)
         activeSessionIndex = sessions.count - 1
         session.addInitialPane(
-            workingDirectory: source?.pwd, cwdFrom: source?.id, target: source?.target
+            workingDirectory: sameHost ? source?.pwd : nil,
+            cwdFrom: sameHost ? source?.id : nil,
+            target: target.resolved(from: source)
         )
         layoutPanes()
         updateSessionIndicator()
@@ -203,8 +205,15 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func split(direction: SplitDirection, target: NewPaneTarget = .inherit) {
-        activeSession?.split(direction: direction, target: target)
+    func split(
+        direction: SplitDirection,
+        before: Bool = false,
+        target: NewPaneTarget = .inherit,
+        ptyCommand: [String]? = nil
+    ) {
+        activeSession?.split(
+            direction: direction, before: before, target: target, ptyCommand: ptyCommand
+        )
     }
 
     func split(from pane: PaneView, ghosttyDirection: ghostty_action_split_direction_e) {
@@ -277,11 +286,11 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         if helpOverlay.superview != nil {
             positionHelpOverlay()
         }
-        if targetPicker.superview != nil {
-            positionTargetPicker()
-        }
         if panesOverlay.superview != nil {
             positionPanesOverlay()
+        }
+        if hostsWindow.superview != nil {
+            positionHostsWindow()
         }
 
         for (index, session) in sessions.enumerated() {

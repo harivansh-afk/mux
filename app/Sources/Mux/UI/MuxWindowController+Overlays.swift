@@ -1,8 +1,8 @@
 import AppKit
 
 /// The window's chrome: the floating mode bar, the session indicator, the
-/// keybinds overlay, the target picker and the panes and hosts overlays.
-/// All of them are overlays on the
+/// keybinds overlay, and the panes and hosts windows. All of them are
+/// overlays on the
 /// pane area - panes never reflow for them - and none of them ever takes
 /// focus: PrefixEngine owns the keys and drives them from the outside.
 extension MuxWindowController {
@@ -91,77 +91,92 @@ extension MuxWindowController {
         center(helpOverlay, size: helpOverlay.desiredSize(in: container.bounds))
     }
 
-    // MARK: - Target picker
+    // MARK: - Hosts window
 
-    /// prefix t: pick where the next pane's terminal should live. The list
-    /// is re-read from hosts.json on every open, and grows when the ix CLI
-    /// reports its VMs a moment later.
-    func showTargetPicker() {
-        targetPicker.onContentChange = { [weak self] in self?.positionTargetPicker() }
-        targetPicker.reload()
-        targetPicker.removeFromSuperview()
-        container.addSubview(targetPicker)
-        positionTargetPicker()
+    /// prefix h: where a pane can live - local, the aliases with a live
+    /// probe, the ix VMs. Every query fires on open, so the box fills in as
+    /// answers arrive and re-centers itself when it grows.
+    func showHostsWindow() {
+        hostsWindow.onContentChange = { [weak self] in self?.positionHostsWindow() }
+        hostsWindow.reload()
+        hostsWindow.removeFromSuperview()
+        container.addSubview(hostsWindow)
+        positionHostsWindow()
     }
 
-    func hideTargetPicker() {
-        targetPicker.removeFromSuperview()
+    func hideHostsWindow() {
+        hostsWindow.removeFromSuperview()
     }
 
-    func moveTargetPicker(by delta: Int) {
-        targetPicker.move(by: delta)
-        positionTargetPicker()
+    func moveHostsWindow(by delta: Int) {
+        hostsWindow.move(by: delta)
+        positionHostsWindow()
     }
 
-    /// Enter: split the focused pane rightwards into the chosen target.
-    func commitTargetPicker() {
-        split(direction: .horizontal, target: .explicit(targetPicker.selection))
+    /// True while the template list is up, so esc backs out of it rather
+    /// than closing the window.
+    var hostsWindowPickingTemplate: Bool {
+        hostsWindow.pickingTemplate
     }
 
-    func positionTargetPicker() {
-        center(targetPicker, size: targetPicker.desiredSize(in: container.bounds))
+    /// t / esc: swap between the machines and the templates a new VM would
+    /// be built from. Coming back does not re-probe: the answers the hosts
+    /// already gave are still on screen.
+    func showHostsTemplates() {
+        hostsWindow.showTemplates()
+        positionHostsWindow()
     }
 
-    // MARK: - Hosts overlay
-
-    /// prefix s: the machines a pane can live on, with live status. Every
-    /// query (host probes, the ix listing, the client digest) is kicked off
-    /// on open, so the box fills in as answers arrive and re-centers itself
-    /// when it grows.
-    func showHostsOverlay() {
-        hostsOverlay.onContentChange = { [weak self] in self?.positionHostsOverlay() }
-        hostsOverlay.reload()
-        hostsOverlay.removeFromSuperview()
-        container.addSubview(hostsOverlay)
-        positionHostsOverlay()
+    func showHostsMachines() {
+        hostsWindow.showHosts()
+        positionHostsWindow()
     }
 
-    func hideHostsOverlay() {
-        hostsOverlay.removeFromSuperview()
+    /// Enter in the template list: persist the highlighted `ix new` target
+    /// as the default for new VMs.
+    func commitHostsTemplate() {
+        hostsWindow.commitTemplate()
+        positionHostsWindow()
     }
 
-    func moveHostsOverlay(by delta: Int) {
-        hostsOverlay.move(by: delta)
-        positionHostsOverlay()
-    }
-
-    /// c: the client identity digest onto the clipboard, for pasting into
-    /// the host's authorized list.
+    /// y: the client identity digest onto the clipboard, for pasting into a
+    /// host's authorized list.
     func copyClientDigest() {
-        hostsOverlay.copyDigest()
-        positionHostsOverlay()
+        hostsWindow.copyDigest()
+        positionHostsWindow()
     }
 
-    /// Enter: split the focused pane rightwards into the highlighted host
-    /// or VM. Rows that cannot host a pane are not selectable, so a nil
-    /// selection means there is nothing to open (not "local").
-    func commitHostsOverlay() {
-        guard let target = hostsOverlay.selection else { return }
-        split(direction: .horizontal, target: .explicit(target))
+    /// Enter / H J K L: split the focused pane into the highlighted machine.
+    /// Rows that cannot host a pane are not selectable, so a nil selection
+    /// means there is nothing to open (which is not the same as `local`,
+    /// hence NewPaneTarget rather than a bare string).
+    func commitHostsWindow(direction: SplitDirection, before: Bool = false) {
+        guard let target = hostsWindow.selectedHost else { return }
+        split(direction: direction, before: before, target: target)
     }
 
-    func positionHostsOverlay() {
-        center(hostsOverlay, size: hostsOverlay.desiredSize(in: container.bounds))
+    /// c: a whole new session on the highlighted machine, rather than a
+    /// split beside the pane you were in.
+    func newSessionOnHostsSelection() {
+        guard let target = hostsWindow.selectedHost else { return }
+        newSession(target: target)
+    }
+
+    /// n: create a VM and open a pane on it. mux names the machine up front,
+    /// so the pane's target is `ix:<name>` from the first frame: the pane is
+    /// the creation progress and then the shell, and a restore later derives
+    /// `ix shell <name>` from that target - by which time the VM exists.
+    func createIXVM() {
+        let name = IX.newVMName()
+        split(
+            direction: .horizontal,
+            target: .explicit(IX.prefix + name),
+            ptyCommand: [IX.binary, "new", "-n", name, IXConfig.template()]
+        )
+    }
+
+    func positionHostsWindow() {
+        center(hostsWindow, size: hostsWindow.desiredSize(in: container.bounds))
     }
 
     // MARK: - Panes overlay

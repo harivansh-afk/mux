@@ -7,21 +7,23 @@ import AppKit
 /// M1 bindings:
 ///   ctrl+b        arm prefix mode
 ///   prefix '      split right          prefix -      split down
-///   prefix h/j/k/l  focus direction    prefix z      zoom toggle
-///   prefix x      close pane           prefix c      new session
-///   prefix 1..9   select session       prefix n/p    next/prev session
-///   prefix r      resize mode          prefix esc    cancel
-///   prefix t      target picker        prefix ctrl+b send a literal ctrl+b
-///   prefix f      panes by host        prefix ?      keybinds overlay
-///   prefix s      hosts overlay
+///   prefix arrows focus direction      prefix j/k/l  focus down/up/right
+///   prefix z      zoom toggle          prefix x      close pane
+///   prefix c      new session          prefix 1..9   select session
+///   prefix n/p    next/prev session    prefix r      resize mode
+///   prefix h      hosts window         prefix f      panes by host
+///   prefix ?      keybinds overlay     prefix ctrl+b send a literal ctrl+b
+///   prefix esc    cancel
+/// `h` is the hosts window, not focus-left: the arrows cover all four
+/// directions, and j/k/l keep theirs.
 /// Held-ctrl aliasing: ctrl+<key> in prefix mode means <key> (the nvim-mux
 /// papercut fix: you rarely release ctrl between prefix and key).
 /// Resize mode: h/j/k/l nudge the enclosing split ratio, esc/enter/q exit.
-/// Target mode: j/k choose the machine the next pane lives on, enter
-/// splits right into it, esc cancels.
 /// Panes mode: j/k walk every pane grouped by host, enter jumps to it.
-/// Hosts mode: j/k walk the hosts and ix VMs with their live status, enter
-/// splits right into one, c copies this client's identity digest.
+/// Hosts mode: j/k walk local, the hosts with their live probe status and
+/// the ix VMs; enter splits right into one and H/J/K/L split in a given
+/// direction, c opens a new session there, n creates a VM, t chooses the
+/// template new VMs are built from, y copies this client's identity digest.
 ///
 /// Mode changes drive the bottom mode bar on the active window.
 final class PrefixEngine {
@@ -30,7 +32,6 @@ final class PrefixEngine {
         case prefix
         case resize
         case help
-        case pickTarget
         case pickPane
         case hosts
     }
@@ -62,13 +63,6 @@ final class PrefixEngine {
         .key("esc"), .dim(" close"),
     ]
 
-    private static let targetSegments: [ModeBarSegment] = [
-        .badge("TARGET"),
-        .key("j/k"), .dim(" choose  "),
-        .key("enter"), .dim(" split  "),
-        .key("esc"), .dim(" cancel"),
-    ]
-
     private static let paneSegments: [ModeBarSegment] = [
         .badge("PANES"),
         .key("j/k"), .dim(" choose  "),
@@ -76,12 +70,20 @@ final class PrefixEngine {
         .key("esc"), .dim(" cancel"),
     ]
 
+    /// The window has more keys than a bar should carry: they live in its
+    /// own footer and in the keybinds overlay.
     private static let hostsSegments: [ModeBarSegment] = [
         .badge("HOSTS"),
         .key("j/k"), .dim(" choose  "),
         .key("enter"), .dim(" split  "),
-        .key("c"), .dim(" copy digest  "),
-        .key("esc"), .dim(" close"),
+        .key("?"), .dim(" keybinds"),
+    ]
+
+    private static let templateSegments: [ModeBarSegment] = [
+        .badge("TEMPLATE"),
+        .key("j/k"), .dim(" choose  "),
+        .key("enter"), .dim(" set default  "),
+        .key("esc"), .dim(" back"),
     ]
 
     /// Resolves the controller of the key window.
@@ -107,9 +109,8 @@ final class PrefixEngine {
         mode = newMode
         indicatorController?.setModeIndicator(nil)
         indicatorController?.hideHelp()
-        indicatorController?.hideTargetPicker()
         indicatorController?.hidePanesOverlay()
-        indicatorController?.hideHostsOverlay()
+        indicatorController?.hideHostsWindow()
         indicatorController = nil
         switch newMode {
         case .normal:
@@ -124,10 +125,6 @@ final class PrefixEngine {
             indicatorController = controller
             indicatorController?.setModeIndicator(Self.helpSegments)
             indicatorController?.showHelp()
-        case .pickTarget:
-            indicatorController = controller
-            indicatorController?.setModeIndicator(Self.targetSegments)
-            indicatorController?.showTargetPicker()
         case .pickPane:
             indicatorController = controller
             indicatorController?.setModeIndicator(Self.paneSegments)
@@ -135,7 +132,7 @@ final class PrefixEngine {
         case .hosts:
             indicatorController = controller
             indicatorController?.setModeIndicator(Self.hostsSegments)
-            indicatorController?.showHostsOverlay()
+            indicatorController?.showHostsWindow()
         }
     }
 
@@ -188,22 +185,6 @@ final class PrefixEngine {
                 return nil
             }
 
-        case .pickTarget:
-            switch key {
-            case "j", "\u{F701}": controller?.moveTargetPicker(by: 1); return nil
-            case "k", "\u{F700}": controller?.moveTargetPicker(by: -1); return nil
-            case "\r":
-                // Commit before the mode change tears the picker down.
-                controller?.commitTargetPicker()
-                setMode(.normal)
-                return nil
-            case "\u{1b}", "q":
-                setMode(.normal)
-                return nil
-            default:
-                return nil
-            }
-
         case .pickPane:
             switch key {
             case "j", "\u{F701}": controller?.movePanesOverlay(by: 1); return nil
@@ -221,24 +202,68 @@ final class PrefixEngine {
             }
 
         case .hosts:
-            switch key {
-            case "j", "\u{F701}": controller?.moveHostsOverlay(by: 1); return nil
-            case "k", "\u{F700}": controller?.moveHostsOverlay(by: -1); return nil
-            // Copying leaves the overlay up: the digest stays on screen as
-            // confirmation of what landed on the clipboard.
-            case "c": controller?.copyClientDigest(); return nil
-            case "\r":
-                // Commit before the mode change tears the overlay down.
-                controller?.commitHostsOverlay()
-                setMode(.normal)
-                return nil
-            case "\u{1b}", "q":
-                setMode(.normal)
-                return nil
-            default:
-                return nil
-            }
+            return handleHostsKey(key)
         }
+    }
+
+    /// The hosts window holds two lists: the machines, and (under t) the ix
+    /// template new VMs are built from. Both are driven from here, so the
+    /// window itself never needs focus.
+    private func handleHostsKey(_ key: String) -> NSEvent? {
+        guard let controller else { return nil }
+
+        if controller.hostsWindowPickingTemplate {
+            switch key {
+            case "j", "\u{F701}": controller.moveHostsWindow(by: 1)
+            case "k", "\u{F700}": controller.moveHostsWindow(by: -1)
+            case "\r":
+                // Setting the default is not a pane action: it returns to
+                // the machines instead of closing the window.
+                controller.commitHostsTemplate()
+                indicatorController?.setModeIndicator(Self.hostsSegments)
+            case "\u{1b}", "q":
+                controller.showHostsMachines()
+                indicatorController?.setModeIndicator(Self.hostsSegments)
+            default:
+                break
+            }
+            return nil
+        }
+
+        switch key {
+        case "j", "\u{F701}": controller.moveHostsWindow(by: 1)
+        case "k", "\u{F700}": controller.moveHostsWindow(by: -1)
+        // Enter is the common case (split right); the capitals aim it. Every
+        // one of them commits and leaves the mode, so the pane you asked for
+        // is focused with nothing in front of it.
+        case "\r", "L": commitHosts(direction: .horizontal)
+        case "H": commitHosts(direction: .horizontal, before: true)
+        case "J": commitHosts(direction: .vertical)
+        case "K": commitHosts(direction: .vertical, before: true)
+        case "c":
+            controller.newSessionOnHostsSelection()
+            setMode(.normal)
+        case "n":
+            controller.createIXVM()
+            setMode(.normal)
+        // Copying leaves the window up: the digest stays on screen as
+        // confirmation of what landed on the clipboard.
+        case "y": controller.copyClientDigest()
+        case "t":
+            controller.showHostsTemplates()
+            indicatorController?.setModeIndicator(Self.templateSegments)
+        case "?": setMode(.help)
+        case "\u{1b}", "q": setMode(.normal)
+        default:
+            break
+        }
+        return nil
+    }
+
+    /// Commit before the mode change tears the window down.
+    private func commitHosts(direction: SplitDirection, before: Bool = false) {
+        controller?.commitHostsWindow(direction: direction, before: before)
+        setMode(.normal)
     }
 
     private func runPrefixAction(key: String, event _: NSEvent) -> NSEvent? {
@@ -246,17 +271,17 @@ final class PrefixEngine {
         // Splits: ' right, - down.
         case "'": controller?.split(direction: .horizontal)
         case "-": controller?.split(direction: .vertical)
-        // Focus movement.
-        case "h": controller?.focusDirection(.left)
-        case "j": controller?.focusDirection(.down)
-        case "k": controller?.focusDirection(.up)
-        case "l": controller?.focusDirection(.right)
+        // Focus movement. The arrows cover all four directions; j/k/l keep
+        // theirs, and `h` is the hosts window instead of focus-left.
+        case "\u{F702}": controller?.focusDirection(.left)
+        case "j", "\u{F701}": controller?.focusDirection(.down)
+        case "k", "\u{F700}": controller?.focusDirection(.up)
+        case "l", "\u{F703}": controller?.focusDirection(.right)
         case "z": controller?.toggleZoom()
         case "x": controller?.closeFocusedPane()
         case "r": setMode(.resize)
-        case "t": setMode(.pickTarget)
+        case "h": setMode(.hosts)
         case "f": setMode(.pickPane)
-        case "s": setMode(.hosts)
         case "?": setMode(.help)
         // Sessions.
         case "c": controller?.newSession()

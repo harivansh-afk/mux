@@ -52,7 +52,7 @@ crosses machines.
 
        muxd client-digest        # -> sha256:<64 hex>
 
-   The hosts overlay (`prefix s`) shows the same digest; `c` copies it.
+   The hosts window (`prefix h`) shows the same digest; `y` copies it.
 2. On the remote box, authorize that digest. On NixOS set
    `services.muxd.authorizedTokenDigests` (see below); elsewhere run
    `muxd --listen-quic <addr>:4433 --authorized-tokens <file>` where the file
@@ -61,9 +61,9 @@ crosses machines.
 
        { "spark": { "addr": "100.64.0.7:4433" } }
 
-4. In the app, `prefix t` lists `local` plus every alias. Pick `spark` and the
-   split lives there; kill the app and the remote pty (and its scrollback) is
-   still there on reattach.
+4. In the app, `prefix h` opens the hosts window: `local`, every alias, and
+   your ix VMs. Pick `spark` and the split lives there; kill the app and the
+   remote pty (and its scrollback) is still there on reattach.
 
 The first connection pins the host cert trust-on-first-use into
 `~/.local/state/mux/known_hosts`; a later cert change is refused until you
@@ -71,10 +71,14 @@ clear that line. A per-host token at `~/.local/state/mux/tokens/<alias>`
 (0600) still overrides the client token when present - that is the old manual
 flow, kept for hosts you cannot configure declaratively.
 
-`prefix s` opens the hosts overlay: every alias with its address and a live
-probe (`ok <rtt>ms`, or why not - unreachable, pin mismatch, token rejected),
-your running ix VMs, and the client digest. Enter opens a pane on the
-selected host or VM.
+The hosts window (`prefix h`) is the one surface for all of this: every
+alias with its address and a live probe (`ok <rtt>ms`, or why not -
+unreachable, pin mismatch, token rejected), your ix VMs with their state,
+and the client digest (`y` copies it). Enter splits right into the
+selection; `H`/`J`/`K`/`L` pick the split direction, `c` opens a new
+session there instead. `n` creates a fresh ix VM (the pane shows the
+creation and becomes its shell), and `t` sets the default template it
+boots.
 
 Splits and new sessions inherit the focused pane's host, so work started on
 `spark` stays on `spark` until you pick a different target. Remote panes carry
