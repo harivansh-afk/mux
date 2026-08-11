@@ -475,6 +475,8 @@ dependencies = [
  "libc",
  "mux-proto",
  "nix",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -501,6 +503,7 @@ dependencies = [
  "rand 0.8.7",
  "rcgen",
  "rustls",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",

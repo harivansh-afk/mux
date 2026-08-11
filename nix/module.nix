@@ -11,6 +11,10 @@ self: {
   cfg = config.services.muxd;
   # QUIC is UDP; the port is the tail of "<ip>:<port>".
   port = lib.toInt (lib.last (lib.splitString ":" cfg.listen));
+  # Digests, not tokens: safe to world-read from /nix/store.
+  authorizedTokens =
+    pkgs.writeText "muxd-authorized-tokens"
+    (lib.concatMapStrings (digest: digest + "\n") cfg.authorizedTokenDigests);
 in {
   options.services.muxd = {
     enable = lib.mkEnableOption "the mux session daemon (muxd) QUIC listener";
@@ -28,6 +32,26 @@ in {
       description = ''
         Address muxd's QUIC listener binds, as "<ip>:<port>". Use a Tailscale
         (or otherwise private) IP: the port is exposed to whatever can reach it.
+      '';
+    };
+
+    authorizedTokenDigests = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [];
+      example = ["sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"];
+      description = ''
+        Clients allowed to attach, each named by the SHA-256 of its bearer
+        token as "sha256:<64 lowercase hex>".
+
+        Run `muxd client-digest` on the client machine, put the line it
+        prints here, and deploy. The token itself stays on the client: no
+        secret ever crosses machines, and a digest is safe in the nix store
+        and in git. Revoking a client is deleting its line.
+
+        muxd also always admits its own token
+        ($HOME/.local/state/muxd/token), so leaving this empty keeps the
+        older flow where a client copies that file to
+        ~/.local/state/mux/tokens/<alias>.
       '';
     };
 
@@ -64,6 +88,14 @@ in {
         assertion = cfg.listen != "" && lib.length (lib.splitString ":" cfg.listen) == 2;
         message = ''services.muxd.listen must be set to "<ip>:<port>", e.g. "100.64.0.7:4433".'';
       }
+      {
+        assertion = lib.all (lib.hasPrefix "sha256:") cfg.authorizedTokenDigests;
+        message = ''
+          services.muxd.authorizedTokenDigests takes digests, not tokens: every
+          entry must be "sha256:<64 lowercase hex>", as printed by
+          `muxd client-digest`.
+        '';
+      }
     ];
 
     networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall [port];
@@ -78,10 +110,18 @@ in {
       serviceConfig = {
         # muxd reads and writes cert.pem, key.pem, and token under
         # $HOME/.local/state/muxd, and logs the cert pin to the journal
-        # on first start. HOME is the user's real home: pane shells load
-        # their dotfiles, and the token sits where the user can read it
-        # without sudo.
-        ExecStart = "${lib.getExe cfg.package} --listen-quic ${cfg.listen}";
+        # on first start (`muxd pin` prints the same line on demand).
+        # HOME is the user's real home: pane shells load their dotfiles,
+        # and the token sits where the user can read it without sudo.
+        ExecStart = lib.concatStringsSep " " ([
+            (lib.getExe cfg.package)
+            "--listen-quic"
+            cfg.listen
+          ]
+          ++ lib.optionals (cfg.authorizedTokenDigests != []) [
+            "--authorized-tokens"
+            "${authorizedTokens}"
+          ]);
         User = cfg.user;
         Environment = "HOME=${cfg.home}";
         Restart = "on-failure";

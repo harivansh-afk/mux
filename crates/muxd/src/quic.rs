@@ -8,16 +8,19 @@
 //! one busy pane from starving the others.
 //!
 //! Admission differs from the unix socket in exactly two ways, both in
-//! [`server::Policy::Remote`]: the bearer token is required, and a
-//! `target` is refused. Reaching another host is the *local* daemon's
-//! job (it is the broker), so a request that arrives here has already
-//! been routed and must be served by this daemon or not at all.
+//! [`server::Policy::Remote`]: a bearer token this daemon admits is
+//! required, and a `target` is refused. Reaching another host is the
+//! *local* daemon's job (it is the broker), so a request that arrives
+//! here has already been routed and must be served by this daemon or not
+//! at all.
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use mux_proto::paths;
 use mux_proto::peer;
 use quinn::{Endpoint, Incoming, RecvStream, SendStream, ServerConfig};
 
@@ -28,20 +31,22 @@ const MAX_IDLE: Duration = Duration::from_secs(30);
 
 use crate::manager::Manager;
 use crate::server::{self, Policy};
-use crate::tls::{self, Identity};
+use crate::tls::{self, Admitted, Identity};
 
-/// Load the daemon's identity and token, bind, and serve until the
-/// endpoint dies.
+/// Load the daemon's identity and the tokens it admits, bind, and serve
+/// until the endpoint dies.
 ///
 /// # Errors
 ///
-/// Missing or unreadable TLS material, or a failed bind.
-pub async fn serve(manager: Manager, addr: SocketAddr) -> Result<()> {
+/// Missing or unreadable TLS material, an unparseable authorized-tokens
+/// file, or a failed bind.
+pub async fn serve(manager: Manager, addr: SocketAddr, authorized: Option<&Path>) -> Result<()> {
     let identity = tls::load_or_generate_identity()?;
-    let token = tls::load_or_generate_token()?;
+    let token = tls::load_or_generate_token(&paths::daemon_token())?;
+    let admitted = tls::load_admitted(tls::digest(&token), authorized)?;
     let endpoint = endpoint(addr, &identity)?;
     tracing::info!(addr = %endpoint.local_addr()?, "muxd listening (quic)");
-    accept(manager, endpoint, tls::digest(&token)).await;
+    accept(manager, endpoint, admitted).await;
     Ok(())
 }
 
@@ -74,22 +79,19 @@ pub fn endpoint(addr: SocketAddr, identity: &Identity) -> Result<Endpoint> {
 }
 
 /// Accept connections until the endpoint is closed.
-pub async fn accept(manager: Manager, endpoint: Endpoint, token_digest: [u8; 32]) {
+pub async fn accept(manager: Manager, endpoint: Endpoint, admitted: Admitted) {
     while let Some(incoming) = endpoint.accept().await {
         let manager = manager.clone();
+        let admitted = admitted.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(manager, incoming, token_digest).await {
+            if let Err(e) = handle_connection(manager, incoming, admitted).await {
                 tracing::debug!(error = %e, "quic connection ended with error");
             }
         });
     }
 }
 
-async fn handle_connection(
-    manager: Manager,
-    incoming: Incoming,
-    token_digest: [u8; 32],
-) -> Result<()> {
+async fn handle_connection(manager: Manager, incoming: Incoming, admitted: Admitted) -> Result<()> {
     let connection = incoming.await.context("quic handshake")?;
     let peer_addr = connection.remote_address();
     tracing::info!(peer = %peer_addr, "quic client connected");
@@ -105,8 +107,9 @@ async fn handle_connection(
             }
         };
         let manager = manager.clone();
+        let admitted = admitted.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_stream(manager, send, recv, token_digest).await {
+            if let Err(e) = handle_stream(manager, send, recv, admitted).await {
                 tracing::debug!(error = %e, "quic stream ended with error");
             }
         });
@@ -117,17 +120,13 @@ async fn handle_stream(
     manager: Manager,
     mut send: SendStream,
     mut recv: RecvStream,
-    token_digest: [u8; 32],
+    admitted: Admitted,
 ) -> Result<()> {
     // By reference: the handler owns the streams for its lifetime, and
     // we still need `send` afterwards to close our half.
-    let result = server::handle_connection(
-        manager,
-        &mut recv,
-        &mut send,
-        &Policy::Remote { token_digest },
-    )
-    .await;
+    let result =
+        server::handle_connection(manager, &mut recv, &mut send, &Policy::Remote { admitted })
+            .await;
     // A one-shot caller (list, kill, a rejection) reads until EOF, so
     // finish even when the handler failed.
     let _ = send.finish();

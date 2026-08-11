@@ -27,10 +27,10 @@ pub enum Policy {
     /// token. Requests may name a remote `target` for the broker to
     /// relay (M3).
     Local,
-    /// QUIC: every request carries the daemon's bearer token, and none
-    /// relays onward - dialing peers is the *local* daemon's job, so
-    /// panes never touch the network themselves.
-    Remote { token_digest: [u8; 32] },
+    /// QUIC: every request carries a bearer token this daemon admits,
+    /// and none relays onward - dialing peers is the *local* daemon's
+    /// job, so panes never touch the network themselves.
+    Remote { admitted: tls::Admitted },
 }
 
 impl Policy {
@@ -41,10 +41,13 @@ impl Policy {
             // The 0600 socket is the auth boundary, and requests naming a
             // remote target were handed to the broker before admission.
             Self::Local => Ok(()),
-            Self::Remote { token_digest } => {
+            Self::Remote { admitted } => {
                 // Digests, not the secrets: fixed-size and preimage
                 // resistant, so a short circuit leaks nothing useful.
-                if request.token.as_deref().map(tls::digest).as_ref() != Some(token_digest) {
+                // `mux-attach probe` classifies this message, so its
+                // wording is a contract.
+                let presented = request.token.as_deref().map(tls::digest);
+                if !presented.is_some_and(|d| admitted.contains(&d)) {
                     return Err("authentication failed".into());
                 }
                 if let Some(host) = &request.target {
@@ -123,6 +126,7 @@ where
     // a dropped socket. A pre-v3 request has no version field, so the
     // first varint decodes as something else entirely - decode failure or
     // a wrong version both land here or in read_request's error path.
+    // The leading phrase is what `mux-attach probe` classifies on.
     if request.version != peer::PROTOCOL_VERSION {
         let message = format!(
             "protocol version mismatch: daemon v{}, client v{} - upgrade or restart the daemon (muxd --upgrade)",

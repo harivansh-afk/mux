@@ -3,10 +3,23 @@
 //!
 //! Usage:
 //!   muxd [--socket PATH] [--listen-quic ADDR] [--upgrade]
+//!        [--authorized-tokens PATH]
+//!   muxd pin              print this daemon's SPKI pin and exit
+//!   muxd client-digest    print this user's client token digest and exit
 //!
 //! The unix socket is always on; `--listen-quic` additionally exposes
 //! the same protocol to the network (`ADDR` is `<ip>:<port>` or a bare
 //! `<ip>`, which takes the default QUIC port).
+//!
+//! `--authorized-tokens` enrolls clients other than this machine's own:
+//! one `sha256:<64 hex>` digest per line. Digests are not secrets, so
+//! the file is deployable by configuration management (nix/module.nix)
+//! and no token ever crosses machines.
+//!
+//! The two subcommands are that enrollment, one printed line each so the
+//! app and shell scripts can read them: `muxd pin` on the host gives the
+//! client its `known_hosts` entry, `muxd client-digest` on the client
+//! gives the host its authorized-tokens entry.
 //!
 //! `--upgrade` replaces a running daemon without killing a shell: the
 //! new process inherits the live PTY fds plus a screen snapshot per pty
@@ -16,17 +29,20 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use muxd::{manager, migrate, quic, server};
+use mux_proto::paths;
+use muxd::{manager, migrate, quic, server, tls};
 
 struct Args {
     socket: PathBuf,
     listen_quic: Option<SocketAddr>,
+    authorized_tokens: Option<PathBuf>,
     upgrade: bool,
 }
 
 fn parse_args() -> Result<Args> {
     let mut socket = None;
     let mut listen_quic = None;
+    let mut authorized_tokens = None;
     let mut upgrade = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -38,6 +54,10 @@ fn parse_args() -> Result<Args> {
                 let value = args.next().context("--listen-quic needs an address")?;
                 listen_quic = Some(parse_listen(&value)?);
             }
+            "--authorized-tokens" => {
+                let value = args.next().context("--authorized-tokens needs a path")?;
+                authorized_tokens = Some(PathBuf::from(value));
+            }
             "--upgrade" => upgrade = true,
             other => bail!("unknown argument {other:?}"),
         }
@@ -46,8 +66,24 @@ fn parse_args() -> Result<Args> {
         socket: socket
             .unwrap_or_else(|| mux_proto::peer::socket_path(nix::unistd::getuid().as_raw())),
         listen_quic,
+        authorized_tokens,
         upgrade,
     })
+}
+
+/// The enrollment subcommands: one line on stdout, then exit. Each
+/// generates the material it prints when this is its first use, so the
+/// answer is always something the peer can act on.
+fn print_enrollment(command: &str) -> Result<()> {
+    match command {
+        "pin" => println!("{}", tls::load_or_generate_identity()?.spki_pin),
+        "client-digest" => {
+            let token = tls::load_or_generate_token(&paths::client_token())?;
+            println!("{}", tls::digest_line(&token));
+        }
+        other => bail!("unknown command {other:?}"),
+    }
+    Ok(())
 }
 
 fn parse_listen(value: &str) -> Result<SocketAddr> {
@@ -68,6 +104,12 @@ async fn main() -> Result<()> {
         )
         .with_writer(std::io::stderr)
         .init();
+
+    // Subcommands before flags: they answer and exit, and share only the
+    // on-disk material with the daemon.
+    if let Some(command @ ("pin" | "client-digest")) = std::env::args().nth(1).as_deref() {
+        return print_enrollment(command);
+    }
 
     // The daemon must not die with a client mid-write, nor with the
     // terminal that happened to birth it.
@@ -99,7 +141,7 @@ async fn main() -> Result<()> {
     // exists).
     match args.listen_quic {
         Some(addr) => {
-            let quic = quic::serve(manager.clone(), addr);
+            let quic = quic::serve(manager.clone(), addr, args.authorized_tokens.as_deref());
             let unix = server::serve(manager, listener);
             tokio::select! {
                 r = quic => r.context("quic listener stopped"),

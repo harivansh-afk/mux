@@ -14,7 +14,7 @@
 //! certificate is self-signed by design, so nothing else about it is
 //! checked - the pin, not a CA and not the name, is the whole decision.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -28,8 +28,11 @@ use mux_proto::shell::OUT_LANE_OPENED;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+
+use crate::tls;
 
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -47,7 +50,7 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 const KEEP_ALIVE: Duration = Duration::from_secs(5);
 
 /// Also the ceiling on how long a pane freezes when the path dies
-/// without a CONNECTION_CLOSE (sleep/wake, network switch): silence
+/// without a `CONNECTION_CLOSE` (sleep/wake, network switch): silence
 /// this long despite keep-alives every [`KEEP_ALIVE`] means the peer
 /// or the path is genuinely gone, and reconnect + replay is automatic
 /// and cheap, so err toward declaring death early.
@@ -56,6 +59,11 @@ const MAX_IDLE: Duration = Duration::from_secs(15);
 /// SNI for aliases that are not legal DNS names. The pin decides trust, so
 /// the name we send is cosmetic.
 const SNI_FALLBACK: &str = "muxd";
+
+/// Prefix on every failure to get bytes to the host - resolve, dial,
+/// open a stream. `mux-attach probe` classifies on it, so it is a
+/// contract, not just phrasing.
+const UNREACHABLE: &str = "cannot reach";
 
 /// Relay a targeted request over the per-host QUIC link.
 ///
@@ -87,7 +95,10 @@ struct Broker {
     hosts: PathBuf,
     /// `known_hosts`: one `<alias> sha256:<b64>` line per pinned host.
     known_hosts: PathBuf,
-    /// The directory holding one bearer token per alias.
+    /// This client's own bearer token, presented to every host that has
+    /// no per-alias override.
+    client_token: PathBuf,
+    /// The directory of per-alias overrides of that token.
     tokens: PathBuf,
     links: tokio::sync::Mutex<HashMap<String, Link>>,
 }
@@ -105,6 +116,7 @@ impl Broker {
         Self {
             hosts: paths::hosts_config(),
             known_hosts: paths::known_hosts(),
+            client_token: paths::client_token(),
             // `paths::host_token` is the contract; `token_dir_matches_paths`
             // holds this equal to it.
             tokens: paths::client_state_dir().join("tokens"),
@@ -137,8 +149,11 @@ impl Broker {
     async fn open_stream(&self, alias: &str, request: OpenRequest) -> Result<Stream> {
         check_alias(alias)?;
         let addr = host_addr(&self.hosts, alias)?;
-        let token = host_token(&self.tokens, alias)?;
-        let connection = self.connection(alias, &addr).await?;
+        let token = host_token(&self.tokens, &self.client_token, alias)?;
+        let connection = self
+            .connection(alias, &addr)
+            .await
+            .with_context(|| format!("{UNREACHABLE} {alias} at {addr}"))?;
 
         let request = OpenRequest {
             version: mux_proto::peer::PROTOCOL_VERSION,
@@ -169,7 +184,7 @@ impl Broker {
             // instead of hitting the same corpse.
             Err(e) => {
                 self.evict(alias).await;
-                Err(e)
+                Err(e).with_context(|| format!("{UNREACHABLE} {alias} at {addr}"))
             }
         }
     }
@@ -320,7 +335,16 @@ fn check_alias(alias: &str) -> Result<()> {
     Ok(())
 }
 
-/// The `addr` of `alias` in `hosts.json`.
+/// One host in `hosts.json`. Unknown fields are ignored: Mux.app reads
+/// the same file and may carry keys the daemon has no use for.
+#[derive(Deserialize)]
+struct HostEntry {
+    /// `host[:port]`; a bare host takes [`peer::DEFAULT_QUIC_PORT`].
+    addr: String,
+}
+
+/// The `addr` of `alias` in `hosts.json`. Sorted map, so the "known
+/// hosts" hint on a miss is in a stable order.
 fn host_addr(hosts: &Path, alias: &str) -> Result<String> {
     let bytes = std::fs::read(hosts).with_context(|| {
         format!(
@@ -329,11 +353,8 @@ fn host_addr(hosts: &Path, alias: &str) -> Result<String> {
             peer::DEFAULT_QUIC_PORT,
         )
     })?;
-    let parsed: serde_json::Value =
+    let table: BTreeMap<String, HostEntry> =
         serde_json::from_slice(&bytes).with_context(|| format!("parse {}", hosts.display()))?;
-    let table = parsed
-        .as_object()
-        .with_context(|| format!("{}: expected a JSON object", hosts.display()))?;
     let host = table.get(alias).with_context(|| {
         let known: Vec<&str> = table.keys().map(String::as_str).collect();
         format!(
@@ -346,27 +367,31 @@ fn host_addr(hosts: &Path, alias: &str) -> Result<String> {
             }
         )
     })?;
-    host.get("addr")
-        .and_then(serde_json::Value::as_str)
-        .map(ToString::to_string)
-        .with_context(|| format!("{}: host {alias:?} has no \"addr\"", hosts.display()))
+    Ok(host.addr.clone())
 }
 
-/// The bearer token the remote daemon expects, injected into the relayed
+/// The bearer token to present to `alias`, injected into the relayed
 /// handshake so the pane never holds it.
-fn host_token(tokens: &Path, alias: &str) -> Result<String> {
+///
+/// Normally this client's single identity, generated on first use: the
+/// host enrolls its digest (`muxd client-digest`), so nothing secret
+/// crosses machines. `tokens/<alias>` overrides it for a host that hands
+/// out a token of its own instead.
+fn host_token(tokens: &Path, client_token: &Path, alias: &str) -> Result<String> {
     let path = tokens.join(alias);
-    let token = std::fs::read_to_string(&path).with_context(|| {
-        format!(
-            "no bearer token for {alias:?}: copy the remote daemon's ~/.local/state/muxd/token to {} (mode 0600)",
-            path.display()
-        )
-    })?;
-    let token = token.trim().to_string();
-    if token.is_empty() {
-        bail!("{} is empty", path.display());
+    match std::fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tls::load_or_generate_token(client_token)
+        }
+        Err(e) => Err(e).with_context(|| format!("read {}", path.display())),
+        Ok(token) => {
+            let token = token.trim().to_string();
+            if token.is_empty() {
+                bail!("{} is empty", path.display());
+            }
+            Ok(token)
+        }
     }
-    Ok(token)
 }
 
 async fn resolve(addr: &str) -> Result<SocketAddr> {
@@ -651,6 +676,7 @@ mod tests {
         Broker {
             hosts: dir.join("hosts.json"),
             known_hosts: dir.join("known_hosts"),
+            client_token: dir.join("token"),
             tokens: dir.join("tokens"),
             links: tokio::sync::Mutex::new(HashMap::new()),
         }
@@ -675,6 +701,49 @@ mod tests {
             Broker::from_env().tokens.join("spark"),
             paths::host_token("spark")
         );
+    }
+
+    /// With no `tokens/<alias>` override the broker presents this
+    /// client's own identity, generating it on first use - that token's
+    /// digest is what the host enrolled.
+    #[test]
+    fn client_token_is_the_default_and_an_override_wins() {
+        let dir = scratch("token");
+        let client_token = dir.join("token");
+        let tokens = dir.join("tokens");
+
+        let generated = host_token(&tokens, &client_token, "spark").unwrap();
+        assert_eq!(generated.len(), 64, "32 random bytes, hex encoded");
+        // Stable across calls and across hosts: one identity, so a host
+        // that enrolled the digest keeps working.
+        assert_eq!(
+            host_token(&tokens, &client_token, "spark").unwrap(),
+            generated
+        );
+        assert_eq!(
+            host_token(&tokens, &client_token, "box").unwrap(),
+            generated
+        );
+
+        std::fs::create_dir_all(&tokens).unwrap();
+        std::fs::write(tokens.join("spark"), "handed-out\n").unwrap();
+        assert_eq!(
+            host_token(&tokens, &client_token, "spark").unwrap(),
+            "handed-out"
+        );
+        assert_eq!(
+            host_token(&tokens, &client_token, "box").unwrap(),
+            generated
+        );
+
+        std::fs::write(tokens.join("box"), "  \n").unwrap();
+        let empty = format!(
+            "{:#}",
+            host_token(&tokens, &client_token, "box").unwrap_err()
+        );
+        assert!(empty.contains("is empty"), "{empty}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// rcgen writes the same structure it hands back as `public_key_der`,
@@ -776,7 +845,16 @@ mod tests {
 
         std::fs::write(&hosts, r#"{"spark": {}}"#).unwrap();
         let no_addr = format!("{:#}", host_addr(&hosts, "spark").unwrap_err());
-        assert!(no_addr.contains("has no \"addr\""), "{no_addr}");
+        assert!(no_addr.contains("addr"), "{no_addr}");
+
+        // Mux.app writes this file too, so a key the daemon does not
+        // know must not break the entry it does.
+        std::fs::write(
+            &hosts,
+            r#"{"spark": {"addr": "spark.lan", "label": "the nixos box"}}"#,
+        )
+        .unwrap();
+        assert_eq!(host_addr(&hosts, "spark").unwrap(), "spark.lan");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -834,13 +912,15 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A known host with no token file must say where to put one.
+    /// A host that cannot be reached carries the prefix `mux-attach
+    /// probe` classifies as "unreachable". `.invalid` never resolves
+    /// (RFC 2606), so this fails at the first network step.
     #[tokio::test]
-    async fn relay_reports_a_missing_token() {
-        let dir = scratch("relay-token");
+    async fn relay_reports_an_unreachable_host() {
+        let dir = scratch("relay-unreachable");
         std::fs::write(
             dir.join("hosts.json"),
-            r#"{"spark": {"addr": "127.0.0.1:4433"}}"#,
+            r#"{"spark": {"addr": "spark.invalid"}}"#,
         )
         .unwrap();
 
@@ -851,8 +931,7 @@ mod tests {
             .unwrap();
 
         let message = error_reply(&written);
-        assert!(message.contains("no bearer token"), "{message}");
-        assert!(message.contains("tokens/spark"), "{message}");
+        assert!(message.contains("cannot reach spark"), "{message}");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

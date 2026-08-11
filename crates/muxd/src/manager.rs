@@ -67,8 +67,7 @@ impl PtySession {
     #[must_use]
     pub fn current_cwd(&self) -> Option<String> {
         let pid = nix::unistd::tcgetpgrp(self.master.get_ref())
-            .map(nix::unistd::Pid::as_raw)
-            .unwrap_or_else(|_| self.child.as_raw());
+            .map_or_else(|_| self.child.as_raw(), nix::unistd::Pid::as_raw);
         process_cwd(pid).or_else(|| process_cwd(self.child.as_raw()))
     }
 
