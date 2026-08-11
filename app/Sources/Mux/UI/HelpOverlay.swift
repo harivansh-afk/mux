@@ -16,11 +16,11 @@ final class HelpOverlayView: NSView {
             ("'", "split right"),
             ("-", "split down"),
             ("arrows", "move focus"),
-            ("j / k / l", "focus down / up / right"),
+            ("h / j / k / l", "focus left / down / up / right"),
             ("z", "toggle zoom"),
             ("x", "close pane"),
             ("r", "resize mode"),
-            ("h", "hosts and ix vms"),
+            ("t", "hosts and ix vms"),
             ("f", "panes by host"),
             ("?", "keybinds"),
             ("esc", "cancel"),
@@ -34,7 +34,7 @@ final class HelpOverlayView: NSView {
             ("h / j / k / l", "adjust split ratio"),
             ("esc / enter / q", "done"),
         ]),
-        Section(title: "hosts  prefix h", rows: [
+        Section(title: "hosts  prefix t", rows: [
             ("j / k", "choose host or vm"),
             ("enter", "split right into it"),
             ("H / J / K / L", "split left/down/up/right"),

@@ -1,6 +1,6 @@
 import AppKit
 
-/// The hosts window (prefix h): the one surface for "where can a pane live".
+/// The hosts window (prefix t): the one surface for "where can a pane live".
 /// A content-sized bordered box listing `local`, the aliases from hosts.json
 /// with the address the daemon dials and a live probe status (a machine that
 /// is off reads differently from one that rejected our key), and the ix VMs

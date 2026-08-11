@@ -7,15 +7,13 @@ import AppKit
 /// M1 bindings:
 ///   ctrl+b        arm prefix mode
 ///   prefix '      split right          prefix -      split down
-///   prefix arrows focus direction      prefix j/k/l  focus down/up/right
+///   prefix arrows focus direction      prefix h/j/k/l focus left/down/up/right
 ///   prefix z      zoom toggle          prefix x      close pane
 ///   prefix c      new session          prefix 1..9   select session
 ///   prefix n/p    next/prev session    prefix r      resize mode
-///   prefix h      hosts window         prefix f      panes by host
+///   prefix t      hosts window         prefix f      panes by host
 ///   prefix ?      keybinds overlay     prefix ctrl+b send a literal ctrl+b
 ///   prefix esc    cancel
-/// `h` is the hosts window, not focus-left: the arrows cover all four
-/// directions, and j/k/l keep theirs.
 /// Held-ctrl aliasing: ctrl+<key> in prefix mode means <key> (the nvim-mux
 /// papercut fix: you rarely release ctrl between prefix and key).
 /// Resize mode: h/j/k/l nudge the enclosing split ratio, esc/enter/q exit.
@@ -271,16 +269,15 @@ final class PrefixEngine {
         // Splits: ' right, - down.
         case "'": controller?.split(direction: .horizontal)
         case "-": controller?.split(direction: .vertical)
-        // Focus movement. The arrows cover all four directions; j/k/l keep
-        // theirs, and `h` is the hosts window instead of focus-left.
-        case "\u{F702}": controller?.focusDirection(.left)
+        // Focus movement: arrows and h/j/k/l both cover all four directions.
+        case "h", "\u{F702}": controller?.focusDirection(.left)
         case "j", "\u{F701}": controller?.focusDirection(.down)
         case "k", "\u{F700}": controller?.focusDirection(.up)
         case "l", "\u{F703}": controller?.focusDirection(.right)
         case "z": controller?.toggleZoom()
         case "x": controller?.closeFocusedPane()
         case "r": setMode(.resize)
-        case "h": setMode(.hosts)
+        case "t": setMode(.hosts)
         case "f": setMode(.pickPane)
         case "?": setMode(.help)
         // Sessions.
