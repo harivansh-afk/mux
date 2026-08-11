@@ -7,6 +7,13 @@ import UserNotifications
 /// Input forwarding ported from ghostty's SurfaceView_AppKit.swift (MIT),
 /// including the NSTextInputClient/IME machinery.
 final class PaneView: NSView {
+    /// The window is borderless with isMovableByWindowBackground on; the
+    /// default (non-opaque view = draggable background) would make AppKit
+    /// steal left-click drags for window moves instead of text selection.
+    override var mouseDownCanMoveWindow: Bool {
+        false
+    }
+
     let id: UUID
 
     /// Where this pane's terminal lives.
