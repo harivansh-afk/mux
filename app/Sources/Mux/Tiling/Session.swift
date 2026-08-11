@@ -143,6 +143,7 @@ final class Session {
         guard panes[pane.id] != nil else { return }
         panes.removeValue(forKey: pane.id)
         pane.removeFromSuperview()
+        pane.scrollHost?.removeFromSuperview()
         pane.hostBadge?.removeFromSuperview()
         if zoomedID == pane.id {
             zoomedID = nil
@@ -166,6 +167,7 @@ final class Session {
         }
         for (_, pane) in panes {
             pane.removeFromSuperview()
+            pane.scrollHost?.removeFromSuperview()
             pane.hostBadge?.removeFromSuperview()
         }
         panes.removeAll()
@@ -286,8 +288,15 @@ final class Session {
     }
 
     private func show(_ pane: PaneView, frame: CGRect) {
+        // The scroll host is the laid-out view; it keeps the pane filling
+        // its visible rect.
+        let host = pane.scrollHost
+        host?.isHidden = false
+        host?.frame = frame
         pane.isHidden = false
-        pane.frame = frame
+        if host == nil {
+            pane.frame = frame
+        }
         if let badge = pane.hostBadge {
             // The container is flipped, so the pane's top edge is minY.
             let margin = HostBadgeView.margin
@@ -304,6 +313,7 @@ final class Session {
     }
 
     private func hide(_ pane: PaneView) {
+        pane.scrollHost?.isHidden = true
         pane.isHidden = true
         pane.hostBadge?.isHidden = true
         pane.setOcclusion(visible: false)

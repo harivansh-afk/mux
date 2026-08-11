@@ -820,7 +820,13 @@ extension PaneView {
         case GHOSTTY_MOUSE_SHAPE_CROSSHAIR: .crosshair
         default: .arrow
         }
-        cursor.set()
+        // The scroll view re-applies its documentCursor whenever AppKit
+        // resets the cursor; a bare set() does not survive mouse moves.
+        if let scrollHost {
+            scrollHost.documentCursor = cursor
+        } else {
+            cursor.set()
+        }
     }
 }
 
