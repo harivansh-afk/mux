@@ -134,6 +134,37 @@ final class GhosttyRuntime {
         configBool("auto-secure-input", default: true)
     }
 
+    /// The wash drawn over unfocused panes. ghostty's
+    /// unfocused-split-opacity is the pane's remaining opacity (default
+    /// 0.85); the overlay draws the inverse.
+    var unfocusedSplitDimAlpha: Double {
+        guard let config else { return 0.15 }
+        var opacity = 0.85
+        let key = "unfocused-split-opacity"
+        _ = ghostty_config_get(config, &opacity, key, UInt(key.utf8.count))
+        return 1 - opacity
+    }
+
+    /// ghostty's unfocused-split-fill; defaults to the terminal
+    /// background.
+    var unfocusedSplitFill: NSColor {
+        guard let config else { return .black }
+        var color = ghostty_config_color_s()
+        let key = "unfocused-split-fill"
+        if !ghostty_config_get(config, &color, key, UInt(key.utf8.count)) {
+            let bg = "background"
+            guard ghostty_config_get(config, &color, bg, UInt(bg.utf8.count)) else {
+                return .black
+            }
+        }
+        return NSColor(
+            srgbRed: CGFloat(color.r) / 255,
+            green: CGFloat(color.g) / 255,
+            blue: CGFloat(color.b) / 255,
+            alpha: 1
+        )
+    }
+
     private func configBool(_ key: String, default def: Bool = false) -> Bool {
         guard let config else { return def }
         var v = def

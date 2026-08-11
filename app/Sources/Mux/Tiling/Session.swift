@@ -143,6 +143,7 @@ final class Session {
         guard panes[pane.id] != nil else { return }
         panes.removeValue(forKey: pane.id)
         pane.removeFromSuperview()
+        pane.dimOverlay.removeFromSuperview()
         pane.hostBadge?.removeFromSuperview()
         if zoomedID == pane.id {
             zoomedID = nil
@@ -166,6 +167,7 @@ final class Session {
         }
         for (_, pane) in panes {
             pane.removeFromSuperview()
+            pane.dimOverlay.removeFromSuperview()
             pane.hostBadge?.removeFromSuperview()
         }
         panes.removeAll()
@@ -271,23 +273,26 @@ final class Session {
             for (_, pane) in panes where pane.id != zoomedID {
                 hide(pane)
             }
-            show(zoomed, frame: bounds)
+            // A zoomed pane is alone on screen: never dimmed.
+            show(zoomed, frame: bounds, isSplit: false)
             return
         }
 
         let rects = tree.layout(in: bounds)
         for (id, pane) in panes {
             if let rect = rects[id] {
-                show(pane, frame: rect)
+                show(pane, frame: rect, isSplit: rects.count > 1)
             } else {
                 hide(pane)
             }
         }
     }
 
-    private func show(_ pane: PaneView, frame: CGRect) {
+    private func show(_ pane: PaneView, frame: CGRect, isSplit: Bool) {
         pane.isHidden = false
         pane.frame = frame
+        pane.dimOverlay.frame = frame
+        pane.dimmable = isSplit
         if let badge = pane.hostBadge {
             // The container is flipped, so the pane's top edge is minY.
             let margin = HostBadgeView.margin
@@ -306,6 +311,7 @@ final class Session {
     private func hide(_ pane: PaneView) {
         pane.isHidden = true
         pane.hostBadge?.isHidden = true
+        pane.dimmable = false
         pane.setOcclusion(visible: false)
     }
 }
