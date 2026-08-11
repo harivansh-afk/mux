@@ -115,6 +115,15 @@ final class PaneScrollView: NSView {
         ) { [weak self] _ in
             self?.scrollView.scrollerStyle = .overlay
         })
+
+        // Re-match the scroller thumb when the appearance flips.
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .muxThemeDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.synchronizeAppearance()
+        })
     }
 
     @available(*, unavailable)
@@ -163,8 +172,10 @@ final class PaneScrollView: NSView {
         let runtime = GhosttyRuntime.shared
         scrollView.hasVerticalScroller = runtime?.scrollbarEnabled ?? true
         // Match the scroller's appearance to the terminal background so
-        // the thumb stays visible on both light and dark themes.
-        let lightBackground = runtime?.terminalBackground.isLightColor ?? false
+        // the thumb stays visible on both light and dark themes. The
+        // appearance tracks the surface's conditional theme state, which
+        // the base config's `background` key does not carry.
+        let lightBackground = ThemeManager.shared.appearance == .light
         scrollView.appearance = NSAppearance(named: lightBackground ? .aqua : .darkAqua)
         updateTrackingAreas()
     }

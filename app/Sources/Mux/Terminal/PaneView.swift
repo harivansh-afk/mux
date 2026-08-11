@@ -218,6 +218,24 @@ final class PaneView: NSView {
                     : "decrease_font_size:\(-fontDelta)"
             )
         }
+
+        // Each surface carries its own light/dark conditional state
+        // (`theme = light:...,dark:...`): push the current scheme now and
+        // on every system appearance flip, like ghostty's own app does.
+        // The core re-derives the surface colors and reports the change
+        // to running programs (mode 2031), so TUIs repaint too.
+        applyColorScheme()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applyColorScheme),
+            name: .muxThemeDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func applyColorScheme() {
+        guard let surface else { return }
+        ghostty_surface_set_color_scheme(surface, ThemeManager.shared.colorScheme)
     }
 
     @available(*, unavailable)

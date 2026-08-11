@@ -146,23 +146,6 @@ final class GhosttyRuntime {
         return String(cString: v) != "never"
     }
 
-    /// The configured terminal background color (for chrome that must
-    /// match the surface, like the scroller appearance).
-    var terminalBackground: NSColor {
-        guard let config else { return .black }
-        var color = ghostty_config_color_s()
-        let key = "background"
-        guard ghostty_config_get(config, &color, key, UInt(key.utf8.count)) else {
-            return .black
-        }
-        return NSColor(
-            srgbRed: CGFloat(color.r) / 255,
-            green: CGFloat(color.g) / 255,
-            blue: CGFloat(color.b) / 255,
-            alpha: 1
-        )
-    }
-
     private func configBool(_ key: String, default def: Bool = false) -> Bool {
         guard let config else { return def }
         var v = def

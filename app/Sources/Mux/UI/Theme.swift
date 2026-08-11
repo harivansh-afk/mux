@@ -5,8 +5,10 @@ import GhosttyKit
 // greyscale accent, matching the user's terminal theme.
 //
 // The terminal contents theme themselves: we forward the effective
-// appearance to libghostty via ghostty_app_set_color_scheme, which selects
-// the light/dark variant of the user's ghostty theme and keeps OSC 10/11
+// appearance to libghostty app-wide (ghostty_app_set_color_scheme) and to
+// every surface (ghostty_surface_set_color_scheme, via .muxThemeDidChange
+// in PaneView), which selects the light/dark variant of the user's
+// `theme = light:...,dark:...` ghostty config live and keeps OSC 10/11
 // luminance detection correct for programs running inside the panes.
 
 enum Appearance {
@@ -149,6 +151,12 @@ final class ThemeManager {
         appearance == .dark ? .dark : .light
     }
 
+    /// The current appearance as a libghostty color scheme, for the
+    /// app-wide and per-surface conditional-theme state.
+    var colorScheme: ghostty_color_scheme_e {
+        appearance == .dark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+    }
+
     /// Observe the system appearance for the app's lifetime and apply the
     /// initial state. Call once, after GhosttyRuntime exists.
     func start() {
@@ -166,11 +174,11 @@ final class ThemeManager {
         appearance = next
 
         // Tell libghostty so `theme = light:...,dark:...` configs switch
-        // and OSC 10/11 background reports match the visible theme.
+        // and OSC 10/11 background reports match the visible theme. Each
+        // surface also carries its own conditional state; PaneView pushes
+        // the scheme per surface on .muxThemeDidChange below.
         if let app = GhosttyRuntime.shared?.app {
-            ghostty_app_set_color_scheme(
-                app, isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
-            )
+            ghostty_app_set_color_scheme(app, colorScheme)
         }
 
         NotificationCenter.default.post(name: .muxThemeDidChange, object: nil)
