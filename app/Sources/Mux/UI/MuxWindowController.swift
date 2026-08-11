@@ -89,7 +89,11 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// added right after its pane, so it draws above it; panes tile
     /// without overlap, so ordering against other panes never matters.
     func attach(_ pane: PaneView) {
-        container.addSubview(pane)
+        // Wrap the pane in its scroll view: the container owns the host,
+        // the host owns the pane, and Session lays out the host.
+        let host = PaneScrollView(pane: pane)
+        pane.scrollHost = host
+        container.addSubview(host)
         if let badge = pane.hostBadge {
             container.addSubview(badge)
         }
