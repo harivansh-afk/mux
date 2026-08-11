@@ -27,6 +27,15 @@ final class PaneView: NSView {
     /// view's layer), laid out by Session next to the pane's frame.
     let hostBadge: HostBadgeView?
 
+    /// The scroll view wrapping this pane (owned by the window's pane
+    /// container; created in attach). Session lays out the host, and the
+    /// host keeps the pane filling its visible rect.
+    weak var scrollHost: PaneScrollView?
+
+    /// Scrollback dimensions reported by the core via the SCROLLBAR
+    /// action: total rows, first visible row, viewport rows.
+    var scrollbar: ghostty_action_scrollbar_s?
+
     private(set) var surface: ghostty_surface_t?
     weak var controller: MuxWindowController?
 

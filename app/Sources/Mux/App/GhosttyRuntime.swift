@@ -134,6 +134,35 @@ final class GhosttyRuntime {
         configBool("auto-secure-input", default: true)
     }
 
+    /// ghostty's scrollbar config: `system` (default) shows the native
+    /// overlay scroller, `never` hides it.
+    var scrollbarEnabled: Bool {
+        guard let config else { return true }
+        var v: UnsafePointer<CChar>?
+        let key = "scrollbar"
+        guard ghostty_config_get(config, &v, key, UInt(key.utf8.count)), let v else {
+            return true
+        }
+        return String(cString: v) != "never"
+    }
+
+    /// The configured terminal background color (for chrome that must
+    /// match the surface, like the scroller appearance).
+    var terminalBackground: NSColor {
+        guard let config else { return .black }
+        var color = ghostty_config_color_s()
+        let key = "background"
+        guard ghostty_config_get(config, &color, key, UInt(key.utf8.count)) else {
+            return .black
+        }
+        return NSColor(
+            srgbRed: CGFloat(color.r) / 255,
+            green: CGFloat(color.g) / 255,
+            blue: CGFloat(color.b) / 255,
+            alpha: 1
+        )
+    }
+
     private func configBool(_ key: String, default def: Bool = false) -> Bool {
         guard let config else { return def }
         var v = def
@@ -479,6 +508,15 @@ final class GhosttyRuntime {
             }
             return true
 
+        case GHOSTTY_ACTION_SCROLLBAR:
+            guard let view else { return false }
+            let scrollbar = action.action.scrollbar
+            DispatchQueue.main.async {
+                view.scrollbar = scrollbar
+                view.scrollHost?.scrollbarDidUpdate()
+            }
+            return true
+
         // Silently accepted: informational, or intentionally divergent
         // (mux owns its window chrome, tiling and mode UI, so core-driven
         // chrome like COLOR_CHANGE and KEY_SEQUENCE stays with mux).
@@ -490,7 +528,6 @@ final class GhosttyRuntime {
              GHOSTTY_ACTION_MOUSE_OVER_LINK,
              GHOSTTY_ACTION_KEY_SEQUENCE,
              GHOSTTY_ACTION_COLOR_CHANGE,
-             GHOSTTY_ACTION_SCROLLBAR,
              GHOSTTY_ACTION_PROGRESS_REPORT,
              GHOSTTY_ACTION_SELECTION_CHANGED,
              GHOSTTY_ACTION_COMMAND_FINISHED,
