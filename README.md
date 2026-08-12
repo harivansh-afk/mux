@@ -1,153 +1,33 @@
 # mux
 
-A macOS-native terminal multiplexer on libghostty that speaks the ix shell protocol.
+A macOS-native terminal multiplexer
 
-Every pane is a GhosttyKit Metal surface. Any pane can transparently be a session on
-an ix VM, a plain Linux box running `muxd`, or the Mac itself. No web layer, no
-sidebar, no chrome: the UI is the panes.
+Every pane is a GhosttyKit Metal surface. 
 
-Read `docs/architecture.html` first - it is the design document and the map of what
-is forked from where (ix-console, ghostty's Swift SplitTree, a modal
-prefix-key interaction model).
+Any pane can transparently be running on a remote host over a custom RPC built on QUIC (rip ssh)
+
+This has two parts:
+1. The macos client ui
+2. muxd daemon
 
 ## Layout
 
 - `app/` - Mux.app (Swift/AppKit). Builds on macOS only.
 - `crates/mux-proto` - lane framing + shell control types, wire-compatible with ix.
-- `crates/muxd` - session daemon (ix-console fork): PTYs, headless ghostty-vt,
-  detach/reattach, live-fd self-upgrade.
+- `crates/muxd` - session daemon (ix-console fork): PTYs, headless ghostty-vt, detach/reattach, live-fd self-upgrade.
 - `crates/mux-attach` - stdio relay; the command every remote pane runs.
 - `crates/ghostty-vt` - headless VT wrapper + `render_reattach` (zig shim, from ix).
 - `scripts/fetch-ghosttykit.sh` - prebuilt GhosttyKit.xcframework + resources.
 
-## Building the crates
-
-`crates/ghostty-vt` compiles ghostty's terminal package from source, so the Rust
-workspace needs Zig 0.16.0 on `PATH` (or at `$HOME/tools/zig-0.16.0/`) and a
-ghostty checkout:
-
-    export GHOSTTY_SOURCE_DIR="$HOME/src/ghostty/src"
-    cargo test --workspace
-
-The checkout must match the generation of `app/GhosttyKit/GhosttyKit.xcframework`;
-CI pins it as `GHOSTTY_COMMIT` in `.forgejo/workflows/ci.yml`, which is also where
-the Linux build of `muxd` is proven.
-
-`just e2e` runs `scripts/test-muxd-e2e.py`: it drives `mux-attach` under a real
-pty, SIGKILLs the client, reattaches and checks the replay. It uses a throwaway
-`HOME` and a private socket, so it never touches a daemon you are living in.
-
-## Remote hosts
-
-A pane on another machine runs the same `muxd` there and reaches it over QUIC.
-The local daemon is the broker: panes always speak to the local unix socket, and
-the local daemon holds one QUIC connection per host.
-
-Enrollment is declarative: the Mac has one client identity token, and each host
-is told (in its own config) which client digests it accepts. No secret ever
-crosses machines.
-
-1. On the Mac, print the client digest (generating
-   `~/.local/state/mux/token` on first use):
-
-       muxd client-digest        # -> sha256:<64 hex>
-
-   The hosts window (`prefix h`) shows the same digest; `y` copies it.
-2. On the remote box, authorize that digest. On NixOS set
-   `services.muxd.authorizedTokenDigests` (see below); elsewhere run
-   `muxd --listen-quic <addr>:4433 --authorized-tokens <file>` where the file
-   holds one `sha256:<hex>` digest per line.
-3. On the Mac, name the host in `~/.config/mux/hosts.json`:
-
-       { "spark": { "addr": "100.64.0.7:4433" } }
-
-4. In the app, `prefix h` opens the hosts window: `local`, every alias, and
-   your ix VMs. Pick `spark` and the split lives there; kill the app and the
-   remote pty (and its scrollback) is still there on reattach.
-
-The first connection pins the host cert trust-on-first-use into
-`~/.local/state/mux/known_hosts`; a later cert change is refused until you
-clear that line. A per-host token at `~/.local/state/mux/tokens/<alias>`
-(0600) still overrides the client token when present - that is the old manual
-flow, kept for hosts you cannot configure declaratively.
-
-The hosts window (`prefix h`) is the one surface for all of this: every
-alias with its address and a live probe (`ok <rtt>ms`, or why not -
-unreachable, pin mismatch, token rejected), your ix VMs with their state,
-and the client digest (`y` copies it). Enter splits right into the
-selection; `H`/`J`/`K`/`L` pick the split direction, `c` opens a new
-session there instead. `n` creates a fresh ix VM (the pane shows the
-creation and becomes its shell), and `t` sets the default template it
-boots.
-
-Splits and new sessions inherit the focused pane's host, so work started on
-`spark` stays on `spark` until you pick a different target. Remote panes carry
-a chip in their top-right corner (a host-colored dot plus the alias); local
-panes stay unmarked. `prefix f` opens an overlay of every pane grouped by
-host - enter jumps to the selected pane, switching session if needed.
-
-`hosts.json` is deliberately hand-edited JSON, read fresh every time the picker
-or the hosts overlay opens - one line per host, and the fleet is small by
-design. ix VMs are never listed there: the app discovers them live via
-`ix ls`, and a pane on a VM is a local muxd pty running `ix shell <vm>` - so
-it survives the app like every other pane.
-
-## Deploy on NixOS
-
-To run `muxd` as a persistent systemd service on a NixOS box, add this repo as
-a flake input and import its module. The flake builds only `muxd` and
-`mux-attach` (never the Swift app), and compiles `crates/ghostty-vt`'s Zig half
-fully offline in the sandbox.
-
-    # flake.nix
-    {
-      inputs.mux.url = "git+https://git.harivan.sh/harivansh-afk/mux?ref=main";
-      # ... your other inputs, plus mux threaded into outputs ...
-    }
-
-    # a NixOS module / configuration.nix
-    { ... }: {
-      imports = [ mux.nixosModules.muxd ];
-      services.muxd = {
-        enable = true;
-        user = "alice";             # the human who attaches: panes are this user's shells
-        listen = "100.64.0.7:4433"; # a Tailscale (or otherwise private) IP:port
-        openFirewall = true;        # opens the UDP port (QUIC is UDP)
-        # `muxd client-digest` on the Mac prints this. Digests are not
-        # secrets: they can live in your flake and in the nix store.
-        authorizedTokenDigests = [ "sha256:..." ];
-      };
-    }
-
-muxd is a per-user daemon: every pane's shell runs as `user`, in their
-home, with their login shell - a system account would give every pane a
-`nologin` shell that exits immediately. On first start the daemon
-generates its cert under `~user/.local/state/muxd/` and logs the cert pin
-(`sha256:<base64>`) to the journal - `journalctl -u muxd` to read it.
-
-From there the Mac side is exactly the flow in [Remote hosts](#remote-hosts):
-name the host in `~/.config/mux/hosts.json` and connect - the client token
-is already authorized by the flake, and the first connection pins the cert
-trust-on-first-use into `~/.local/state/mux/known_hosts`.
-
 ## State model
 
-Layout and identity are client-owned (versioned JSON snapshots). 
-Terminal content is daemon-owned and survives client disconnect, reattach replays the exact screen.
-Restore layout and identity always; pixels come back from the daemon in form of raw byte stream
+The only thing the macos client owns is pane layout
 
-Terminology: a *session* is the client-side unit you switch between (prefix c /
-1..9), a group of split panes - pure layout state. The daemon addresses terminal
-content per-pane (a *pty*); it never learns client sessions exist, which is what
-lets one session span machines.
+Terminal content is daemon-owned and survives client disconnect for both local and remote
+Reattach replays the exact screen.
 
-## Milestones
+muxd server sends raw PTY byte streams over UDP that are interpreted by the macos client
 
-M1 local-only app (done); M2 local muxd - kill the app mid-htop, reopen, htop is
-still there (done; M2.5 daemon self-upgrade via SCM_RIGHTS pending); M3 remote
-muxd over QUIC streams (quinn - never ssh/mosh/plain TCP; the local muxd brokers
-one connection per host), declarative token enrollment, hosts overlay, and ix
-VMs as local muxd ptys running `ix shell` (done); M4 native ix client (their
-codec encoding + connect-token dial; same session protocol - blocked on
-golden-byte fixtures); M5 agent identity, workspace env, JSON CLI, predictive
-echo.
+There are panes and sessions (1 2 3 4 5)
+
+A host is a pane level abstraction
