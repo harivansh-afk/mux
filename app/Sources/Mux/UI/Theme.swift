@@ -17,7 +17,7 @@ enum Appearance {
 }
 
 /// The single knob for every piece of text outside the terminal panes:
-/// overlays, mode bar, hosts window, session indicator, host badge.
+/// overlays, mode bar, hosts window, session indicator.
 /// One face (Berkeley Mono, falling back to the system monospaced font
 /// if not installed), one size; all chrome metrics derive from it.
 enum Chrome {
@@ -32,9 +32,8 @@ enum Chrome {
 
     /// Row height for list-style overlays (help, panes, hosts).
     static let rowHeight: CGFloat = fontSize * 2
-    /// Height of the floating bars (mode bar, session indicator, host
-    /// badge): line height plus breathing room, so labels center
-    /// instead of clipping.
+    /// Height of the floating bars (mode bar, session indicator): line
+    /// height plus breathing room, so labels center instead of clipping.
     static let barHeight: CGFloat = fontSize + 12
 }
 

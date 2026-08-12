@@ -39,11 +39,6 @@ final class PaneView: NSView {
     /// daemon lost the shell) instead of silently starting fresh.
     private let expectExisting: Bool
 
-    /// The host chip shown at this pane's top-right corner; nil for local
-    /// panes. A sibling view in the pane container (libghostty owns this
-    /// view's layer), laid out by Session next to the pane's frame.
-    let hostBadge: HostBadgeView?
-
     /// The scroll view wrapping this pane (owned by the window's pane
     /// container; created in attach). Session lays out the host, and the
     /// host keeps the pane filling its visible rect.
@@ -149,7 +144,6 @@ final class PaneView: NSView {
         self.ptyCommand = ptyCommand
         self.fontDelta = fontDelta
         self.expectExisting = expectExisting
-        hostBadge = target.map { HostBadgeView(host: $0) }
         super.init(frame: initialFrame)
 
         wantsLayer = true
@@ -619,7 +613,6 @@ final class PaneView: NSView {
     private func setFocus(_ value: Bool) {
         guard focused != value else { return }
         focused = value
-        hostBadge?.setFocused(value)
 
         // If we lost our focus then remove the mouse event suppression so
         // our mouse release event leaving the surface can properly be sent

@@ -167,7 +167,6 @@ final class Session {
         panes.removeValue(forKey: pane.id)
         pane.removeFromSuperview()
         pane.scrollHost?.removeFromSuperview()
-        pane.hostBadge?.removeFromSuperview()
         if zoomedID == pane.id {
             zoomedID = nil
         }
@@ -191,7 +190,6 @@ final class Session {
         for (_, pane) in panes {
             pane.removeFromSuperview()
             pane.scrollHost?.removeFromSuperview()
-            pane.hostBadge?.removeFromSuperview()
         }
         panes.removeAll()
         tree = nil
@@ -323,25 +321,12 @@ final class Session {
         if host == nil {
             pane.frame = frame
         }
-        if let badge = pane.hostBadge {
-            // The container is flipped, so the pane's top edge is minY.
-            let margin = HostBadgeView.margin
-            let width = min(badge.desiredWidth, frame.width - margin * 2)
-            badge.frame = NSRect(
-                x: frame.maxX - margin - width,
-                y: frame.minY + margin,
-                width: width,
-                height: HostBadgeView.height
-            )
-            badge.isHidden = false
-        }
         pane.setOcclusion(visible: true)
     }
 
     private func hide(_ pane: PaneView) {
         pane.scrollHost?.isHidden = true
         pane.isHidden = true
-        pane.hostBadge?.isHidden = true
         pane.setOcclusion(visible: false)
     }
 }
