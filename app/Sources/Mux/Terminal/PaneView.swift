@@ -54,14 +54,12 @@ final class PaneView: NSView {
     var title: String = "mux"
     var pwd: String?
 
-    /// App-wide font zoom in points relative to the config default
-    /// (cmd+= / cmd+- / cmd+0). libghostty owns each surface's actual
-    /// size and exposes no getter, so mux tracks one shared delta and
-    /// drives every surface with the same relative binding actions:
-    /// all panes sit at config default + fontDelta. New panes replay
-    /// it at init; restore seeds it from the snapshot before any pane
-    /// exists; adjustFontZoom is the only runtime mutator.
-    static var fontDelta: Int = 0
+    /// Points added to the config font size via cmd+= / cmd+- (font
+    /// zoom). libghostty owns the actual value and exposes no getter,
+    /// so the pane intercepts the keys, drives ghostty through binding
+    /// actions, and tracks the delta itself - that is what the snapshot
+    /// persists and restore replays.
+    private(set) var fontDelta: Int = 0
 
     /// Internal (not private): managed by updateTrackingAreas in
     /// PaneView+Input.swift.
@@ -137,11 +135,13 @@ final class PaneView: NSView {
         cwdFrom: UUID? = nil,
         target: String? = nil,
         ptyCommand: [String]? = nil,
-        initialFrame: CGRect = .zero
+        initialFrame: CGRect = .zero,
+        fontDelta: Int = 0
     ) {
         self.id = id
         self.target = target
         self.ptyCommand = ptyCommand
+        self.fontDelta = fontDelta
         hostBadge = target.map { HostBadgeView(host: $0) }
         super.init(frame: initialFrame)
 
@@ -208,14 +208,14 @@ final class PaneView: NSView {
             )
         }
 
-        // Replay the app-wide font zoom: a fresh surface starts at the
-        // config default, so the relative action lands on the shared
-        // point size every other pane is at.
-        if Self.fontDelta != 0 {
+        // Replay a persisted font zoom: a fresh surface starts at the
+        // config default, so the relative action lands on the exact
+        // point size the pane had.
+        if fontDelta != 0 {
             bindingAction(
-                Self.fontDelta > 0
-                    ? "increase_font_size:\(Self.fontDelta)"
-                    : "decrease_font_size:\(-Self.fontDelta)"
+                fontDelta > 0
+                    ? "increase_font_size:\(fontDelta)"
+                    : "decrease_font_size:\(-fontDelta)"
             )
         }
 
@@ -394,27 +394,20 @@ final class PaneView: NSView {
 
     // MARK: - Font zoom
 
-    /// Adjust the app-wide font zoom by `step` points; 0 resets to the
-    /// config default. One zoom level for the whole app: every pane in
-    /// every window and session moves by the same increment together.
-    static func adjustFontZoom(_ step: Int) {
-        let action: String
+    /// Adjust the font zoom by `step` points; 0 resets to the config
+    /// default. Keeps `fontDelta` in lockstep with what ghostty applies.
+    func adjustFontSize(_ step: Int) {
+        guard surface != nil else { return }
         if step == 0 {
             fontDelta = 0
-            action = "reset_font_size"
+            bindingAction("reset_font_size")
         } else {
             fontDelta += step
-            action = step > 0 ? "increase_font_size:\(step)" : "decrease_font_size:\(-step)"
+            bindingAction(
+                step > 0 ? "increase_font_size:\(step)" : "decrease_font_size:\(-step)"
+            )
         }
-        guard let delegate = NSApp.delegate as? AppDelegate else { return }
-        for controller in delegate.controllers {
-            for session in controller.sessions {
-                for (_, pane) in session.panes {
-                    pane.bindingAction(action)
-                }
-            }
-        }
-        delegate.saveSnapshot()
+        controller?.saveState()
     }
 
     /// Internal (not private): the context menu handlers in

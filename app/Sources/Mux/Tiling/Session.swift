@@ -74,11 +74,12 @@ final class Session {
     private func makePane(
         id: UUID = UUID(), workingDirectory: String? = nil, cwdFrom: UUID? = nil,
         target: String? = nil, ptyCommand: [String]? = nil,
-        initialFrame: CGRect = .zero
+        initialFrame: CGRect = .zero, fontDelta: Int = 0
     ) -> PaneView {
         let pane = PaneView(
             id: id, runtime: runtime, workingDirectory: workingDirectory, cwdFrom: cwdFrom,
-            target: target, ptyCommand: ptyCommand, initialFrame: initialFrame
+            target: target, ptyCommand: ptyCommand, initialFrame: initialFrame,
+            fontDelta: fontDelta
         )
         pane.controller = controller
         panes[pane.id] = pane
@@ -105,7 +106,7 @@ final class Session {
             let frame = (zoomed == id) ? bounds : (rects[id] ?? bounds)
             _ = makePane(
                 id: id, workingDirectory: paneMeta[id]?.cwd, target: paneMeta[id]?.target,
-                initialFrame: frame
+                initialFrame: frame, fontDelta: paneMeta[id]?.fontDelta ?? 0
             )
         }
         tree = snapshotTree
@@ -136,10 +137,13 @@ final class Session {
         // (cwdFrom); pwd (OSC 7, when shell integration provides it) is an
         // explicit override.
         let sameHost = target.inheritsDirectory(from: source)
+        // Splits inherit the source pane's font zoom, matching ghostty's
+        // window-inherit-font-size default.
         let newPane = makePane(
             workingDirectory: sameHost ? source.pwd : nil,
             cwdFrom: sameHost ? source.id : nil,
-            target: target.resolved(from: source), ptyCommand: ptyCommand
+            target: target.resolved(from: source), ptyCommand: ptyCommand,
+            fontDelta: source.fontDelta
         )
         self.tree = tree.inserting(
             newPane.id, at: source.id, direction: direction, newFirst: before

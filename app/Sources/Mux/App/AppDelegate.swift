@@ -99,7 +99,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let tree = s.tree else { return nil }
                 var paneMeta: [UUID: PaneSnapshot] = [:]
                 for (id, pane) in s.panes {
-                    paneMeta[id] = PaneSnapshot(cwd: pane.pwd, target: pane.target)
+                    paneMeta[id] = PaneSnapshot(
+                        cwd: pane.pwd, target: pane.target,
+                        fontDelta: pane.fontDelta == 0 ? nil : pane.fontDelta
+                    )
                 }
                 return SessionSnapshot(
                     tree: tree, panes: paneMeta,
@@ -114,21 +117,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 activeSession: c.activeSessionIndex
             )
         }
-        SnapshotStore.save(AppSnapshot(
-            windows: windows,
-            fontDelta: PaneView.fontDelta == 0 ? nil : PaneView.fontDelta
-        ))
+        SnapshotStore.save(AppSnapshot(windows: windows))
     }
 
     private func restore(_ snapshot: AppSnapshot) {
         guard let runtime else { return }
-        // Seed the app-wide font zoom before any pane exists, so every
-        // restored surface replays it at init. Older files carried the
-        // zoom per pane: seed from the first non-zero value.
-        PaneView.fontDelta = snapshot.fontDelta
-            ?? snapshot.windows.flatMap(\.sessions)
-                .flatMap { $0.panes.values.compactMap(\.fontDelta) }
-                .first { $0 != 0 } ?? 0
         for w in snapshot.windows {
             let controller = MuxWindowController(runtime: runtime)
             controllers.append(controller)
