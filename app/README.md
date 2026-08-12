@@ -48,13 +48,6 @@ its cwd only when the targets match (a path on one machine means nothing on
 another). `prefix t` opens the target picker: `local` plus the aliases, j/k
 to choose, enter to split right into the chosen host.
 
-## Pane command per milestone
-
-- M1: user's shell at the saved cwd (plain local exec)
-- M2: `mux-attach local:<session>` (local muxd, unix socket)
-- M3: `mux-attach <host>:<session>` and `ix shell <vm>` for ix VMs
-- M4: `mux-attach ix:<vm>` (native QUIC + connect token)
-
 ## GhosttyKit
 
 `GhosttyKit/` holds module.modulemap + the fetched xcframework + resources
