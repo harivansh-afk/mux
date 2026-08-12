@@ -135,8 +135,9 @@ async fn main() -> Result<()> {
     // the manager and runs beside the socket, never instead of it. When
     // it was asked for, its death is the daemon's death: a muxd that
     // silently serves only its unix socket looks healthy to a supervisor
-    // while every remote pane dials a closed port. Exiting instead lets
-    // Restart=on-failure retry until the bind succeeds (in practice the
+    // while every remote pane dials a closed port. Neither arm below can
+    // answer Ok, so this exits nonzero however the listeners end, and
+    // Restart=on-failure retries until the bind succeeds (in practice the
     // failure is at startup - a stale port holder - before any pty
     // exists).
     match args.listen_quic {
