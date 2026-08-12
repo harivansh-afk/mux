@@ -14,6 +14,15 @@ final class PaneContainerView: NSView {
     }
 }
 
+/// The slab every pane lives on. The canvas slides this one view, so
+/// the push is a single animated property instead of many pane frames
+/// racing each other.
+final class WorkspaceView: NSView {
+    override var isFlipped: Bool {
+        true
+    }
+}
+
 /// One window = window chrome (borderless NSWindow, mode bar, keybinds
 /// overlay, target picker, theming) plus an ordered list of sessions.
 /// Tiling state and pane lifecycle live in Session; the controller routes
@@ -28,14 +37,23 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// Internal (not private): the overlay chrome is managed by
     /// MuxWindowController+Overlays.swift.
     let container = PaneContainerView()
+    let workspace = WorkspaceView()
     let modeBar = ModeBarView()
     let sessionIndicator = ModeBarView()
     let helpOverlay = HelpOverlayView()
-    let panesOverlay = PanesOverlayView()
+    let canvasOverlay = CanvasOverlayView()
     let hostsWindow = HostsWindowView()
 
     private(set) var sessions: [Session] = []
     private(set) var activeSessionIndex = 0
+
+    /// Canvas panel state (managed by MuxWindowController+Overlays.swift):
+    /// while open, layoutPanes parks the workspace slab left by the
+    /// panel's width - translation only, sizes untouched, so no pty ever
+    /// resizes for the canvas. `canvasClosing` keeps the slide-out spring
+    /// from being torn down by the mode change that follows a commit.
+    var canvasOpen = false
+    var canvasClosing = false
 
     var activeSession: Session? {
         sessions.indices.contains(activeSessionIndex) ? sessions[activeSessionIndex] : nil
@@ -62,6 +80,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         container.controller = self
         container.wantsLayer = true
         window.contentView = container
+        workspace.wantsLayer = true
+        container.addSubview(workspace)
         container.addSubview(modeBar)
         modeBar.isHidden = true
         container.addSubview(sessionIndicator)
@@ -87,16 +107,16 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     /// Session hook: host a new pane view.
     func attach(_ pane: PaneView) {
-        // Wrap the pane in its scroll view: the container owns the host,
-        // the host owns the pane, and Session lays out the host.
+        // Wrap the pane in its scroll view: the workspace slab owns the
+        // host, the host owns the pane, and Session lays out the host.
         let host = PaneScrollView(pane: pane)
         pane.scrollHost = host
-        container.addSubview(host)
+        workspace.addSubview(host)
     }
 
     /// Session hook: the rect sessions lay their trees out in.
     var paneBounds: CGRect {
-        container.bounds
+        workspace.bounds
     }
 
     /// Session hook: last pane in the session closed. The session closes;
@@ -310,15 +330,28 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         if helpOverlay.superview != nil {
             positionHelpOverlay()
         }
-        if panesOverlay.superview != nil {
-            positionPanesOverlay()
+        if canvasOverlay.superview != nil {
+            positionCanvasOverlay()
         }
         if hostsWindow.superview != nil {
             positionHostsWindow()
         }
 
+        // The canvas pushes the whole workspace slab left by the panel's
+        // width: one view, one motion (the spring lives in slideCanvas;
+        // a plain layout pass just parks it). Translation only - sizes
+        // never change, so the ptys see nothing.
+        workspace.frame = NSRect(
+            x: canvasOpen ? -canvasPanelWidth : 0, y: 0,
+            width: bounds.width, height: bounds.height
+        )
         for (index, session) in sessions.enumerated() {
-            session.applyLayout(in: bounds, visible: index == activeSessionIndex)
+            session.applyLayout(in: workspace.bounds, visible: index == activeSessionIndex)
+        }
+        // applyLayout re-occludes hidden panes; while the canvas is up
+        // they must keep rendering for their thumbnails.
+        if canvasOverlay.superview != nil {
+            applyCanvasOcclusion()
         }
     }
 
@@ -345,14 +378,10 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     }
 
     /// Occluded surfaces stop rendering (ghostty renderer throttle).
-    /// A pane draws only if the window is visible AND its session active.
+    /// A pane draws only if the window is visible AND its session active -
+    /// or the canvas overlay is up, whose thumbnails mirror every pane.
     func windowDidChangeOcclusionState(_: Notification) {
-        let windowVisible = window.occlusionState.contains(.visible)
-        for session in sessions {
-            for (_, pane) in session.panes {
-                pane.setOcclusion(visible: windowVisible && !pane.isHidden)
-            }
-        }
+        applyCanvasOcclusion()
     }
 
     func windowWillClose(_: Notification) {

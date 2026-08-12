@@ -4,7 +4,9 @@ import GhosttyKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var runtime: GhosttyRuntime?
     private(set) var controllers: [MuxWindowController] = []
-    private let prefixEngine = PrefixEngine()
+    /// Internal (not private): the canvas overlay's click-to-jump ends
+    /// the mode through the engine, exactly like enter does.
+    let prefixEngine = PrefixEngine()
 
     var keyController: MuxWindowController? {
         controllers.first { $0.window.isKeyWindow } ?? controllers.first
