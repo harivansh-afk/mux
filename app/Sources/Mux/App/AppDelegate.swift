@@ -72,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The pane target an adopted pty should carry: the host it was
     /// listed from, or `ix:<vm>` reconstructed from an `ix shell` command
-    /// so the pane keeps its badge and self-healing attach.
+    /// so the pane keeps its self-healing attach.
     private static func recoveredTarget(host: String?, command: [String]) -> String? {
         if let host { return host }
         if command.count == 3, command[1] == "shell",

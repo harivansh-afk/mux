@@ -85,18 +85,13 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         sessions.first { $0.contains(pane) }
     }
 
-    /// Session hook: host a new pane view. The host chip is a sibling
-    /// added right after its pane, so it draws above it; panes tile
-    /// without overlap, so ordering against other panes never matters.
+    /// Session hook: host a new pane view.
     func attach(_ pane: PaneView) {
         // Wrap the pane in its scroll view: the container owns the host,
         // the host owns the pane, and Session lays out the host.
         let host = PaneScrollView(pane: pane)
         pane.scrollHost = host
         container.addSubview(host)
-        if let badge = pane.hostBadge {
-            container.addSubview(badge)
-        }
     }
 
     /// Session hook: the rect sessions lay their trees out in.
