@@ -11,6 +11,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_: Notification) {
+        // Before the snapshot is loaded: an unclean previous exit freezes
+        // the pre-crash state file for post-mortem and recovery.
+        _ = CrashMarker.checkAndArm()
+
         buildMenu()
 
         guard let runtime = GhosttyRuntime() else {
@@ -54,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // cannot clobber this snapshot with an empty one.
         saveSnapshot()
         isTerminating = true
+        CrashMarker.disarm()
         return .terminateNow
     }
 
@@ -62,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // flag); covers termination paths that skip shouldTerminate.
         saveSnapshot()
         isTerminating = true
+        CrashMarker.disarm()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
@@ -90,10 +96,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Snapshot
 
+    private var pendingSave: DispatchWorkItem?
+
+    /// Coalesces high-frequency triggers (window drags, focus hops, cwd
+    /// updates) into one write shortly after they settle. Structural
+    /// mutations keep calling saveSnapshot directly.
+    func saveSnapshotSoon() {
+        guard !isTerminating else { return }
+        pendingSave?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.saveSnapshot() }
+        pendingSave = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+
     func saveSnapshot() {
         // Termination teardown must not overwrite the snapshot taken at
         // the start of the quit; that file is the restore source.
         guard !isTerminating else { return }
+        // A direct save supersedes any pending debounced one.
+        pendingSave?.cancel()
+        pendingSave = nil
         let windows: [WindowSnapshot] = controllers.compactMap { c in
             let sessions: [SessionSnapshot] = c.sessions.compactMap { s in
                 guard let tree = s.tree else { return nil }

@@ -70,11 +70,26 @@ enum SnapshotStore {
         return dir.appendingPathComponent("state.json")
     }
 
+    /// One-generation-ago copy, rotated on every save. Recovery source
+    /// when the main file is missing or undecodable.
+    private static var backupURL: URL { url.appendingPathExtension("bak") }
+
+    /// Where an undecodable file is moved aside. Evidence is never
+    /// deleted or overwritten by the fresh session's first save.
+    private static var quarantineURL: URL { url.appendingPathExtension("corrupt") }
+
     static func save(_ snapshot: AppSnapshot) {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(snapshot)
+            // Rotate the current file to .bak first: the previous state
+            // survives a bad write or a bad snapshot by one generation.
+            let fm = FileManager.default
+            if fm.fileExists(atPath: url.path) {
+                try? fm.removeItem(at: backupURL)
+                try? fm.moveItem(at: url, to: backupURL)
+            }
             // Atomic write: never leave a torn state file.
             try data.write(to: url, options: .atomic)
         } catch {
@@ -83,20 +98,66 @@ enum SnapshotStore {
     }
 
     static func load() -> AppSnapshot? {
+        if let snapshot = load(from: url, quarantineOnFailure: true) {
+            return snapshot
+        }
+        // Main file missing or undecodable: fall back one generation.
+        return load(from: backupURL, quarantineOnFailure: false)
+    }
+
+    private static func load(from source: URL, quarantineOnFailure: Bool) -> AppSnapshot? {
         struct Versioned: Decodable { var version: Int }
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = try? Data(contentsOf: source) else { return nil }
         let decoder = JSONDecoder()
-        guard let versioned = try? decoder.decode(Versioned.self, from: data) else {
-            NSLog("snapshot decode failed; starting fresh")
-            return nil
+        let snapshot: AppSnapshot?
+        if let versioned = try? decoder.decode(Versioned.self, from: data) {
+            switch versioned.version {
+            case AppSnapshot.currentVersion:
+                snapshot = try? decoder.decode(AppSnapshot.self, from: data)
+            case 1:
+                snapshot = (try? decoder.decode(AppSnapshotV1.self, from: data))?.migrated
+            default:
+                snapshot = nil
+            }
+        } else {
+            snapshot = nil
         }
-        switch versioned.version {
-        case AppSnapshot.currentVersion:
-            return try? decoder.decode(AppSnapshot.self, from: data)
-        case 1:
-            return (try? decoder.decode(AppSnapshotV1.self, from: data))?.migrated
-        default:
-            return nil
+        if snapshot == nil, quarantineOnFailure {
+            let fm = FileManager.default
+            try? fm.removeItem(at: quarantineURL)
+            try? fm.moveItem(at: source, to: quarantineURL)
+            NSLog("snapshot undecodable; moved aside to \(quarantineURL.lastPathComponent)")
         }
+        return snapshot
+    }
+}
+
+/// Detects a previous run that never reached clean termination and, when
+/// it finds one, freezes the exact pre-crash snapshot before anything
+/// else can rotate or overwrite it.
+enum CrashMarker {
+    private static var markerURL: URL {
+        SnapshotStore.url.deletingLastPathComponent().appendingPathComponent("running")
+    }
+
+    /// Call once at launch, before the snapshot is loaded. Returns true
+    /// if the previous run ended uncleanly; arms the marker either way.
+    static func checkAndArm() -> Bool {
+        let fm = FileManager.default
+        let unclean = fm.fileExists(atPath: markerURL.path)
+        if unclean {
+            // This copy is never touched by ordinary saves, only
+            // replaced by the next unclean launch.
+            let precrash = SnapshotStore.url.appendingPathExtension("pre-crash")
+            try? fm.removeItem(at: precrash)
+            try? fm.copyItem(at: SnapshotStore.url, to: precrash)
+            NSLog("previous run ended uncleanly; snapshot preserved at \(precrash.lastPathComponent)")
+        }
+        try? Data("\(ProcessInfo.processInfo.processIdentifier)\n".utf8).write(to: markerURL)
+        return unclean
+    }
+
+    static func disarm() {
+        try? FileManager.default.removeItem(at: markerURL)
     }
 }
