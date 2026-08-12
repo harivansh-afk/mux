@@ -19,8 +19,8 @@ pub const MAX_REQUEST_BYTES: u32 = 1024 * 1024;
 /// The daemon replies with a readable error on mismatch instead of
 /// dropping the connection, so skew between a running daemon and a newer
 /// client is diagnosable (v1: M2; v2: token+target; v3: this field;
-/// v4: `cwd_from`).
-pub const PROTOCOL_VERSION: u32 = 4;
+/// v4: `cwd_from`; v5: `PtyInfo::cwd`).
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// ALPN for muxd's QUIC listener (M3). Each bidirectional stream carries
 /// exactly one protocol run: the same handshake + lane frames as a unix
@@ -83,6 +83,9 @@ pub struct PtyInfo {
     pub command: Vec<String>,
     pub attached: bool,
     pub exited: bool,
+    /// Working directory of the pty's foreground process, when readable.
+    /// What a client needs to adopt a pty it has no record of.
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -178,7 +181,7 @@ mod tests {
         assert_eq!(
             encode(&req),
             [
-                0x04, // version = PROTOCOL_VERSION (varint)
+                0x05, // version = PROTOCOL_VERSION (varint)
                 0x78, // cols = 120 (varint)
                 0x28, // rows = 40
                 0x01, 0x0d, // term: Some, len 13

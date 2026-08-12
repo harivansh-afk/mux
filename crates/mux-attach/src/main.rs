@@ -8,9 +8,14 @@
 //!
 //! Usage:
 //!   mux-attach local:<name> [--cwd DIR] [-- cmd args...]   attach or create
-//!   mux-attach --list                                       list ptys
+//!   mux-attach --list [alias] [--json]                      list ptys
 //!   mux-attach --kill local:<name>                          kill a pty
 //!   mux-attach probe <alias>                                check a host
+//!
+//! `--expect-existing` marks an attach that restores a known pane: if the
+//! daemon had to create the pty, a notice is written into the terminal so
+//! a lost shell never masquerades as a healthy restore. Reconnects after
+//! a daemon EOF always print the notice when the pty came back `created`.
 //!
 //! `probe` is the health check Mux.app runs per host. It relays a `List`
 //! through the local daemon's broker, so one call exercises dial, pin,
@@ -194,12 +199,16 @@ fn main() -> Result<()> {
     let mut cwd_from: Option<String> = None;
     let mut command: Vec<String> = vec![];
     let mut list = false;
+    let mut json = false;
+    let mut expect_existing = false;
     let mut kill: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--list" => list = true,
+            "--json" => json = true,
+            "--expect-existing" => expect_existing = true,
             "--kill" => {
                 i += 1;
                 kill = Some(args.get(i).context("--kill needs a target")?.clone());
@@ -222,11 +231,13 @@ fn main() -> Result<()> {
     }
 
     if list {
-        return run_control(None, OpenMode::List);
+        // The positional argument is a bare host alias here ("spark"),
+        // not a [host]:<name> attach target; absent means local.
+        return run_control(target, OpenMode::List, json);
     }
     if let Some(kill_target) = kill {
         let (kill_host, name) = parse_target(&kill_target)?;
-        return run_control(kill_host, OpenMode::Kill { name });
+        return run_control(kill_host, OpenMode::Kill { name }, json);
     }
 
     let (host, name) = parse_target(&target.context("usage: mux-attach [host|local]:<name>")?)?;
@@ -236,11 +247,24 @@ fn main() -> Result<()> {
         cwd,
         cwd_from,
         command,
+        expect_existing,
     })
 }
 
+/// One line of `--list --json` output per pty, shaped for Mux.app's
+/// startup reconciliation.
+#[derive(serde::Serialize)]
+struct PtyLine<'a> {
+    name: &'a str,
+    command: &'a [String],
+    attached: bool,
+    exited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cwd: Option<&'a str>,
+}
+
 /// One-shot request/reply (list, kill).
-fn run_control(target: Option<String>, mode: OpenMode) -> Result<()> {
+fn run_control(target: Option<String>, mode: OpenMode, json: bool) -> Result<()> {
     let mut stream = connect()?;
     let (cols, rows) = winsize();
     write_request(
@@ -262,17 +286,32 @@ fn run_control(target: Option<String>, mode: OpenMode) -> Result<()> {
     match reply {
         Ok(Opened::Listed { ptys }) => {
             for p in ptys {
-                println!(
-                    "{}\t{}\t{}{}",
-                    p.name,
-                    if p.command.is_empty() {
-                        "<shell>".to_string()
-                    } else {
-                        p.command.join(" ")
-                    },
-                    if p.attached { "attached" } else { "detached" },
-                    if p.exited { " exited" } else { "" },
-                );
+                if json {
+                    let line = PtyLine {
+                        name: &p.name,
+                        command: &p.command,
+                        attached: p.attached,
+                        exited: p.exited,
+                        cwd: p.cwd.as_deref(),
+                    };
+                    // Plain data: encoding cannot fail.
+                    println!("{}", serde_json::to_string(&line).unwrap_or_default());
+                } else {
+                    println!(
+                        "{}\t{}\t{}{}{}",
+                        p.name,
+                        if p.command.is_empty() {
+                            "<shell>".to_string()
+                        } else {
+                            p.command.join(" ")
+                        },
+                        if p.attached { "attached" } else { "detached" },
+                        if p.exited { " exited" } else { "" },
+                        p.cwd.as_deref()
+                            .map(|c| format!("\t{c}"))
+                            .unwrap_or_default(),
+                    );
+                }
             }
         }
         Ok(Opened::Killed { existed }) => {
@@ -441,15 +480,21 @@ struct Attach {
     /// (the split's source pane), resolved daemon-side at create time.
     cwd_from: Option<String>,
     command: Vec<String>,
+    /// This attach restores a pane the client believes exists: a
+    /// `created` reply means the daemon lost it, which the user must see.
+    expect_existing: bool,
 }
 
 fn run_attach(attach: &Attach) -> Result<()> {
     // The first connection is the user's command: its errors print
     // normally, with no raw mode and no retry.
     let size = winsize();
-    let mut stream = open_session(attach, connect()?, size)?;
+    let (mut stream, created) = open_session(attach, connect()?, size)?;
 
     let _raw = RawModeGuard::enable();
+    if created && attach.expect_existing {
+        print_recreated_notice();
+    }
     let uplink = Uplink::new();
     let stdin_closed = Arc::new(AtomicBool::new(false));
     // Seed the winsize poll with the size the handshake carried, not a
@@ -472,8 +517,19 @@ fn run_attach(attach: &Attach) -> Result<()> {
     }
 }
 
-/// Handshake on an open socket and check the reply.
-fn open_session(attach: &Attach, stream: UnixStream, size: (u16, u16)) -> Result<UnixStream> {
+/// A recreated pty means the previous shell and its screen are gone.
+/// Written straight into the pane's terminal, so recovery into a blank
+/// fresh shell is never silent.
+fn print_recreated_notice() {
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(b"\r\n[mux] the daemon lost this pane's shell; this is a fresh one\r\n");
+    let _ = stdout.flush();
+}
+
+/// Handshake on an open socket and check the reply. The flag is the
+/// reply's `created`: true when the daemon had no pty by this name and
+/// made one, rather than attaching to a survivor.
+fn open_session(attach: &Attach, stream: UnixStream, size: (u16, u16)) -> Result<(UnixStream, bool)> {
     let (cols, rows) = size;
     let mut writer = stream.try_clone()?;
     write_request(
@@ -504,10 +560,11 @@ fn open_session(attach: &Attach, stream: UnixStream, size: (u16, u16)) -> Result
         bail!("unexpected first lane {}", frame.lane);
     }
     let reply: OpenReply = peer::decode(&frame.payload)?;
-    if let Err(e) = reply {
-        bail!("daemon error: {e}");
+    match reply {
+        Ok(Opened::Attached { created, .. }) => Ok((reader, created)),
+        Ok(other) => bail!("unexpected reply: {other:?}"),
+        Err(e) => bail!("daemon error: {e}"),
     }
-    Ok(reader)
 }
 
 /// Wait out a daemon that went away and reattach by name.
@@ -531,7 +588,12 @@ fn reconnect(attach: &Attach, stdin_closed: &AtomicBool) -> Result<UnixStream> {
             connect().ok()
         };
         if let Some(socket) = socket {
-            if let Ok(stream) = open_session(attach, socket, winsize()) {
+            if let Ok((stream, created)) = open_session(attach, socket, winsize()) {
+                // A reconnect always expected the pty to survive: the
+                // daemon creating one means the shell was lost.
+                if created {
+                    print_recreated_notice();
+                }
                 return Ok(stream);
             }
         }

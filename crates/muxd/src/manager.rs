@@ -77,6 +77,7 @@ impl PtySession {
             command: self.command.clone(),
             attached: self.client.lock().is_some(),
             exited: self.exited.load(Ordering::SeqCst),
+            cwd: self.current_cwd(),
         }
     }
 }
