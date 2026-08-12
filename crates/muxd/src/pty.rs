@@ -24,6 +24,33 @@ pub struct Spawn<'a> {
     pub rows: u16,
 }
 
+/// execvp's PATH search, done before fork: the child execs with execve
+/// to stay async-signal-safe, so any lookup must happen here. A name
+/// that resolves nowhere is returned as-is (execve fails, child exits
+/// 127).
+fn resolve_in_path(path: CString) -> CString {
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::fs::PermissionsExt;
+    let name = path.to_string_lossy();
+    if name.contains('/') {
+        return path;
+    }
+    if let Some(dirs) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&dirs) {
+            let candidate = dir.join(&*name);
+            let executable = candidate
+                .metadata()
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
+            if executable {
+                if let Ok(resolved) = CString::new(candidate.into_os_string().into_vec()) {
+                    return resolved;
+                }
+            }
+        }
+    }
+    path
+}
+
 fn winsize(cols: u16, rows: u16) -> Winsize {
     Winsize {
         ws_row: rows.max(1),
@@ -130,6 +157,35 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
     // COLORTERM, and the child inherits it otherwise).
     let colorterm = CString::new("COLORTERM=truecolor")?;
 
+    // Everything below is built BEFORE fork. The daemon runs a
+    // multithreaded runtime, so the child may only make
+    // async-signal-safe calls: no allocation (another thread may hold
+    // the malloc lock at fork time), which rules out putenv, execvp's
+    // PATH search, and building pointer tables after the fork.
+    let exec_path = resolve_in_path(exec_path);
+    let mut env: Vec<CString> = std::env::vars_os()
+        .filter(|(k, _)| !matches!(k.to_str(), Some("TERM" | "COLORTERM")))
+        .filter_map(|(k, v)| {
+            use std::os::unix::ffi::OsStringExt;
+            let mut bytes = k.into_vec();
+            bytes.push(b'=');
+            bytes.extend(v.into_vec());
+            CString::new(bytes).ok()
+        })
+        .collect();
+    env.push(term);
+    env.push(colorterm);
+    let envp: Vec<*const libc::c_char> = env
+        .iter()
+        .map(|e| e.as_ptr())
+        .chain([std::ptr::null()])
+        .collect();
+    let argv_ptrs: Vec<*const libc::c_char> = exec_argv
+        .iter()
+        .map(|a| a.as_ptr())
+        .chain([std::ptr::null()])
+        .collect();
+
     match unsafe { nix::unistd::fork() }.context("fork")? {
         ForkResult::Parent { child } => {
             drop(pty.slave);
@@ -161,14 +217,7 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
                     // Best-effort; a stale cwd should not kill the shell.
                     let _ = libc::chdir(dir.as_ptr());
                 }
-                libc::putenv(term.as_ptr().cast_mut());
-                libc::putenv(colorterm.as_ptr().cast_mut());
-                let argv_ptrs: Vec<*const libc::c_char> = exec_argv
-                    .iter()
-                    .map(|a| a.as_ptr())
-                    .chain([std::ptr::null()])
-                    .collect();
-                libc::execvp(exec_path.as_ptr(), argv_ptrs.as_ptr());
+                libc::execve(exec_path.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
                 libc::_exit(127);
             }
         }

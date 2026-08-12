@@ -28,6 +28,10 @@ use quinn::{Endpoint, Incoming, RecvStream, SendStream, ServerConfig};
 /// match): 30 seconds of silence from a client that keep-alives every
 /// few seconds means it is genuinely gone, and its ptys just detach.
 const MAX_IDLE: Duration = Duration::from_secs(30);
+/// Concurrent bidi streams per connection: one per pane connection, so
+/// far more than any real client opens, and small enough to cap what a
+/// pre-auth peer can make the daemon buffer.
+const MAX_STREAMS: u32 = 64;
 
 use crate::manager::Manager;
 use crate::server::{self, Policy};
@@ -74,6 +78,11 @@ pub fn endpoint(addr: SocketAddr, identity: &Identity) -> Result<Endpoint> {
     let mut config = ServerConfig::with_crypto(Arc::new(crypto));
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(Some(MAX_IDLE.try_into().context("idle timeout")?));
+    // The handshake is certificate-less (admission is the bearer token,
+    // checked per stream after up to MAX_REQUEST_BYTES are buffered):
+    // bound how much an unadmitted peer can hold open at once.
+    transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(MAX_STREAMS));
+    transport.max_concurrent_uni_streams(quinn::VarInt::from_u32(0));
     config.transport_config(Arc::new(transport));
     Endpoint::server(config, addr).with_context(|| format!("bind {addr}"))
 }

@@ -130,10 +130,15 @@ impl Manager {
         cols: u16,
         rows: u16,
     ) -> Result<(Arc<PtySession>, bool)> {
-        if let Some(existing) = self.get(name) {
-            return Ok((existing, false));
+        // One guard across lookup, capacity check, and insert: two
+        // racing opens for the same name must not each spawn a shell
+        // (the loser would be evicted from the map and leak a process
+        // that kill can no longer reach), nor push the map past the cap.
+        let mut ptys = self.ptys.lock();
+        if let Some(existing) = ptys.get(name) {
+            return Ok((existing.clone(), false));
         }
-        if self.ptys.lock().len() >= MAX_PTYS {
+        if ptys.len() >= MAX_PTYS {
             bail!("pty limit reached ({MAX_PTYS})");
         }
 
@@ -157,7 +162,8 @@ impl Manager {
             exited: AtomicBool::new(false),
             exit_code: AtomicI32::new(0),
         });
-        self.ptys.lock().insert(name.to_string(), session.clone());
+        ptys.insert(name.to_string(), session.clone());
+        drop(ptys);
 
         tokio::spawn(read_loop(self.clone(), session.clone()));
 
@@ -296,12 +302,7 @@ async fn reap(manager: Manager, session: Arc<PtySession>) {
     let code = if session.adopted {
         wait_adopted(pid).await
     } else {
-        let status = tokio::task::spawn_blocking(move || nix::sys::wait::waitpid(pid, None)).await;
-        match status {
-            Ok(Ok(nix::sys::wait::WaitStatus::Exited(_, code))) => code,
-            Ok(Ok(nix::sys::wait::WaitStatus::Signaled(_, signal, _))) => 128 + signal as i32,
-            _ => 1,
-        }
+        wait_child(pid).await
     };
     session.exit_code.store(code, Ordering::SeqCst);
     session.exited.store(true, Ordering::SeqCst);
@@ -315,6 +316,37 @@ async fn reap(manager: Manager, session: Arc<PtySession>) {
     }
     manager.remove_if_same(&session);
     tracing::info!(name = %session.name, code, "pty exited");
+}
+
+/// Reap our own child without ever parking a thread indefinitely.
+/// Master EOF proves the slave side closed, not that the child exited:
+/// a bare blocking waitpid here could pin a blocking-pool thread
+/// forever per stuck child. Poll with WNOHANG for the same grace as
+/// adopted ptys; a child still alive after that has abandoned its
+/// terminal and gets its group `SIGKILL`ed, after which one blocking
+/// reap is guaranteed to return promptly.
+async fn wait_child(pid: nix::unistd::Pid) -> i32 {
+    use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+    let deadline = std::time::Instant::now() + ADOPTED_EXIT_GRACE;
+    loop {
+        match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::Exited(_, code)) => return code,
+            Ok(WaitStatus::Signaled(_, signal, _)) => return 128 + signal as i32,
+            Err(_) => return 1,
+            Ok(_) => {}
+        }
+        if std::time::Instant::now() >= deadline {
+            // setsid at spawn makes the child its own group leader.
+            let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
+            let status = tokio::task::spawn_blocking(move || waitpid(pid, None)).await;
+            return match status {
+                Ok(Ok(WaitStatus::Exited(_, code))) => code,
+                Ok(Ok(WaitStatus::Signaled(_, signal, _))) => 128 + signal as i32,
+                _ => 1,
+            };
+        }
+        tokio::time::sleep(ADOPTED_EXIT_POLL).await;
+    }
 }
 
 /// An adopted child (migrate.rs) belongs to a daemon that is gone, so

@@ -28,7 +28,12 @@
 use std::path::PathBuf;
 
 fn home() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").expect("HOME is not set"))
+    // Panicking here is worse than degrading: this is called lazily from
+    // request handlers (broker init), where a panic poisons a OnceLock
+    // and turns every later request into a repeat panic. home_dir reads
+    // HOME and falls back to the passwd entry.
+    #[allow(deprecated)] // un-deprecated in newer std; harmless here
+    std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
 /// Client host registry: `~/.config/mux/hosts.json`.

@@ -441,7 +441,10 @@ impl Tofu {
     }
 
     fn failure(&self) -> Option<String> {
-        self.failure.lock().unwrap().clone()
+        self.failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -466,7 +469,10 @@ impl ServerCertVerifier for Tofu {
             Ok(Pin::Matched) => Ok(ServerCertVerified::assertion()),
             Err(e) => {
                 let message = format!("{e:#}");
-                *self.failure.lock().unwrap() = Some(message.clone());
+                *self
+                    .failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message.clone());
                 Err(rustls::Error::General(message))
             }
         }
