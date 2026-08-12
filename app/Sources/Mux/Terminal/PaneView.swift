@@ -174,6 +174,12 @@ final class PaneView: NSView {
         // daemon relays the attach), and an `ix:<vm>` pane is a local pty
         // whose command is `ix shell` instead of the user's shell.
         let command = defaultCommand(cwd: workingDirectory, cwdFrom: cwdFrom)
+        NSLog(
+            "mux pane spawn id=%@ attachBinary=%@ command=%@",
+            id.uuidString,
+            Muxd.attachBinary ?? "<nil>",
+            command ?? "<nil>"
+        )
 
         // A remote pane's cwd names a path on the remote host: it travels
         // as --cwd and is never handed to the local surface.
