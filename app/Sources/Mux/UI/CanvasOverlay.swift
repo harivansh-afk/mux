@@ -1,10 +1,12 @@
 import AppKit
 
-/// The canvas overlay (prefix f): a live overview of the whole window.
-/// Every session is a row; every pane is a card whose thumbnail is the
-/// pane's real framebuffer, mirrored. Cards from one session share a
-/// quiet enclosure, and each carries a slot glyph - a miniature of the
-/// session's split tree with this pane's cell filled - so window
+/// The canvas panel (prefix f): a live overview of the whole window,
+/// sliding in from the right while the workspace slides left beneath it
+/// (translation only - pane sizes never change, so the ptys cannot
+/// observe the canvas). Every pane is a stacked card whose thumbnail is
+/// the pane's real framebuffer, mirrored. Cards from one session share
+/// a quiet enclosure, and each carries a slot glyph - a miniature of
+/// the session's split tree with this pane's cell filled - so window
 /// membership reads without labels.
 ///
 /// Thumbnails are CALayers whose `contents` is the same IOSurface the
@@ -37,10 +39,9 @@ final class CanvasOverlayView: NSView {
     private static let boldFont = Chrome.boldFont
     private static let inset: CGFloat = 16
     private static let rowHeight = Chrome.rowHeight
-    /// Uniform card metrics, derived from the one chrome size knob.
-    private static let cardWidth = Chrome.fontSize * 13
-    private static let thumbHeight = cardWidth * 0.625
-    private static let cardHeight = Chrome.barHeight + thumbHeight
+    /// Stacked same-size cards: width follows the panel, the thumbnail
+    /// keeps a wide terminal-ish aspect.
+    private static let thumbAspect: CGFloat = 0.55
     private static let cardGap: CGFloat = 10
     private static let groupPad: CGFloat = 10
     private static let groupGap: CGFloat = 14
@@ -159,15 +160,6 @@ final class CanvasOverlayView: NSView {
         return card.thumb.convert(card.thumb.bounds, to: view)
     }
 
-    /// The window minus proportional margins, like the other workspace
-    /// overlays.
-    func desiredSize(in bounds: NSRect) -> NSSize {
-        NSSize(
-            width: max(bounds.width - max(bounds.width / 16, 32) * 2, 240),
-            height: max(bounds.height - max(bounds.height / 10, 24) * 2, 160)
-        )
-    }
-
     // MARK: - Live mirrors
 
     private var mirrorTimer: Timer?
@@ -236,7 +228,9 @@ final class CanvasOverlayView: NSView {
 
     private func layoutContent() {
         let width = scroll.bounds.width - Self.inset * 2
-        guard width > Self.cardWidth else { return }
+        guard width > 80 else { return }
+        let cardWidth = width - Self.groupPad * 2
+        let cardHeight = Chrome.barHeight + cardWidth * Self.thumbAspect
         var y: CGFloat = 6
 
         for (i, group) in groups.enumerated() {
@@ -248,24 +242,19 @@ final class CanvasOverlayView: NSView {
             )
             y += Self.rowHeight
 
-            let count = group.entries.count
-            let fit = max(1, Int((width - Self.groupPad * 2 + Self.cardGap)
-                    / (Self.cardWidth + Self.cardGap)))
-            let columns = min(max(count, 1), fit)
-            let rows = count == 0 ? 1 : (count + columns - 1) / columns
+            let count = max(group.entries.count, 1)
             let box = boxes[i]
             box.frame = NSRect(
                 x: Self.inset, y: y,
-                width: Self.groupPad * 2 + CGFloat(columns) * Self.cardWidth
-                    + CGFloat(columns - 1) * Self.cardGap,
-                height: Self.groupPad * 2 + CGFloat(rows) * Self.cardHeight
-                    + CGFloat(rows - 1) * Self.cardGap
+                width: width,
+                height: Self.groupPad * 2 + CGFloat(count) * cardHeight
+                    + CGFloat(count - 1) * Self.cardGap
             )
             for (j, card) in box.subviews.compactMap({ $0 as? CardView }).enumerated() {
                 card.frame = NSRect(
-                    x: Self.groupPad + CGFloat(j % columns) * (Self.cardWidth + Self.cardGap),
-                    y: Self.groupPad + CGFloat(j / columns) * (Self.cardHeight + Self.cardGap),
-                    width: Self.cardWidth, height: Self.cardHeight
+                    x: Self.groupPad,
+                    y: Self.groupPad + CGFloat(j) * (cardHeight + Self.cardGap),
+                    width: cardWidth, height: cardHeight
                 )
             }
             y += box.frame.height + Self.groupGap

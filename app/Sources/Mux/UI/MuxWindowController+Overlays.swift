@@ -183,13 +183,36 @@ extension MuxWindowController {
         center(hostsWindow, size: hostsWindow.desiredSize(in: container.bounds))
     }
 
-    // MARK: - Canvas overlay
+    // MARK: - Canvas panel
 
-    /// prefix f: every pane in the window as a live card, grouped by
-    /// session. Rebuilt from the live session model on every open; the
-    /// highlight starts on the focused pane. While the canvas is up,
-    /// every pane is un-occluded so its renderer keeps producing the
-    /// frames the thumbnails mirror; hide restores the normal rule.
+    /// The panel's share of the window; the workspace slides left by
+    /// exactly this much, so the two motions read as one push.
+    var canvasPanelWidth: CGFloat {
+        (container.bounds.width * 0.38).rounded()
+    }
+
+    /// One curve for everything canvas: Apple's sheet feel - fast out
+    /// of the gate, gravity into the landing.
+    private func animateCanvas(
+        _ changes: @escaping () -> Void, completion: (() -> Void)? = nil
+    ) {
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.34
+            context.timingFunction = CAMediaTimingFunction(
+                controlPoints: 0.32, 0.72, 0.0, 1.0
+            )
+            context.allowsImplicitAnimation = true
+            changes()
+        }, completionHandler: completion)
+    }
+
+    /// prefix f: every pane in the window as a live card, stacked in a
+    /// right panel, grouped by session. The panel slides in while the
+    /// workspace slides out left. Rebuilt from the live session model on
+    /// every open; the highlight starts on the focused pane. While the
+    /// canvas is up, every pane is un-occluded so its renderer keeps
+    /// producing the frames the thumbnails mirror; hide restores the
+    /// normal rule.
     func showCanvasOverlay() {
         canvasOverlay.reload(groups: canvasGroups(), selected: focusedPane?.id)
         canvasOverlay.onJump = { [weak self] entry in
@@ -198,14 +221,33 @@ extension MuxWindowController {
         }
         canvasOverlay.removeFromSuperview()
         container.addSubview(canvasOverlay)
-        positionCanvasOverlay()
+        // Start just offscreen at the final size, so the slide-in is the
+        // only motion.
+        let bounds = container.bounds
+        canvasOverlay.frame = NSRect(
+            x: bounds.width, y: 0, width: canvasPanelWidth, height: bounds.height
+        )
+        canvasOverlay.layoutSubtreeIfNeeded()
+        canvasOpen = true
         applyCanvasOcclusion()
+        animateCanvas { [self] in
+            layoutPanes()
+            positionCanvasOverlay()
+        }
     }
 
     func hideCanvasOverlay() {
-        guard canvasOverlay.superview != nil else { return }
-        canvasOverlay.removeFromSuperview()
-        applyCanvasOcclusion()
+        guard canvasOverlay.superview != nil, !canvasClosing else { return }
+        canvasClosing = true
+        canvasOpen = false
+        animateCanvas({ [self] in
+            layoutPanes()
+            positionCanvasOverlay()
+        }, completion: { [self] in
+            canvasOverlay.removeFromSuperview()
+            canvasClosing = false
+            applyCanvasOcclusion()
+        })
     }
 
     func moveCanvasOverlay(by delta: Int) {
@@ -225,9 +267,10 @@ extension MuxWindowController {
     }
 
     /// Enter / click: jump to the selected pane, switching session if
-    /// needed and unzooming whatever covers it. The card's framebuffer
-    /// flies to the pane's real rect - the same IOSurface at both ends,
-    /// so the motion is honest.
+    /// needed and unzooming whatever covers it. The resume is one
+    /// gesture: the workspace slides back as the panel leaves, and the
+    /// card's framebuffer flies into the pane's real rect - the same
+    /// IOSurface at both ends, landing together on the same curve.
     func commitCanvas() {
         guard let entry = canvasOverlay.selection else { return }
         commitCanvas(entry)
@@ -237,18 +280,31 @@ extension MuxWindowController {
         guard sessions.indices.contains(entry.sessionIndex) else { return }
         let session = sessions[entry.sessionIndex]
         guard let pane = session.panes[entry.paneID] else { return }
+        guard canvasOverlay.superview != nil, !canvasClosing else { return }
         let ghostStart = canvasOverlay.thumbFrame(of: entry, in: container)
-        hideCanvasOverlay()
-        selectSession(entry.sessionIndex)
-        session.reveal(pane)
-        if let ghostStart, let contents = pane.layer?.contents {
+        let contents = pane.layer?.contents
+        canvasClosing = true
+        canvasOpen = false
+        animateCanvas({ [self] in
+            selectSession(entry.sessionIndex)
+            session.reveal(pane)
+            layoutPanes()
+            positionCanvasOverlay()
+        }, completion: { [self] in
+            canvasOverlay.removeFromSuperview()
+            canvasClosing = false
+            applyCanvasOcclusion()
+        })
+        if let ghostStart, let contents {
+            // Model values are final now; the ghost flies to the pane's
+            // real (slid-back) rect.
             animateJump(from: ghostStart, to: pane.scrollHost?.frame ?? pane.frame,
                         contents: contents)
         }
     }
 
-    /// The one animation in mux: 180ms of spatial continuity from the
-    /// card to the pane, on a throwaway layer showing the same frame.
+    /// Spatial continuity for the resume: a throwaway layer showing the
+    /// pane's frame, on the same curve and clock as the slide.
     private func animateJump(from start: NSRect, to end: NSRect, contents: Any) {
         let ghost = CALayer()
         ghost.contents = contents
@@ -266,16 +322,26 @@ extension MuxWindowController {
         boundsAnim.fromValue = CGRect(origin: .zero, size: start.size)
         let group = CAAnimationGroup()
         group.animations = [position, boundsAnim]
-        group.duration = 0.18
-        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        group.duration = 0.34
+        group.timingFunction = CAMediaTimingFunction(
+            controlPoints: 0.32, 0.72, 0.0, 1.0
+        )
         CATransaction.begin()
         CATransaction.setCompletionBlock { ghost.removeFromSuperlayer() }
         ghost.add(group, forKey: "jump")
         CATransaction.commit()
     }
 
+    /// The panel owns the right edge; closed (or closing) it parks just
+    /// offscreen so layout passes never fight the slide-out.
     func positionCanvasOverlay() {
-        center(canvasOverlay, size: canvasOverlay.desiredSize(in: container.bounds))
+        let bounds = container.bounds
+        canvasOverlay.frame = NSRect(
+            x: canvasOpen ? bounds.width - canvasPanelWidth : bounds.width,
+            y: 0,
+            width: canvasPanelWidth,
+            height: bounds.height
+        )
     }
 
     /// Canvas rows: sessions in order, panes in tree (visual) order.

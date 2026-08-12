@@ -37,6 +37,15 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     private(set) var sessions: [Session] = []
     private(set) var activeSessionIndex = 0
 
+    /// Canvas panel state (managed by MuxWindowController+Overlays.swift):
+    /// while open, layoutPanes shifts the whole workspace left by the
+    /// panel's width - translation only, sizes untouched, so no pty ever
+    /// resizes for the canvas. `canvasClosing` keeps the slide-out
+    /// animation from being torn down by the mode change that follows a
+    /// commit.
+    var canvasOpen = false
+    var canvasClosing = false
+
     var activeSession: Session? {
         sessions.indices.contains(activeSessionIndex) ? sessions[activeSessionIndex] : nil
     }
@@ -317,8 +326,13 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             positionHostsWindow()
         }
 
+        // The canvas pushes the workspace left, Apple-style: same rect,
+        // shifted origin. Sizes never change, so the ptys see nothing.
+        let paneRect = canvasOpen
+            ? bounds.offsetBy(dx: -canvasPanelWidth, dy: 0)
+            : bounds
         for (index, session) in sessions.enumerated() {
-            session.applyLayout(in: bounds, visible: index == activeSessionIndex)
+            session.applyLayout(in: paneRect, visible: index == activeSessionIndex)
         }
         // applyLayout re-occludes hidden panes; while the canvas is up
         // they must keep rendering for their thumbnails.
