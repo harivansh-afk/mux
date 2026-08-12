@@ -292,10 +292,12 @@ final class PaneView: NSView {
               window == event.window else { return event }
 
         // The clicked location in this window should be this view. Hit
-        // test through the window so overlays on top win.
-        guard let location = window.contentView?.convert(event.locationInWindow, from: nil)
-        else { return event }
-        guard window.contentView?.hitTest(location) == self else { return event }
+        // test through the window so overlays on top win. hitTest takes a
+        // point in the receiver's superview coordinates, which for the
+        // contentView is window base coordinates - do not convert into the
+        // (flipped) contentView's own space or the probe point mirrors
+        // vertically and the wrong pane eats the click.
+        guard window.contentView?.hitTest(event.locationInWindow) == self else { return event }
 
         // We always assume that we're resetting our mouse suppression
         // unless we see the specific scenario below to set it.
