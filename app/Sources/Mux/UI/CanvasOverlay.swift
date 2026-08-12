@@ -3,7 +3,10 @@ import AppKit
 /// The canvas panel (prefix f): a live overview of the whole window,
 /// sliding in from the right while the workspace slides left beneath it
 /// (translation only - pane sizes never change, so the ptys cannot
-/// observe the canvas). Every pane is a stacked card whose thumbnail is
+/// observe the canvas). When the window is too narrow for a readable
+/// sidebar the panel docks to the bottom edge instead: same cards in
+/// one horizontal row, the workspace sliding up. Every pane is a
+/// stacked card whose thumbnail is
 /// the pane's real framebuffer, mirrored. Cards sit tight under their
 /// session header with space - not boxes - doing the grouping, and
 /// each carries a slot glyph: a miniature of the session's split tree
@@ -68,6 +71,17 @@ final class CanvasOverlayView: NSView {
     /// A click on a card jumps straight to that pane; the controller
     /// commits and tells PrefixEngine to leave the mode.
     var onJump: ((Entry) -> Void)?
+
+    /// Bottom-docked (narrow window): cards run in one horizontal row.
+    /// The controller decides from the window's width and sets this
+    /// before positioning.
+    var docksBottom = false {
+        didSet {
+            if docksBottom != oldValue {
+                needsLayout = true
+            }
+        }
+    }
 
     var selection: Entry? {
         guard cards.indices.contains(index) else { return nil }
@@ -214,17 +228,43 @@ final class CanvasOverlayView: NSView {
             x: cancelBadge.frame.minX - 16 - countLabel.frame.width,
             y: titleMidY - countLabel.frame.height / 2
         )
+        // The count yields rather than overlap the title when the panel
+        // is narrow.
+        countLabel.isHidden = countLabel.frame.minX < titleLabel.frame.maxX + 16
 
-        edge.frame = NSRect(x: 0, y: 0, width: 1, height: bounds.height)
-        scroll.frame = NSRect(
-            x: 1, y: 0,
-            width: max(0, bounds.width - 1),
-            height: max(0, bounds.height - inset - row)
-        )
+        // The only stroke is a hairline on the edge the panel shares
+        // with the workspace: left when docked right, top when docked
+        // bottom.
+        if docksBottom {
+            edge.frame = NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1)
+            scroll.frame = NSRect(
+                x: 0, y: 0,
+                width: bounds.width,
+                height: max(0, bounds.height - inset - row)
+            )
+        } else {
+            edge.frame = NSRect(x: 0, y: 0, width: 1, height: bounds.height)
+            scroll.frame = NSRect(
+                x: 1, y: 0,
+                width: max(0, bounds.width - 1),
+                height: max(0, bounds.height - inset - row)
+            )
+        }
+        scroll.hasVerticalScroller = !docksBottom
+        scroll.hasHorizontalScroller = docksBottom
         layoutContent()
     }
 
     private func layoutContent() {
+        if docksBottom {
+            layoutContentRow()
+        } else {
+            layoutContentColumn()
+        }
+    }
+
+    /// Docked right: same-width cards stacked in one column.
+    private func layoutContentColumn() {
         let width = scroll.bounds.width - Self.inset * 2
         guard width > 80 else { return }
         let cardHeight = Chrome.barHeight + width * Self.thumbAspect
@@ -251,6 +291,52 @@ final class CanvasOverlayView: NSView {
         }
         content.frame = NSRect(
             x: 0, y: 0, width: scroll.bounds.width, height: max(y, scroll.bounds.height)
+        )
+    }
+
+    /// Docked bottom: same-height cards in one horizontal row, each
+    /// group's header above its first card. The floating badges (mode
+    /// bar, session indicator) live on the bar's bottom strip, so the
+    /// cards stop above them.
+    private func layoutContentRow() {
+        let viewport = scroll.bounds
+        var headerHeight: CGFloat = 0
+        for header in headerLabels {
+            header.sizeToFit()
+            headerHeight = max(headerHeight, header.frame.height)
+        }
+        let reserve = ModeBarView.height + ModeBarView.margin * 2
+        let cardY = Self.cardGap + headerHeight + Self.cardGap
+        let cardHeight = viewport.height - cardY - reserve
+        guard cardHeight > Chrome.barHeight + 40 else { return }
+        let cardWidth = ((cardHeight - Chrome.barHeight) / Self.thumbAspect).rounded()
+
+        var x = Self.inset
+        var cardIndex = 0
+        for (i, group) in groups.enumerated() {
+            let header = headerLabels[i]
+            let groupWidth = CGFloat(group.entries.count) * (cardWidth + Self.cardGap)
+                - Self.cardGap
+            header.frame = NSRect(
+                x: x, y: Self.cardGap,
+                width: min(header.frame.width, max(groupWidth, 0)),
+                height: header.frame.height
+            )
+            for _ in group.entries {
+                cards[cardIndex].frame = NSRect(
+                    x: x, y: cardY, width: cardWidth, height: cardHeight
+                )
+                x += cardWidth + Self.cardGap
+                cardIndex += 1
+            }
+            x += Self.sectionGap - Self.cardGap
+        }
+        // x overshoots by one sectionGap; the row ends one margin after
+        // the last card.
+        content.frame = NSRect(
+            x: 0, y: 0,
+            width: max(x - Self.sectionGap + Self.inset, viewport.width),
+            height: viewport.height
         )
     }
 

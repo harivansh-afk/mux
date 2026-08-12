@@ -191,6 +191,18 @@ extension MuxWindowController {
         (container.bounds.width * 0.38).rounded()
     }
 
+    /// A sidebar needs real width to be readable; when the window can't
+    /// give it that (half-screen and narrower), the canvas docks to the
+    /// bottom edge as a full-width bar instead, and the workspace slides
+    /// up by the bar's height.
+    var canvasDocksBottom: Bool {
+        canvasPanelWidth < 320
+    }
+
+    var canvasPanelHeight: CGFloat {
+        min(320, (container.bounds.height * 0.35).rounded())
+    }
+
     /// One spring for everything canvas - slab and panel share it so
     /// they always land together. Tuned for speed: response
     /// ~0.18s, essentially critically damped (no bounce tax), arrival
@@ -255,13 +267,19 @@ extension MuxWindowController {
         }
         if canvasOverlay.superview == nil {
             container.addSubview(canvasOverlay)
-            // Start just offscreen at the final size, so the slide-in is
-            // the only motion.
-            let bounds = container.bounds
-            canvasOverlay.frame = NSRect(
-                x: bounds.width, y: 0, width: canvasPanelWidth, height: bounds.height
-            )
+            // Start just offscreen at the final size (canvasOpen is
+            // still false, so this parks it), so the slide-in is the
+            // only motion.
+            positionCanvasOverlay()
             canvasOverlay.layoutSubtreeIfNeeded()
+        }
+        // The floating badges stay above the panel (they overlap it when
+        // it docks bottom); layoutPanes re-lifts the session indicator,
+        // the mode bar needs it here.
+        if !modeBar.isHidden {
+            modeBar.removeFromSuperview()
+            container.addSubview(modeBar)
+            positionModeBar()
         }
         // Reopening mid-close: the pending teardown sees canvasOpen and
         // stands down; the spring retargets from wherever the panel is.
@@ -327,16 +345,29 @@ extension MuxWindowController {
         scheduleCanvasTeardown()
     }
 
-    /// The panel owns the right edge; closed (or closing) it parks just
+    /// The panel owns the right edge - or the bottom one when the window
+    /// is too narrow for a sidebar. Closed (or closing) it parks just
     /// offscreen so layout passes never fight the slide-out.
     func positionCanvasOverlay() {
         let bounds = container.bounds
-        canvasOverlay.frame = NSRect(
-            x: canvasOpen ? bounds.width - canvasPanelWidth : bounds.width,
-            y: 0,
-            width: canvasPanelWidth,
-            height: bounds.height
-        )
+        let docksBottom = canvasDocksBottom
+        canvasOverlay.docksBottom = docksBottom
+        if docksBottom {
+            // The container is flipped: the bottom edge is maxY.
+            canvasOverlay.frame = NSRect(
+                x: 0,
+                y: canvasOpen ? bounds.height - canvasPanelHeight : bounds.height,
+                width: bounds.width,
+                height: canvasPanelHeight
+            )
+        } else {
+            canvasOverlay.frame = NSRect(
+                x: canvasOpen ? bounds.width - canvasPanelWidth : bounds.width,
+                y: 0,
+                width: canvasPanelWidth,
+                height: bounds.height
+            )
+        }
     }
 
     /// Canvas rows: sessions in order, panes in tree (visual) order.

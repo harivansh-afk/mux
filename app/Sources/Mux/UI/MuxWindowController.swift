@@ -337,12 +337,15 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             positionHostsWindow()
         }
 
-        // The canvas pushes the whole workspace slab left by the panel's
-        // width: one view, one motion (the spring lives in slideCanvas;
-        // a plain layout pass just parks it). Translation only - sizes
-        // never change, so the ptys see nothing.
+        // The canvas pushes the whole workspace slab by the panel's
+        // extent - left for the sidebar, up for the bottom bar: one
+        // view, one motion (the spring lives in slideCanvas; a plain
+        // layout pass just parks it). Translation only - sizes never
+        // change, so the ptys see nothing.
+        let docksBottom = canvasDocksBottom
         workspace.frame = NSRect(
-            x: canvasOpen ? -canvasPanelWidth : 0, y: 0,
+            x: canvasOpen && !docksBottom ? -canvasPanelWidth : 0,
+            y: canvasOpen && docksBottom ? -canvasPanelHeight : 0,
             width: bounds.width, height: bounds.height
         )
         for (index, session) in sessions.enumerated() {
