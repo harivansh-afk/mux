@@ -348,7 +348,21 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         (NSApp.delegate as? AppDelegate)?.windowControllerDidClose(self)
     }
 
+    /// Frame changes fire continuously during drags and live resizes;
+    /// save debounced so a crash mid-session still restores the frame.
+    func windowDidMove(_: Notification) {
+        saveStateSoon()
+    }
+
+    func windowDidResize(_: Notification) {
+        saveStateSoon()
+    }
+
     func saveState() {
         (NSApp.delegate as? AppDelegate)?.saveSnapshot()
+    }
+
+    func saveStateSoon() {
+        (NSApp.delegate as? AppDelegate)?.saveSnapshotSoon()
     }
 }

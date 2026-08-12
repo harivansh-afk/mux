@@ -406,7 +406,13 @@ final class GhosttyRuntime {
         case GHOSTTY_ACTION_PWD:
             guard let view else { return false }
             let pwd = action.action.pwd.pwd.map { String(cString: $0) } ?? ""
-            DispatchQueue.main.async { view.pwd = pwd.isEmpty ? nil : pwd }
+            DispatchQueue.main.async {
+                let newPwd = pwd.isEmpty ? nil : pwd
+                guard view.pwd != newPwd else { return }
+                view.pwd = newPwd
+                // cwd is what a recreated pty restores into; keep it fresh.
+                view.controller?.saveStateSoon()
+            }
             return true
 
         case GHOSTTY_ACTION_MOUSE_SHAPE:

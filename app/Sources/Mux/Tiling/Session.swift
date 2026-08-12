@@ -204,7 +204,9 @@ final class Session {
     /// Called (via the controller) when a pane actually becomes first
     /// responder.
     func noteFocused(_ pane: PaneView) {
+        guard focusedID != pane.id else { return }
         focusedID = pane.id
+        controller?.saveStateSoon()
     }
 
     /// Jump focus straight to a pane (the panes overlay), unzooming
@@ -249,6 +251,7 @@ final class Session {
         guard let focusedID else { return }
         zoomedID = (zoomedID == focusedID) ? nil : focusedID
         controller?.layoutPanes()
+        controller?.saveState()
     }
 
     func resizeFocused(_ direction: FocusDirection, step: Double = 0.03) {
