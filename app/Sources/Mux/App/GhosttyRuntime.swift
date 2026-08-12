@@ -122,12 +122,6 @@ final class GhosttyRuntime {
         ghostty_app_set_focus(app, focused)
     }
 
-    /// The user's focus-follows-mouse config, read straight from the
-    /// loaded ghostty config.
-    var focusFollowsMouse: Bool {
-        configBool("focus-follows-mouse")
-    }
-
     /// Whether password prompts automatically enable secure input
     /// (ghostty's auto-secure-input, default true).
     var autoSecureInput: Bool {

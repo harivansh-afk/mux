@@ -766,15 +766,6 @@ extension PaneView {
 
     override func mouseMoved(with event: NSEvent) {
         reportMousePos(event)
-
-        // Handle focus-follows-mouse.
-        if let window,
-           window.isKeyWindow,
-           !focused,
-           GhosttyRuntime.shared?.focusFollowsMouse == true
-        {
-            window.makeFirstResponder(self)
-        }
     }
 
     override func mouseDragged(with event: NSEvent) {
