@@ -31,7 +31,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     let modeBar = ModeBarView()
     let sessionIndicator = ModeBarView()
     let helpOverlay = HelpOverlayView()
-    let panesOverlay = PanesOverlayView()
+    let canvasOverlay = CanvasOverlayView()
     let hostsWindow = HostsWindowView()
 
     private(set) var sessions: [Session] = []
@@ -310,8 +310,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         if helpOverlay.superview != nil {
             positionHelpOverlay()
         }
-        if panesOverlay.superview != nil {
-            positionPanesOverlay()
+        if canvasOverlay.superview != nil {
+            positionCanvasOverlay()
         }
         if hostsWindow.superview != nil {
             positionHostsWindow()
@@ -319,6 +319,11 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
         for (index, session) in sessions.enumerated() {
             session.applyLayout(in: bounds, visible: index == activeSessionIndex)
+        }
+        // applyLayout re-occludes hidden panes; while the canvas is up
+        // they must keep rendering for their thumbnails.
+        if canvasOverlay.superview != nil {
+            applyCanvasOcclusion()
         }
     }
 
@@ -345,14 +350,10 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     }
 
     /// Occluded surfaces stop rendering (ghostty renderer throttle).
-    /// A pane draws only if the window is visible AND its session active.
+    /// A pane draws only if the window is visible AND its session active -
+    /// or the canvas overlay is up, whose thumbnails mirror every pane.
     func windowDidChangeOcclusionState(_: Notification) {
-        let windowVisible = window.occlusionState.contains(.visible)
-        for session in sessions {
-            for (_, pane) in session.panes {
-                pane.setOcclusion(visible: windowVisible && !pane.isHidden)
-            }
-        }
+        applyCanvasOcclusion()
     }
 
     func windowWillClose(_: Notification) {

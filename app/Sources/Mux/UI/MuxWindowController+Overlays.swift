@@ -1,10 +1,12 @@
 import AppKit
 
 /// The window's chrome: the floating mode bar, the session indicator, the
-/// keybinds overlay, and the panes and hosts windows. All of them are
+/// keybinds overlay, and the canvas and hosts windows. All of them are
 /// overlays on the
 /// pane area - panes never reflow for them - and none of them ever takes
-/// focus: PrefixEngine owns the keys and drives them from the outside.
+/// focus: PrefixEngine owns the keys and drives them from the outside
+/// (the canvas additionally takes clicks, which also route through the
+/// engine to leave the mode).
 extension MuxWindowController {
     /// Show or hide the mode overlay. nil hides it. The bar is an overlay
     /// on the bottom row: panes never reflow for it.
@@ -181,81 +183,121 @@ extension MuxWindowController {
         center(hostsWindow, size: hostsWindow.desiredSize(in: container.bounds))
     }
 
-    // MARK: - Panes overlay
+    // MARK: - Canvas overlay
 
-    /// prefix f: every pane in the window grouped by host. Rebuilt from
-    /// the live session model on every open; the highlight starts on the
-    /// focused pane.
-    func showPanesOverlay() {
-        panesOverlay.reload(groups: panesByHost(), selected: focusedPane?.id)
-        panesOverlay.removeFromSuperview()
-        container.addSubview(panesOverlay)
-        positionPanesOverlay()
+    /// prefix f: every pane in the window as a live card, grouped by
+    /// session. Rebuilt from the live session model on every open; the
+    /// highlight starts on the focused pane. While the canvas is up,
+    /// every pane is un-occluded so its renderer keeps producing the
+    /// frames the thumbnails mirror; hide restores the normal rule.
+    func showCanvasOverlay() {
+        canvasOverlay.reload(groups: canvasGroups(), selected: focusedPane?.id)
+        canvasOverlay.onJump = { [weak self] entry in
+            self?.commitCanvas(entry)
+            (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
+        }
+        canvasOverlay.removeFromSuperview()
+        container.addSubview(canvasOverlay)
+        positionCanvasOverlay()
+        applyCanvasOcclusion()
     }
 
-    func hidePanesOverlay() {
-        panesOverlay.removeFromSuperview()
+    func hideCanvasOverlay() {
+        guard canvasOverlay.superview != nil else { return }
+        canvasOverlay.removeFromSuperview()
+        applyCanvasOcclusion()
     }
 
-    func movePanesOverlay(by delta: Int) {
-        panesOverlay.move(by: delta)
-        positionPanesOverlay()
+    func moveCanvasOverlay(by delta: Int) {
+        canvasOverlay.move(by: delta)
     }
 
-    /// Enter: jump to the selected pane, switching session if needed and
-    /// unzooming whatever covers it.
-    func commitPanesOverlay() {
-        guard let entry = panesOverlay.selection,
-              sessions.indices.contains(entry.sessionIndex) else { return }
-        let session = sessions[entry.sessionIndex]
-        guard let pane = session.panes[entry.paneID] else { return }
-        selectSession(entry.sessionIndex)
-        session.reveal(pane)
-    }
-
-    func positionPanesOverlay() {
-        center(panesOverlay, size: panesOverlay.desiredSize(in: container.bounds))
-    }
-
-    /// Rows for the panes overlay: sessions in order, panes in tree
-    /// (visual) order, grouped under `local` first and then hosts by name.
-    private func panesByHost() -> [(host: String?, entries: [PanesOverlayView.Entry])] {
-        var order: [String?] = []
-        var groups: [String?: [PanesOverlayView.Entry]] = [:]
-        for (sessionIndex, session) in sessions.enumerated() {
-            for (paneIndex, paneID) in (session.tree?.leaves ?? []).enumerated() {
-                guard let pane = session.panes[paneID] else { continue }
-                if groups[pane.target] == nil {
-                    order.append(pane.target)
-                }
-                groups[pane.target, default: []].append(PanesOverlayView.Entry(
-                    sessionIndex: sessionIndex,
-                    paneID: paneID,
-                    parts: [
-                        "\(sessionIndex + 1).\(paneIndex + 1)",
-                        (pane.pwd as NSString?)?.lastPathComponent ?? "",
-                        Self.sessionTitle(pane.title),
-                    ].filter { !$0.isEmpty }
-                ))
+    /// Canvas open: every pane renders (the thumbnails are live).
+    /// Canvas closed: back to "visible window AND active session".
+    func applyCanvasOcclusion() {
+        let windowVisible = window.occlusionState.contains(.visible)
+        let canvasOpen = canvasOverlay.superview != nil
+        for session in sessions {
+            for (_, pane) in session.panes {
+                pane.setOcclusion(visible: windowVisible && (canvasOpen || !pane.isHidden))
             }
         }
-        // nil (local) sorts as "" - first; aliases are alphanumeric-led.
-        order.sort { ($0 ?? "") < ($1 ?? "") }
-        return order.map { ($0, groups[$0] ?? []) }
     }
 
-    /// The pane title as a session name. Coding agents title the terminal
-    /// with a state glyph before their session summary - claude uses
-    /// `\u{2733}` when idle and a braille spinner (U+2800-U+28FF) while
-    /// working - so a leading glyph from that set is dropped.
-    private static func sessionTitle(_ raw: String) -> String {
-        var title = raw.trimmingCharacters(in: .whitespaces)
-        if let first = title.unicodeScalars.first,
-           first.value == 0x2733 || (0x2800...0x28FF).contains(first.value) {
-            title = String(title.unicodeScalars.dropFirst())
-                .trimmingCharacters(in: .whitespaces)
+    /// Enter / click: jump to the selected pane, switching session if
+    /// needed and unzooming whatever covers it. The card's framebuffer
+    /// flies to the pane's real rect - the same IOSurface at both ends,
+    /// so the motion is honest.
+    func commitCanvas() {
+        guard let entry = canvasOverlay.selection else { return }
+        commitCanvas(entry)
+    }
+
+    func commitCanvas(_ entry: CanvasOverlayView.Entry) {
+        guard sessions.indices.contains(entry.sessionIndex) else { return }
+        let session = sessions[entry.sessionIndex]
+        guard let pane = session.panes[entry.paneID] else { return }
+        let ghostStart = canvasOverlay.thumbFrame(of: entry, in: container)
+        hideCanvasOverlay()
+        selectSession(entry.sessionIndex)
+        session.reveal(pane)
+        if let ghostStart, let contents = pane.layer?.contents {
+            animateJump(from: ghostStart, to: pane.scrollHost?.frame ?? pane.frame,
+                        contents: contents)
         }
-        return title
+    }
+
+    /// The one animation in mux: 180ms of spatial continuity from the
+    /// card to the pane, on a throwaway layer showing the same frame.
+    private func animateJump(from start: NSRect, to end: NSRect, contents: Any) {
+        let ghost = CALayer()
+        ghost.contents = contents
+        ghost.contentsGravity = .resizeAspect
+        ghost.zPosition = 1000
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        ghost.frame = end
+        container.layer?.addSublayer(ghost)
+        CATransaction.commit()
+
+        let position = CABasicAnimation(keyPath: "position")
+        position.fromValue = CGPoint(x: start.midX, y: start.midY)
+        let boundsAnim = CABasicAnimation(keyPath: "bounds")
+        boundsAnim.fromValue = CGRect(origin: .zero, size: start.size)
+        let group = CAAnimationGroup()
+        group.animations = [position, boundsAnim]
+        group.duration = 0.18
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { ghost.removeFromSuperlayer() }
+        ghost.add(group, forKey: "jump")
+        CATransaction.commit()
+    }
+
+    func positionCanvasOverlay() {
+        center(canvasOverlay, size: canvasOverlay.desiredSize(in: container.bounds))
+    }
+
+    /// Canvas rows: sessions in order, panes in tree (visual) order.
+    private func canvasGroups() -> [CanvasOverlayView.Group] {
+        sessions.enumerated().map { sessionIndex, session in
+            var entries: [CanvasOverlayView.Entry] = []
+            for (paneIndex, paneID) in (session.tree?.leaves ?? []).enumerated() {
+                guard let pane = session.panes[paneID] else { continue }
+                entries.append(CanvasOverlayView.Entry(
+                    sessionIndex: sessionIndex,
+                    paneID: paneID,
+                    index: "\(sessionIndex + 1).\(paneIndex + 1)",
+                    pane: pane
+                ))
+            }
+            return CanvasOverlayView.Group(
+                title: "session \(sessionIndex + 1)",
+                entries: entries,
+                tree: session.tree,
+                current: sessionIndex == activeSessionIndex
+            )
+        }
     }
 
     /// Centered boxes (keybinds, picker) share one placement rule.

@@ -11,13 +11,14 @@ import AppKit
 ///   prefix z      zoom toggle          prefix x      close pane
 ///   prefix c      new session          prefix 1..9   select session
 ///   prefix n/p    next/prev session    prefix r      resize mode
-///   prefix t      hosts window         prefix f      panes by host
+///   prefix t      hosts window         prefix f      canvas
 ///   prefix ?      keybinds overlay     prefix ctrl+b send a literal ctrl+b
 ///   prefix esc    cancel
 /// Held-ctrl aliasing: ctrl+<key> in prefix mode means <key> (the nvim-mux
 /// papercut fix: you rarely release ctrl between prefix and key).
 /// Resize mode: h/j/k/l nudge the enclosing split ratio, esc/enter/q exit.
-/// Panes mode: j/k walk every pane grouped by host, enter jumps to it.
+/// Canvas mode: h/j/k/l walk every pane's live card grouped by session,
+/// enter or a click jumps to it.
 /// Hosts mode: j/k walk local, the hosts with their live probe status and
 /// the ix VMs; enter splits right into one and H/J/K/L split in a given
 /// direction, c opens a new session there, n creates a VM, t chooses the
@@ -30,7 +31,7 @@ final class PrefixEngine {
         case prefix
         case resize
         case help
-        case pickPane
+        case canvas
         case hosts
     }
 
@@ -61,9 +62,9 @@ final class PrefixEngine {
         .key("esc"), .dim(" close"),
     ]
 
-    private static let paneSegments: [ModeBarSegment] = [
-        .badge("PANES"),
-        .key("j/k"), .dim(" choose  "),
+    private static let canvasSegments: [ModeBarSegment] = [
+        .badge("CANVAS"),
+        .key("h/j/k/l"), .dim(" choose  "),
         .key("enter"), .dim(" jump  "),
         .key("esc"), .dim(" cancel"),
     ]
@@ -107,7 +108,7 @@ final class PrefixEngine {
         mode = newMode
         indicatorController?.setModeIndicator(nil)
         indicatorController?.hideHelp()
-        indicatorController?.hidePanesOverlay()
+        indicatorController?.hideCanvasOverlay()
         indicatorController?.hideHostsWindow()
         indicatorController = nil
         switch newMode {
@@ -123,10 +124,10 @@ final class PrefixEngine {
             indicatorController = controller
             indicatorController?.setModeIndicator(Self.helpSegments)
             indicatorController?.showHelp()
-        case .pickPane:
+        case .canvas:
             indicatorController = controller
-            indicatorController?.setModeIndicator(Self.paneSegments)
-            indicatorController?.showPanesOverlay()
+            indicatorController?.setModeIndicator(Self.canvasSegments)
+            indicatorController?.showCanvasOverlay()
         case .hosts:
             indicatorController = controller
             indicatorController?.setModeIndicator(Self.hostsSegments)
@@ -183,13 +184,17 @@ final class PrefixEngine {
                 return nil
             }
 
-        case .pickPane:
+        case .canvas:
             switch key {
-            case "j", "\u{F701}": controller?.movePanesOverlay(by: 1); return nil
-            case "k", "\u{F700}": controller?.movePanesOverlay(by: -1); return nil
+            case "j", "l", "\u{F701}", "\u{F703}":
+                controller?.moveCanvasOverlay(by: 1)
+                return nil
+            case "k", "h", "\u{F700}", "\u{F702}":
+                controller?.moveCanvasOverlay(by: -1)
+                return nil
             case "\r":
                 // Commit before the mode change tears the overlay down.
-                controller?.commitPanesOverlay()
+                controller?.commitCanvas()
                 setMode(.normal)
                 return nil
             case "\u{1b}", "q":
@@ -258,6 +263,13 @@ final class PrefixEngine {
         return nil
     }
 
+    /// A click on a canvas card committed the jump; leave the mode the
+    /// same way enter does.
+    func endCanvas() {
+        guard mode == .canvas else { return }
+        setMode(.normal)
+    }
+
     /// Commit before the mode change tears the window down.
     private func commitHosts(direction: SplitDirection, before: Bool = false) {
         controller?.commitHostsWindow(direction: direction, before: before)
@@ -278,7 +290,7 @@ final class PrefixEngine {
         case "x": controller?.closeFocusedPane()
         case "r": setMode(.resize)
         case "t": setMode(.hosts)
-        case "f": setMode(.pickPane)
+        case "f": setMode(.canvas)
         case "?": setMode(.help)
         // Sessions.
         case "c": controller?.newSession()
