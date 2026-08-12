@@ -15,11 +15,12 @@ extension PaneView {
             return
         }
 
-        // Font zoom stays pane-owned: libghostty has no way to read the
-        // font size back, so ghostty never sees these keys - the pane
-        // drives the change itself and tracks the delta for the snapshot.
+        // Font zoom is app-owned: libghostty has no way to read the
+        // font size back, so ghostty never sees these keys - mux drives
+        // every pane by the same increment and tracks the shared delta
+        // for the snapshot.
         if let step = Self.fontZoomStep(event) {
-            adjustFontSize(step)
+            Self.adjustFontZoom(step)
             return
         }
 

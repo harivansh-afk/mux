@@ -10,8 +10,9 @@ struct PaneSnapshot: Codable {
     /// files written before targets existed, which is exactly what a
     /// local pane means - so no version bump.
     var target: String?
-    /// Font zoom in points relative to the config default (cmd+= /
-    /// cmd+-). Absent means default, so no version bump.
+    /// Legacy per-pane font zoom; the zoom is app-wide now (see
+    /// AppSnapshot.fontDelta). Read once to seed the global delta from
+    /// old files, never written.
     var fontDelta: Int?
 }
 
@@ -32,6 +33,10 @@ struct AppSnapshot: Codable {
     static let currentVersion = 2
     var version: Int = AppSnapshot.currentVersion
     var windows: [WindowSnapshot]
+    /// App-wide font zoom in points relative to the config default
+    /// (cmd+= / cmd+- / cmd+0). Absent means default, so no version
+    /// bump.
+    var fontDelta: Int?
 }
 
 /// v1: one implicit session per window, its fields inline on the window.
