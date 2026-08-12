@@ -171,9 +171,14 @@ final class GhosttyRuntime {
         DispatchQueue.main.async { rt.tick() }
     }
 
-    private static func closeSurface(_ userdata: UnsafeMutableRawPointer?, processAlive _: Bool) {
+    private static func closeSurface(_ userdata: UnsafeMutableRawPointer?, processAlive alive: Bool) {
         guard let view = paneView(userdata) else { return }
         DispatchQueue.main.async {
+            // processAlive distinguishes "the pane's process ended" from
+            // the core requesting a close over a live process; the log
+            // line is what tells a user-typed exit apart from a pane
+            // being torn down by something else.
+            AppLog.log("closeSurface pane=\(view.id.uuidString) processAlive=\(alive)")
             view.controller?.removePane(view)
         }
     }

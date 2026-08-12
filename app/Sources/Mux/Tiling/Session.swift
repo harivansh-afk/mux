@@ -157,6 +157,7 @@ final class Session {
 
     func closeFocusedPane() {
         guard let pane = focusedPane else { return }
+        AppLog.log("kill pane=\(pane.id.uuidString) (prefix x)")
         pane.killRemote()
         pane.destroySurface()
         removePane(pane)
@@ -164,6 +165,7 @@ final class Session {
 
     func removePane(_ pane: PaneView) {
         guard panes[pane.id] != nil else { return }
+        AppLog.log("remove pane=\(pane.id.uuidString)")
         panes.removeValue(forKey: pane.id)
         pane.removeFromSuperview()
         pane.scrollHost?.removeFromSuperview()
