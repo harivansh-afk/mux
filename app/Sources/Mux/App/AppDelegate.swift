@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Before the snapshot is loaded: an unclean previous exit freezes
         // the pre-crash state file for post-mortem and recovery.
         let unclean = CrashMarker.checkAndArm()
-        AppLog.log("launch unclean_previous_exit=\(unclean)")
+        AppLog.log("launch unclean_previous_exit=\(unclean) attach_binary=\(Muxd.attachBinary ?? "MISSING (panes fall back to plain shells)")")
 
         buildMenu()
 

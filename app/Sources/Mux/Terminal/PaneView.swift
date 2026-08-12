@@ -168,6 +168,10 @@ final class PaneView: NSView {
         // daemon relays the attach), and an `ix:<vm>` pane is a local pty
         // whose command is `ix shell` instead of the user's shell.
         let command = defaultCommand(cwd: workingDirectory, cwdFrom: cwdFrom)
+        // The one unlogged hop used to be right here: whether the surface
+        // was actually given the attach command. A pane that silently ran
+        // a bare shell instead was indistinguishable from a working one.
+        AppLog.log("spawn pane=\(id.uuidString) cmd=\(command ?? "<user shell>")")
 
         // A remote pane's cwd names a path on the remote host: it travels
         // as --cwd and is never handed to the local surface.
@@ -192,7 +196,7 @@ final class PaneView: NSView {
         }
 
         if surface == nil {
-            NSLog("ghostty_surface_new failed")
+            AppLog.log("ghostty_surface_new FAILED pane=\(id.uuidString)")
         }
 
         // A restored pane knows its final frame before the surface spawns
