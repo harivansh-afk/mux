@@ -12,7 +12,7 @@
 //!    never silently skipped.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,7 +39,17 @@ pub enum ClientMsg {
     Exit(i32),
 }
 
+/// Which client is in a pty's slot. Attach evicts the previous client, so
+/// two handlers exist at once for a moment: the newcomer's, and the
+/// evicted one on its way out. Every release of the slot names the client
+/// it means, or the loser's teardown takes the winner's channel with it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ClientId(u64);
+
+static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
+
 pub struct AttachedClient {
+    pub id: ClientId,
     pub tx: mpsc::Sender<ClientMsg>,
 }
 
@@ -69,6 +79,18 @@ impl PtySession {
         let pid = nix::unistd::tcgetpgrp(self.master.get_ref())
             .map_or_else(|_| self.child.as_raw(), nix::unistd::Pid::as_raw);
         process_cwd(pid).or_else(|| process_cwd(self.child.as_raw()))
+    }
+
+    /// Release the client slot, but only if `id` is still the client in
+    /// it. A steal-attach installs its channel while the evicted handler
+    /// is still winding down: clearing unconditionally would drop the
+    /// *new* client's sender, which closes its channel and tears down the
+    /// connection that just took the pty over.
+    pub fn detach(&self, id: ClientId) {
+        let mut client = self.client.lock();
+        if client.as_ref().is_some_and(|c| c.id == id) {
+            *client = None;
+        }
     }
 
     pub fn info(&self) -> mux_proto::peer::PtyInfo {
@@ -215,7 +237,11 @@ impl Manager {
             return false;
         };
         // The child is a session leader; nuke its whole process group.
+        // And the pid itself: for the moment between fork and setsid it
+        // leads no group, and killpg alone answers ESRCH and leaves a
+        // shell running that nothing in the table can reach any more.
         let _ = nix::sys::signal::killpg(session.child, nix::sys::signal::Signal::SIGKILL);
+        let _ = nix::sys::signal::kill(session.child, nix::sys::signal::Signal::SIGKILL);
         *session.client.lock() = None;
         tracing::info!(name, "pty killed");
         true
@@ -233,8 +259,10 @@ impl Manager {
 
 /// Outcome of one readiness turn of the read loop.
 enum Step {
-    /// `n` bytes were fed to the VT; `tx` is the client to forward to.
-    Fed(usize, Option<mpsc::Sender<ClientMsg>>),
+    /// `n` bytes were fed to the VT, and who to forward them to: the
+    /// client's id travels with its sender so a disconnect decided on
+    /// this chunk cannot land on a client that attached meanwhile.
+    Fed(usize, Option<(ClientId, mpsc::Sender<ClientMsg>)>),
     Retry,
     Eof,
     Failed(std::io::Error),
@@ -264,7 +292,8 @@ async fn read_loop(manager: Manager, session: Arc<PtySession>) {
                 Ok(Ok(0)) => Step::Eof, // child side gone
                 Ok(Ok(n)) => {
                     term.feed(&buf[..n]);
-                    Step::Fed(n, session.client.lock().as_ref().map(|c| c.tx.clone()))
+                    let client = session.client.lock();
+                    Step::Fed(n, client.as_ref().map(|c| (c.id, c.tx.clone())))
                 }
                 // EIO on darwin/linux when the child exits: treat as EOF.
                 Ok(Err(e)) if e.raw_os_error() == Some(libc::EIO) => Step::Eof,
@@ -274,13 +303,15 @@ async fn read_loop(manager: Manager, session: Arc<PtySession>) {
             }
         };
         match step {
-            Step::Fed(n, Some(tx)) => {
+            Step::Fed(n, Some((id, tx))) => {
                 let send =
                     tx.send_timeout(ClientMsg::Output(buf[..n].to_vec()), CLIENT_SEND_TIMEOUT);
                 if send.await.is_err() {
                     // Slow or gone: disconnect, never drop bytes silently.
+                    // By id: the timeout took 100ms, which is long enough
+                    // for another client to have stolen the slot.
                     tracing::warn!(name = %session.name, "client too slow; detaching");
-                    *session.client.lock() = None;
+                    session.detach(id);
                 }
             }
             Step::Fed(_, None) | Step::Retry => {}
@@ -312,7 +343,16 @@ async fn reap(manager: Manager, session: Arc<PtySession>) {
     // ends the client connection cleanly.
     let client = session.client.lock().take();
     if let Some(client) = client {
-        let _ = client.tx.send(ClientMsg::Exit(code)).await;
+        // Bounded, like the read path: an unbounded send on the depth-64
+        // channel parks here forever behind a client that stopped
+        // reading, and the removal below - the only thing that frees the
+        // pty name for a reopen - would never run.
+        let send = client
+            .tx
+            .send_timeout(ClientMsg::Exit(code), CLIENT_SEND_TIMEOUT);
+        if send.await.is_err() {
+            tracing::warn!(name = %session.name, "client never took the exit event");
+        }
     }
     manager.remove_if_same(&session);
     tracing::info!(name = %session.name, code, "pty exited");
@@ -368,6 +408,9 @@ async fn wait_adopted(pid: nix::unistd::Pid) -> i32 {
 
 /// Everything attach needs to hand back to the connection handler.
 pub struct Attachment {
+    /// This attachment's identity, for [`PtySession::detach`] on the way
+    /// out.
+    pub id: ClientId,
     pub rx: mpsc::Receiver<ClientMsg>,
     pub dump: Vec<u8>,
 }
@@ -376,16 +419,17 @@ pub struct Attachment {
 /// one terminal lock. See module docs for why the order is load-bearing.
 pub fn attach(session: &Arc<PtySession>, cols: u16, rows: u16) -> Attachment {
     let (tx, rx) = mpsc::channel(CLIENT_CHANNEL_DEPTH);
+    let id = ClientId(NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed));
     let dump = {
         let mut term = session.terminal.lock();
         term.resize(rows, cols);
         let _ = pty::resize(&session.master, cols, rows);
         // Evict any previous client (its forwarder ends when tx drops)
         // and publish the new channel BEFORE rendering.
-        *session.client.lock() = Some(AttachedClient { tx });
+        *session.client.lock() = Some(AttachedClient { id, tx });
         term.render_screen_bytes()
     };
-    Attachment { rx, dump }
+    Attachment { id, rx, dump }
 }
 
 /// The working directory of a live process, from the kernel.
