@@ -157,27 +157,6 @@ final class CanvasOverlayView: NSView {
         cards[index].scrollToVisible(cards[index].bounds)
     }
 
-    /// The image rect inside a card's thumbnail - the aspect-fit rect
-    /// the mirror actually draws - in `view` coordinates. The resume
-    /// flight starts exactly on those pixels, so the image never
-    /// changes shape on the way to the pane.
-    func thumbContentFrame(of entry: Entry, in view: NSView) -> NSRect? {
-        guard let card = cards.first(where: { $0.entry.paneID == entry.paneID }),
-              card.window != nil
-        else { return nil }
-        var rect = card.thumb.bounds
-        if let size = entry.pane?.frame.size, size.width > 1, size.height > 1 {
-            let scale = min(rect.width / size.width, rect.height / size.height)
-            rect = NSRect(
-                x: rect.midX - size.width * scale / 2,
-                y: rect.midY - size.height * scale / 2,
-                width: size.width * scale,
-                height: size.height * scale
-            )
-        }
-        return card.thumb.convert(rect, to: view)
-    }
-
     // MARK: - Live mirrors
 
     private var mirrorTimer: Timer?

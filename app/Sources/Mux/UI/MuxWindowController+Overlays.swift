@@ -191,8 +191,8 @@ extension MuxWindowController {
         (container.bounds.width * 0.38).rounded()
     }
 
-    /// One spring for everything canvas - slab, panel, and resume flight
-    /// share it so they always land together. Tuned for speed: response
+    /// One spring for everything canvas - slab and panel share it so
+    /// they always land together. Tuned for speed: response
     /// ~0.18s, essentially critically damped (no bounce tax), arrival
     /// reads at roughly 130ms. Retargetable: spamming open/close bends
     /// the motion from its current on-screen position, never restarts.
@@ -302,10 +302,10 @@ extension MuxWindowController {
     }
 
     /// Enter / click: jump to the selected pane, switching session if
-    /// needed and unzooming whatever covers it. The resume is one
-    /// gesture: the workspace slides back as the panel leaves, and the
-    /// card's framebuffer flies into the pane's real rect - the same
-    /// IOSurface at both ends, landing together on the same curve.
+    /// needed and unzooming whatever covers it. The resume is the same
+    /// motion as esc - the workspace slides home as the panel leaves -
+    /// with focus landing on the chosen pane immediately. No extra
+    /// theater.
     func commitCanvas() {
         guard let entry = canvasOverlay.selection else { return }
         commitCanvas(entry)
@@ -316,11 +316,6 @@ extension MuxWindowController {
         let session = sessions[entry.sessionIndex]
         guard let pane = session.panes[entry.paneID] else { return }
         guard canvasOverlay.superview != nil, !canvasClosing else { return }
-        // The flight starts on the thumbnail's actual pixels (the
-        // aspect-fit image rect, not the letterboxed card), so the image
-        // never changes shape on the way.
-        let ghostStart = canvasOverlay.thumbContentFrame(of: entry, in: container)
-        let contents = pane.layer?.contents
         canvasClosing = true
         canvasOpen = false
         slideCanvas { [self] in
@@ -330,49 +325,6 @@ extension MuxWindowController {
             positionCanvasOverlay()
         }
         scheduleCanvasTeardown()
-        if let ghostStart, let contents, pane.scrollHost != nil {
-            animateJump(from: ghostStart, to: pane, contents: contents)
-        }
-    }
-
-    /// The resume flight: the card's image morphs into the pane itself.
-    /// The destination stays hidden until the ghost lands, so there is
-    /// never a double image - the picture that flies IS the terminal
-    /// that appears. Same spring as the slide; everything settles as
-    /// one gesture.
-    private func animateJump(from start: NSRect, to pane: PaneView, contents: Any) {
-        guard let containerLayer = container.layer, let host = pane.scrollHost else { return }
-        host.isHidden = true
-        let ghost = CALayer()
-        ghost.contents = contents
-        // The start rect already has the pane's aspect; plain resize
-        // keeps the pixels glued to the layer edge to edge.
-        ghost.contentsGravity = .resize
-        ghost.zPosition = 1000
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        // Model = destination (the pane's rect once the slab is home).
-        ghost.frame = host.frame
-        containerLayer.addSublayer(ghost)
-        CATransaction.commit()
-
-        let position = Self.canvasSpring("position")
-        position.fromValue = CGPoint(x: start.midX, y: start.midY)
-        let bounds = Self.canvasSpring("bounds")
-        bounds.fromValue = CGRect(origin: .zero, size: start.size)
-        CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak self, weak pane] in
-            host.isHidden = false
-            ghost.removeFromSuperlayer()
-            // Hiding the host resigned first responder; hand focus back
-            // now that the real pane is on screen.
-            if let pane {
-                self?.focus(pane)
-            }
-        }
-        ghost.add(position, forKey: "jump-position")
-        ghost.add(bounds, forKey: "jump-bounds")
-        CATransaction.commit()
     }
 
     /// The panel owns the right edge; closed (or closing) it parks just
