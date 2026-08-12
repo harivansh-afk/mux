@@ -20,6 +20,11 @@ use crate::manager::{self, ClientMsg, Manager};
 use crate::{broker, pty, tls};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Pause after a transient accept failure. The connection that provoked
+/// it stays in the backlog, so the listener is still readable and the
+/// next call fails identically: without a pause the loop would spin a
+/// core until the pressure lifts.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Admission rules, one per transport.
 pub enum Policy {
@@ -81,12 +86,27 @@ pub async fn bind(socket: &std::path::Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
+/// Serve the control socket forever. Only a listener that has stopped
+/// being a listener ends this.
+///
 /// # Errors
 ///
-/// Accepting a connection fails.
+/// An accept failure that is about the socket rather than the moment; see
+/// [`transient`].
 pub async fn serve(manager: Manager, listener: UnixListener) -> Result<()> {
     loop {
-        let (stream, _) = listener.accept().await?;
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            // Running out of descriptors, or a client that hung up
+            // between connect and accept, is a bad moment - never a
+            // reason to take every live session down with the daemon.
+            Err(e) if transient(&e) => {
+                tracing::warn!(error = %e, "accept failed; retrying");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
+            }
+            Err(e) => return Err(e).context("accept on the control socket"),
+        };
         let manager = manager.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_unix(manager, stream).await {
@@ -94,6 +114,27 @@ pub async fn serve(manager: Manager, listener: UnixListener) -> Result<()> {
             }
         });
     }
+}
+
+/// An accept failure that describes the moment, not the listener:
+/// resource pressure (descriptors, memory, socket buffers), an
+/// interrupted call, or a peer that vanished before it could be accepted.
+/// Anything else says the socket itself is broken, and retrying it would
+/// spin forever instead of letting the supervisor restart the daemon.
+fn transient(e: &std::io::Error) -> bool {
+    matches!(
+        e.raw_os_error(),
+        Some(
+            libc::EMFILE
+                | libc::ENFILE
+                | libc::ENOBUFS
+                | libc::ENOMEM
+                | libc::ECONNABORTED
+                | libc::ECONNRESET
+                | libc::EINTR
+                | libc::ETIMEDOUT
+        )
+    )
 }
 
 async fn handle_unix(manager: Manager, stream: UnixStream) -> Result<()> {
@@ -237,6 +278,7 @@ where
     };
 
     let attachment = manager::attach(&session, cols, rows);
+    let client_id = attachment.id;
 
     let attached: OpenReply = Ok(Opened::Attached {
         name: name.clone(),
@@ -315,11 +357,9 @@ where
         r = receive => r?,
     }
 
-    // Detach: clear the client slot if it is still ours.
-    let mut client = session.client.lock();
-    if client.is_some() {
-        *client = None;
-    }
+    // Detach, by identity: this handler may be here because another
+    // client stole the pty, and that client's channel is in the slot now.
+    session.detach(client_id);
     Ok(())
 }
 

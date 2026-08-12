@@ -124,6 +124,12 @@ in {
           ]);
         User = cfg.user;
         Environment = "HOME=${cfg.home}";
+        # A pty master plus a client connection per pane, against a
+        # 256-pty cap and one QUIC connection per peer. systemd's 1024
+        # default is close enough to that to be reachable, and a daemon
+        # that runs out of descriptors is a daemon whose accept loop
+        # spends its time backing off instead of serving.
+        LimitNOFILE = 65536;
         Restart = "on-failure";
         RestartSec = "2s";
       };

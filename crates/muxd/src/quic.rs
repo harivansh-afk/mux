@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use mux_proto::paths;
 use mux_proto::peer;
 use quinn::{Endpoint, Incoming, RecvStream, SendStream, ServerConfig};
@@ -37,13 +37,14 @@ use crate::manager::Manager;
 use crate::server::{self, Policy};
 use crate::tls::{self, Admitted, Identity};
 
-/// Load the daemon's identity and the tokens it admits, bind, and serve
-/// until the endpoint dies.
+/// Load the daemon's identity and the tokens it admits, bind, and serve.
+/// Never returns `Ok`: while the listener was asked for, serving it is
+/// the daemon's job for as long as the daemon lives.
 ///
 /// # Errors
 ///
 /// Missing or unreadable TLS material, an unparseable authorized-tokens
-/// file, or a failed bind.
+/// file, a failed bind, or a closed endpoint.
 pub async fn serve(manager: Manager, addr: SocketAddr, authorized: Option<&Path>) -> Result<()> {
     let identity = tls::load_or_generate_identity()?;
     let token = tls::load_or_generate_token(&paths::daemon_token())?;
@@ -51,7 +52,10 @@ pub async fn serve(manager: Manager, addr: SocketAddr, authorized: Option<&Path>
     let endpoint = endpoint(addr, &identity)?;
     tracing::info!(addr = %endpoint.local_addr()?, "muxd listening (quic)");
     accept(manager, endpoint, admitted).await;
-    Ok(())
+    // The endpoint is closed: no remote pane can ever be served again.
+    // An Ok here would exit the process 0, and `Restart=on-failure`
+    // would leave the daemon down.
+    bail!("quic endpoint closed")
 }
 
 /// Bind a QUIC endpoint presenting `identity`. Separate from [`accept`]
