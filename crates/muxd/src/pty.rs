@@ -85,6 +85,30 @@ fn user_shell() -> String {
     "/bin/zsh".to_string()
 }
 
+fn user_home() -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return home;
+        }
+    }
+    // Same reasoning as user_shell: a daemon under a service manager may
+    // have no $HOME; ask passwd, like login does.
+    // SAFETY: getpwuid returns a pointer to a static record or null;
+    // pw_dir, when present, is a NUL-terminated string.
+    let entry = unsafe { libc::getpwuid(libc::getuid()) };
+    if !entry.is_null() {
+        let dir = unsafe { (*entry).pw_dir };
+        if !dir.is_null() {
+            if let Ok(dir) = unsafe { std::ffi::CStr::from_ptr(dir) }.to_str() {
+                if !dir.is_empty() {
+                    return dir.to_string();
+                }
+            }
+        }
+    }
+    "/".to_string()
+}
+
 /// The tokio reactor requires it, and an inherited fd (migrate.rs) may
 /// arrive without it.
 ///
@@ -150,7 +174,12 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
             .collect::<Result<_, _>>()?;
         (argv[0].clone(), argv)
     };
-    let cwd = params.cwd.map(CString::new).transpose()?;
+    // No explicit cwd: start at home, like login does. The daemon's own
+    // cwd (a service manager's "/") is never a useful shell start dir.
+    let cwd = match params.cwd {
+        Some(dir) => Some(CString::new(dir)?),
+        None => CString::new(user_home()).ok(),
+    };
     let term = CString::new(format!("TERM={}", params.term.unwrap_or("xterm-ghostty")))?;
     // Panes are always rendered by a truecolor terminal; advertise it the
     // way the renderer itself would (the daemon's own environment has no
