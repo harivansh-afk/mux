@@ -148,6 +148,35 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         saveState()
     }
 
+    /// Orphan recovery: a new session adopting daemon ptys no window
+    /// knew about (a lost or stale snapshot), split evenly. Appended,
+    /// not selected: the session indicator shows it without yanking
+    /// focus from whatever the user is doing.
+    func addRecoverySession(_ recovered: [(id: UUID, cwd: String?, target: String?)]) {
+        guard let first = recovered.first else { return }
+        var tree: SplitNode = .leaf(first.id)
+        var previous = first.id
+        var meta: [UUID: PaneSnapshot] = [:]
+        for item in recovered.dropFirst() {
+            tree = tree.inserting(item.id, at: previous, direction: .horizontal)
+            previous = item.id
+        }
+        for item in recovered {
+            meta[item.id] = PaneSnapshot(cwd: item.cwd, target: item.target)
+        }
+        let session = Session(runtime: runtime, controller: self)
+        sessions.append(session)
+        session.restore(tree: tree, paneMeta: meta, focused: first.id, zoomed: nil)
+        layoutPanes()
+        // Session.restore focused its own pane; give focus back to the
+        // session the user is actually looking at.
+        if let pane = activeSession?.focusedPane {
+            focus(pane)
+        }
+        updateSessionIndicator()
+        saveState()
+    }
+
     /// prefix 1..9: select a session by position (0-based here).
     func selectSession(_ index: Int) {
         guard sessions.indices.contains(index), index != activeSessionIndex else { return }

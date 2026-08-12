@@ -74,12 +74,13 @@ final class Session {
     private func makePane(
         id: UUID = UUID(), workingDirectory: String? = nil, cwdFrom: UUID? = nil,
         target: String? = nil, ptyCommand: [String]? = nil,
-        initialFrame: CGRect = .zero, fontDelta: Int = 0
+        initialFrame: CGRect = .zero, fontDelta: Int = 0,
+        expectExisting: Bool = false
     ) -> PaneView {
         let pane = PaneView(
             id: id, runtime: runtime, workingDirectory: workingDirectory, cwdFrom: cwdFrom,
             target: target, ptyCommand: ptyCommand, initialFrame: initialFrame,
-            fontDelta: fontDelta
+            fontDelta: fontDelta, expectExisting: expectExisting
         )
         pane.controller = controller
         panes[pane.id] = pane
@@ -106,7 +107,8 @@ final class Session {
             let frame = (zoomed == id) ? bounds : (rects[id] ?? bounds)
             _ = makePane(
                 id: id, workingDirectory: paneMeta[id]?.cwd, target: paneMeta[id]?.target,
-                initialFrame: frame, fontDelta: paneMeta[id]?.fontDelta ?? 0
+                initialFrame: frame, fontDelta: paneMeta[id]?.fontDelta ?? 0,
+                expectExisting: true
             )
         }
         tree = snapshotTree

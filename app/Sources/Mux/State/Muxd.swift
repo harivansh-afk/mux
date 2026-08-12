@@ -54,6 +54,35 @@ enum Muxd {
         }
     }
 
+    /// One pty from `mux-attach --list --json`: what the daemon holds,
+    /// keyed by pane UUID, with the foreground process's cwd when
+    /// readable. The startup reconciliation diffs this against the
+    /// windows' own panes to find orphans.
+    struct PtyListing: Decodable {
+        let name: String
+        let command: [String]
+        let attached: Bool
+        let exited: Bool
+        let cwd: String?
+    }
+
+    /// List the ptys a daemon serves for us: the local one, or `alias`
+    /// via the local daemon's broker. nil when the relay is missing or
+    /// the host did not answer; an empty array is a daemon with no ptys.
+    static func list(host alias: String?, then completion: @escaping ([PtyListing]?) -> Void) {
+        guard let attach = attachBinary else { return completion(nil) }
+        var args = ["--list", "--json"]
+        if let alias { args.append(alias) }
+        Subprocess.run(attach, args) { output in
+            guard let output else { return completion(nil) }
+            let listings = output.split(separator: "\n").compactMap { line -> PtyListing? in
+                guard line.hasPrefix("{") else { return nil }
+                return try? JSONDecoder().decode(PtyListing.self, from: Data(line.utf8))
+            }
+            completion(listings)
+        }
+    }
+
     /// This client's identity digest (`sha256:<64 hex>`), which the user
     /// pastes into the host's authorized list to let this machine in. nil
     /// when muxd is not bundled or cannot answer.

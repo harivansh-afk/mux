@@ -36,7 +36,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             newWindow(nil)
         }
 
+        // The snapshot is a claim, not the truth: the daemons know which
+        // ptys actually exist. Adopt live shells no window remembers.
+        adoptOrphanedPanes()
+
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Ask every daemon (local, then each host alias) for its ptys and
+    /// fold the ones no window knows into a recovery session. This is
+    /// what makes a lost or stale state.json recoverable: the shells
+    /// are alive on the daemon either way.
+    private func adoptOrphanedPanes() {
+        let targets: [String?] = [nil] + HostsConfig.aliases().map(Optional.some)
+        for host in targets {
+            Muxd.list(host: host) { [weak self] listings in
+                guard let self, let listings, !listings.isEmpty else { return }
+                let known = Set(self.controllers.flatMap { c in
+                    c.sessions.flatMap(\.panes.keys)
+                })
+                let orphans = listings.compactMap { l -> (UUID, String?, String?)? in
+                    // Only pane-shaped names: the pane UUID namespace is
+                    // the app's, anything else is not ours to adopt.
+                    guard let id = UUID(uuidString: l.name),
+                          !l.exited, !l.attached, !known.contains(id)
+                    else { return nil }
+                    return (id, l.cwd, Self.recoveredTarget(host: host, command: l.command))
+                }
+                guard !orphans.isEmpty else { return }
+                NSLog("adopting \(orphans.count) orphaned pty(s) from \(host ?? "local")")
+                (self.keyController ?? self.controllers.first)?.addRecoverySession(orphans)
+            }
+        }
+    }
+
+    /// The pane target an adopted pty should carry: the host it was
+    /// listed from, or `ix:<vm>` reconstructed from an `ix shell` command
+    /// so the pane keeps its badge and self-healing attach.
+    private static func recoveredTarget(host: String?, command: [String]) -> String? {
+        if let host { return host }
+        if command.count == 3, command[1] == "shell",
+           command[0] == IX.binary || command[0].hasSuffix("/ix") || command[0] == "ix" {
+            return "ix:\(command[2])"
+        }
+        return nil
     }
 
     func applicationDidBecomeActive(_: Notification) {

@@ -34,6 +34,11 @@ final class PaneView: NSView {
     /// target instead - which is right, because by then the VM exists.
     private let ptyCommand: [String]?
 
+    /// True for restored and adopted panes: their pty is believed to
+    /// exist, so the relay is told to call out a `created` reply (the
+    /// daemon lost the shell) instead of silently starting fresh.
+    private let expectExisting: Bool
+
     /// The host chip shown at this pane's top-right corner; nil for local
     /// panes. A sibling view in the pane container (libghostty owns this
     /// view's layer), laid out by Session next to the pane's frame.
@@ -136,12 +141,14 @@ final class PaneView: NSView {
         target: String? = nil,
         ptyCommand: [String]? = nil,
         initialFrame: CGRect = .zero,
-        fontDelta: Int = 0
+        fontDelta: Int = 0,
+        expectExisting: Bool = false
     ) {
         self.id = id
         self.target = target
         self.ptyCommand = ptyCommand
         self.fontDelta = fontDelta
+        self.expectExisting = expectExisting
         hostBadge = target.map { HostBadgeView(host: $0) }
         super.init(frame: initialFrame)
 
@@ -343,6 +350,11 @@ final class PaneView: NSView {
             return inPty.map(Self.quote)
         }
         var parts = ["\"\(attach)\"", "\"\(attachAddress)\""]
+        if expectExisting {
+            // A restored or adopted pane believes its pty survived: the
+            // relay prints a notice if the daemon had to create one.
+            parts.append("--expect-existing")
+        }
         if let inPty {
             // `-- cmd` makes the pty run that command instead of the shell.
             // No cwd: the pty's working directory is this machine's and
