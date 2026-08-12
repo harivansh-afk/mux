@@ -72,20 +72,32 @@ enum SnapshotStore {
 
     /// One-generation-ago copy, rotated on every save. Recovery source
     /// when the main file is missing or undecodable.
-    private static var backupURL: URL { url.appendingPathExtension("bak") }
+    private static var backupURL: URL {
+        url.appendingPathExtension("bak")
+    }
 
     /// Where an undecodable file is moved aside. Evidence is never
     /// deleted or overwritten by the fresh session's first save.
-    private static var quarantineURL: URL { url.appendingPathExtension("corrupt") }
+    private static var quarantineURL: URL {
+        url.appendingPathExtension("corrupt")
+    }
 
     static func save(_ snapshot: AppSnapshot) {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(snapshot)
+            let fm = FileManager.default
+            // An unchanged snapshot is not a save: rotating on it would
+            // push the same bytes into .bak, and two identical saves in a
+            // row (teardown paths fire more than once) would leave BOTH
+            // generations holding the end state - erasing the one copy
+            // that still had the sessions.
+            if let existing = try? Data(contentsOf: url), existing == data {
+                return
+            }
             // Rotate the current file to .bak first: the previous state
             // survives a bad write or a bad snapshot by one generation.
-            let fm = FileManager.default
             if fm.fileExists(atPath: url.path) {
                 try? fm.removeItem(at: backupURL)
                 try? fm.moveItem(at: url, to: backupURL)
@@ -93,7 +105,7 @@ enum SnapshotStore {
             // Atomic write: never leave a torn state file.
             try data.write(to: url, options: .atomic)
         } catch {
-            NSLog("snapshot save failed: \(error)")
+            AppLog.log("snapshot save failed: \(error)")
         }
     }
 
@@ -109,18 +121,17 @@ enum SnapshotStore {
         struct Versioned: Decodable { var version: Int }
         guard let data = try? Data(contentsOf: source) else { return nil }
         let decoder = JSONDecoder()
-        let snapshot: AppSnapshot?
-        if let versioned = try? decoder.decode(Versioned.self, from: data) {
+        let snapshot: AppSnapshot? = if let versioned = try? decoder.decode(Versioned.self, from: data) {
             switch versioned.version {
             case AppSnapshot.currentVersion:
-                snapshot = try? decoder.decode(AppSnapshot.self, from: data)
+                try? decoder.decode(AppSnapshot.self, from: data)
             case 1:
-                snapshot = (try? decoder.decode(AppSnapshotV1.self, from: data))?.migrated
+                (try? decoder.decode(AppSnapshotV1.self, from: data))?.migrated
             default:
-                snapshot = nil
+                nil
             }
         } else {
-            snapshot = nil
+            nil
         }
         if snapshot == nil, quarantineOnFailure {
             let fm = FileManager.default

@@ -15,7 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_: Notification) {
         // Before the snapshot is loaded: an unclean previous exit freezes
         // the pre-crash state file for post-mortem and recovery.
-        _ = CrashMarker.checkAndArm()
+        let unclean = CrashMarker.checkAndArm()
+        AppLog.log("launch unclean_previous_exit=\(unclean)")
 
         buildMenu()
 
@@ -33,8 +34,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prefixEngine.install()
 
         if let snapshot = SnapshotStore.load(), !snapshot.windows.isEmpty {
+            let panes = snapshot.windows.flatMap(\.sessions).flatMap { $0.panes.keys.map(\.uuidString) }
+            AppLog.log("restoring windows=\(snapshot.windows.count) panes=\(panes.joined(separator: ","))")
             restore(snapshot)
         } else {
+            AppLog.log("no restorable snapshot; opening a fresh window")
             newWindow(nil)
         }
 
@@ -54,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for host in targets {
             Muxd.list(host: host) { [weak self] listings in
                 guard let self, let listings, !listings.isEmpty else { return }
-                let known = Set(self.controllers.flatMap { c in
+                let known = Set(controllers.flatMap { c in
                     c.sessions.flatMap(\.panes.keys)
                 })
                 let orphans = listings.compactMap { l -> (UUID, String?, String?)? in
@@ -66,8 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return (id, l.cwd, Self.recoveredTarget(host: host, command: l.command))
                 }
                 guard !orphans.isEmpty else { return }
-                NSLog("adopting \(orphans.count) orphaned pty(s) from \(host ?? "local")")
-                (self.keyController ?? self.controllers.first)?.addRecoverySession(orphans)
+                AppLog.log("adopting \(orphans.count) orphaned pty(s) from \(host ?? "local"): \(orphans.map(\.0.uuidString).joined(separator: ","))")
+                (keyController ?? controllers.first)?.addRecoverySession(orphans)
             }
         }
     }
@@ -76,9 +80,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// listed from, or `ix:<vm>` reconstructed from an `ix shell` command
     /// so the pane keeps its self-healing attach.
     private static func recoveredTarget(host: String?, command: [String]) -> String? {
-        if let host { return host }
+        if let host {
+            return host
+        }
         if command.count == 3, command[1] == "shell",
-           command[0] == IX.binary || command[0].hasSuffix("/ix") || command[0] == "ix" {
+           command[0] == IX.binary || command[0].hasSuffix("/ix") || command[0] == "ix"
+        {
             return "ix:\(command[2])"
         }
         return nil
@@ -96,23 +103,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// detach (ptys survive for restore), never a kill.
     private(set) var isTerminating = false
 
+    /// Mark the app as exiting: save while the sessions are still alive,
+    /// then freeze the snapshot against the teardown that follows. Called
+    /// from every path that ends the app - shouldTerminate for a real
+    /// quit, and the last window's close, which auto-terminates and must
+    /// get quit semantics (detach, keep state), not close semantics
+    /// (kill, wipe state).
+    func beginTermination(reason: String) {
+        guard !isTerminating else { return }
+        AppLog.log("terminating (\(reason))")
+        saveSnapshot()
+        isTerminating = true
+        CrashMarker.disarm()
+        AppLog.drain()
+    }
+
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
         // Save before raising the flag: saveSnapshot is a no-op once
         // terminating, so the teardown saves (windowControllerDidClose
         // fires as AppKit closes each window with zero sessions left)
         // cannot clobber this snapshot with an empty one.
-        saveSnapshot()
-        isTerminating = true
-        CrashMarker.disarm()
+        beginTermination(reason: "applicationShouldTerminate")
         return .terminateNow
     }
 
     func applicationWillTerminate(_: Notification) {
         // Normally a no-op (shouldTerminate already saved and raised the
         // flag); covers termination paths that skip shouldTerminate.
-        saveSnapshot()
-        isTerminating = true
-        CrashMarker.disarm()
+        beginTermination(reason: "applicationWillTerminate")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
@@ -184,6 +202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 activeSession: c.activeSessionIndex
             )
         }
+        let panes = windows.flatMap(\.sessions).map(\.panes.count).reduce(0, +)
+        AppLog.log("save windows=\(windows.count) panes=\(panes)")
         SnapshotStore.save(AppSnapshot(windows: windows))
     }
 

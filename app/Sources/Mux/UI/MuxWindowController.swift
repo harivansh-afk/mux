@@ -390,18 +390,30 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     func windowWillClose(_: Notification) {
         // A deliberate window close kills its daemon ptys. During app
         // termination this is a detach instead: survival across quit and
-        // crash is the point of M2.
-        let terminating = (NSApp.delegate as? AppDelegate)?.isTerminating ?? false
+        // crash is the point of M2. Closing the LAST window IS app
+        // termination (terminateAfterLastWindowClosed), so it gets quit
+        // semantics: the state is saved while the sessions are still
+        // alive, and every pty detaches. Anything else turns a habitual
+        // close-to-quit into killing every session and persisting the
+        // emptiness - the exact loss the daemon exists to prevent.
+        let delegate = NSApp.delegate as? AppDelegate
+        if !(delegate?.isTerminating ?? false), delegate?.controllers.count == 1 {
+            delegate?.beginTermination(reason: "last window closed")
+        }
+        let terminating = delegate?.isTerminating ?? false
+        let panes = sessions.map(\.panes.count).reduce(0, +)
+        AppLog.log("windowWillClose terminating=\(terminating) sessions=\(sessions.count) panes=\(panes)")
         for session in sessions {
             if !terminating {
                 for (_, pane) in session.panes {
+                    AppLog.log("kill pane=\(pane.id.uuidString) (window closed)")
                     pane.killRemote()
                 }
             }
             session.destroyAllSurfaces()
         }
         sessions.removeAll()
-        (NSApp.delegate as? AppDelegate)?.windowControllerDidClose(self)
+        delegate?.windowControllerDidClose(self)
     }
 
     /// Frame changes fire continuously during drags and live resizes;
