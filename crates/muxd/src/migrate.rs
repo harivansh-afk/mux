@@ -12,12 +12,19 @@
 //!
 //! 1. successor (`muxd --upgrade`) binds the migration socket (0600),
 //!    reads the pidfile, sends `SIGUSR1` to the predecessor;
-//! 2. predecessor snapshots every pty under its VT lock, connects, sends
-//!    payload + fds, and exits(0) - still holding those locks, so no read
-//!    loop can consume a byte that is not in the snapshot;
+//! 2. predecessor snapshots every pty under its VT lock, connects, and
+//!    sends payload + fds - still holding those locks, so no read loop
+//!    can consume a byte that is not in the snapshot;
 //! 3. successor adopts each pty (fresh VT fed with the snapshot, the
-//!    inherited master fd, same name), waits for the predecessor to go,
-//!    then binds the control socket and serves.
+//!    inherited master fd, same name) and acknowledges;
+//! 4. only then does the predecessor exit(0), releasing the control
+//!    socket for the successor to bind and serve.
+//!
+//! Step 4 is why the ack exists: `sendmsg` returning proves the kernel
+//! took the message, not that anything will ever adopt it. A predecessor
+//! that exits on `sendmsg` alone hands every session to a successor that
+//! may still die before its first `adopt` - and the process that could
+//! have kept serving them is already gone.
 //!
 //! Clients see the predecessor's EOF and reconnect (mux-attach), which
 //! reattaches by name and repaints from the migrated VT.
@@ -26,16 +33,18 @@
 //! follows `HOME` (`mux_proto::paths::daemon_pid`). Both exist so a test
 //! daemon can never signal, or steal the ptys of, the user's daemon.
 
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use mux_proto::migrate::{MigratePayload, MigratePty, MAX_MIGRATE_FDS, MIGRATE_VERSION};
+use mux_proto::migrate::{
+    MigratePayload, MigratePty, MAX_MIGRATE_FDS, MIGRATE_ACK, MIGRATE_VERSION,
+};
 use nix::sys::socket::{ControlMessage, ControlMessageOwned, MsgFlags};
 use nix::unistd::Pid;
-use tokio::io::{AsyncReadExt as _, Interest};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, Interest};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::manager::Manager;
@@ -51,6 +60,11 @@ const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// A stalled successor must not freeze the predecessor's ptys (their VT
 /// locks are held across the send).
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Payload sent to ack received. The successor only has to decode the
+/// payload and build one VT per pty; the same VT locks are held across
+/// this wait, so it is the stall a dead successor costs before the
+/// predecessor gives up and goes back to serving.
+const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Payload cap on receive; a screen snapshot per pty is well under this.
 const MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
@@ -170,18 +184,16 @@ pub async fn adopt_from_predecessor(manager: &Manager) {
     }
     tracing::info!(pid = pid.as_raw(), "asked predecessor for a handoff");
 
-    match tokio::time::timeout(HANDOFF_TIMEOUT, receive(&listener)).await {
-        Ok(Ok(adopted)) => {
-            let count = adopted.len();
-            for entry in adopted {
-                let name = entry.pty.name.clone();
-                if let Err(e) = manager.adopt(entry.pty, entry.master) {
-                    tracing::warn!(name, error = %format!("{e:#}"), "failed to adopt pty");
-                }
-            }
-            tracing::info!(count, "adopted ptys from predecessor");
-        }
-        Ok(Err(e)) => tracing::warn!(error = %format!("{e:#}"), "handoff failed; starting empty"),
+    match tokio::time::timeout(HANDOFF_TIMEOUT, accept_handoff(&listener, manager)).await {
+        Ok(Ok(count)) => tracing::info!(count, "adopted ptys from predecessor"),
+        // Not necessarily empty: a handoff that failed on its ack has
+        // already adopted, and the predecessor is still serving the same
+        // ptys - the control socket bind below is what settles that.
+        Ok(Err(e)) => tracing::warn!(
+            error = %format!("{e:#}"),
+            adopted = manager.live_sessions().len(),
+            "handoff failed",
+        ),
         Err(_elapsed) => tracing::warn!("predecessor did not hand off in time; starting empty"),
     }
     let _ = std::fs::remove_file(&path);
@@ -199,7 +211,15 @@ pub async fn adopt_from_predecessor(manager: &Manager) {
     }
 }
 
-fn bind_listener(path: &std::path::Path) -> Result<UnixListener> {
+/// Bind the migration rendezvous socket the predecessor will connect to.
+/// Public, with [`accept_handoff`] and [`hand_off`], so a test can drive
+/// both halves of the upgrade in one process; the daemon reaches them
+/// through [`adopt_from_predecessor`] and [`spawn_handoff_task`].
+///
+/// # Errors
+///
+/// The socket cannot be bound or chmod'ed.
+pub fn bind_listener(path: &Path) -> Result<UnixListener> {
     // Usual outcome is ENOENT; a bind that is actually blocked reports it.
     let _ = std::fs::remove_file(path);
     let listener = std::os::unix::net::UnixListener::bind(path)
@@ -211,14 +231,41 @@ fn bind_listener(path: &std::path::Path) -> Result<UnixListener> {
     UnixListener::from_std(listener).context("migration listener")
 }
 
-async fn receive(listener: &UnixListener) -> Result<Vec<Adopted>> {
+/// Successor half: take one handoff, adopt every pty it carries, and
+/// acknowledge it.
+///
+/// # Errors
+///
+/// The connection, the payload, or the ack write failed. An individual
+/// pty that cannot be adopted is logged, not fatal: its master fd is here
+/// either way, so the predecessor could not serve it any more regardless,
+/// and refusing the ack would only strand the rest.
+pub async fn accept_handoff(listener: &UnixListener, manager: &Manager) -> Result<usize> {
     let (mut stream, _) = listener.accept().await.context("accept handoff")?;
+    let adopted = receive(&mut stream).await?;
+    let count = adopted.len();
+    for entry in adopted {
+        let name = entry.pty.name.clone();
+        if let Err(e) = manager.adopt(entry.pty, entry.master) {
+            tracing::warn!(name, error = %format!("{e:#}"), "failed to adopt pty");
+        }
+    }
+    // Only now, with every fd owned by a live read loop, is the
+    // predecessor free to go.
+    stream
+        .write_all(&[MIGRATE_ACK])
+        .await
+        .context("acknowledge handoff")?;
+    stream.flush().await.context("flush ack")?;
+    Ok(count)
+}
 
+async fn receive(stream: &mut UnixStream) -> Result<Vec<Adopted>> {
     // The fds ride the first message; the payload may need more reads.
     let mut fds = Vec::new();
     let mut buf = loop {
         stream.readable().await?;
-        match stream.try_io(Interest::READABLE, || recv_with_fds(&stream, &mut fds)) {
+        match stream.try_io(Interest::READABLE, || recv_with_fds(stream, &mut fds)) {
             Ok(data) => break data,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => return Err(e).context("receive handoff"),
@@ -312,7 +359,7 @@ pub fn spawn_handoff_task(manager: Manager) {
                 }
             };
         while signals.recv().await.is_some() {
-            match hand_off(&manager) {
+            match hand_off(&manager, &socket_path()) {
                 Ok(count) => {
                     tracing::info!(count, "handed off ptys; exiting for the successor");
                     std::process::exit(0);
@@ -327,11 +374,20 @@ pub fn spawn_handoff_task(manager: Manager) {
     });
 }
 
-/// Snapshot + send, synchronously and without a single `.await`: every
-/// pty's VT lock is held from its snapshot until the process exits, which
-/// is what makes the handoff lossless (a read loop cannot drain the pty
-/// into a VT nobody will ever see).
-fn hand_off(manager: &Manager) -> Result<usize> {
+/// Predecessor half: snapshot + send + wait for the ack, synchronously
+/// and without a single `.await`. Every pty's VT lock is held from its
+/// snapshot until this returns, which is what makes the handoff lossless
+/// (a read loop cannot drain the pty into a VT nobody will ever see).
+///
+/// `Ok` means a successor has the ptys and the caller may exit. `Err`
+/// means it does not: the caller keeps serving, and the locks release
+/// with the guards below.
+///
+/// # Errors
+///
+/// Too many ptys for one `SCM_RIGHTS` message, an unreachable successor,
+/// a failed send, or a successor that never acknowledged.
+pub fn hand_off(manager: &Manager, socket: &Path) -> Result<usize> {
     let sessions = manager.live_sessions();
     if sessions.len() > MAX_MIGRATE_FDS {
         bail!(
@@ -340,10 +396,10 @@ fn hand_off(manager: &Manager) -> Result<usize> {
         );
     }
 
-    let path = socket_path();
-    let stream = std::os::unix::net::UnixStream::connect(&path)
-        .with_context(|| format!("connect {}", path.display()))?;
+    let stream = std::os::unix::net::UnixStream::connect(socket)
+        .with_context(|| format!("connect {}", socket.display()))?;
     stream.set_write_timeout(Some(SEND_TIMEOUT))?;
+    stream.set_read_timeout(Some(ACK_TIMEOUT))?;
 
     let guards: Vec<_> = sessions.iter().map(|s| s.terminal.lock()).collect();
     let mut ptys = Vec::with_capacity(sessions.len());
@@ -385,7 +441,23 @@ fn hand_off(manager: &Manager) -> Result<usize> {
         .map(|fd| fd.as_raw_fd())
         .collect();
     send_with_fds(&stream, &message, &raw)?;
+    await_ack(&stream)?;
     Ok(fds.len())
+}
+
+/// Block until the successor confirms it owns the ptys. `set_read_timeout`
+/// above bounds the wait, so a successor that died mid-adopt costs the
+/// predecessor `ACK_TIMEOUT` of frozen ptys instead of every session.
+fn await_ack(stream: &std::os::unix::net::UnixStream) -> Result<()> {
+    let mut ack = [0u8; 1];
+    let mut reader = stream;
+    reader
+        .read_exact(&mut ack)
+        .context("successor never acknowledged the handoff")?;
+    if ack[0] != MIGRATE_ACK {
+        bail!("successor answered {:#04x}, not the handoff ack", ack[0]);
+    }
+    Ok(())
 }
 
 /// `sendmsg` the whole message, with the fds on the first chunk. A stream

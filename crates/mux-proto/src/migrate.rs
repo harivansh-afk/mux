@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 
 pub const MIGRATE_VERSION: u32 = 1;
 pub const MAX_MIGRATE_FDS: usize = 256;
+/// The successor's "they are mine now" byte, written once every pty in
+/// the payload has been adopted. The predecessor does not exit until it
+/// lands: an fd that has left the old process but reached no new one is a
+/// session nobody can serve.
+pub const MIGRATE_ACK: u8 = 0xAC;
 
 /// Short /tmp path (`sun_path` is 104 bytes on darwin), per-uid.
 #[must_use]
