@@ -212,6 +212,9 @@ where
         }
 
         OpenMode::Kill { name } => {
+            // The request itself is logged, not just the effect: when a
+            // session vanishes, the question is always who asked.
+            tracing::info!(name, "kill requested");
             let existed = manager.kill(&name);
             reply(&mut writer, &Ok(Opened::Killed { existed })).await
         }
@@ -279,6 +282,7 @@ where
 
     let attachment = manager::attach(&session, cols, rows);
     let client_id = attachment.id;
+    tracing::info!(name, created, cols, rows, client = client_id.raw(), "attached");
 
     let attached: OpenReply = Ok(Opened::Attached {
         name: name.clone(),
@@ -360,6 +364,7 @@ where
     // Detach, by identity: this handler may be here because another
     // client stole the pty, and that client's channel is in the slot now.
     session.detach(client_id);
+    tracing::info!(name = %session.name, client = client_id.raw(), "detached");
     Ok(())
 }
 

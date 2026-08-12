@@ -46,6 +46,14 @@ pub enum ClientMsg {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ClientId(u64);
 
+impl ClientId {
+    /// The numeric identity, for correlating attach/detach log lines.
+    #[must_use]
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct AttachedClient {

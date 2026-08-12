@@ -86,6 +86,39 @@ fn print_enrollment(command: &str) -> Result<()> {
     Ok(())
 }
 
+/// Log to stderr AND `~/.local/state/muxd/muxd.log`. The daemon runs
+/// detached with stderr on /dev/null, so the file is the only record of
+/// the pty lifecycle; stderr still serves foreground runs and tests. A
+/// log that cannot be opened degrades to stderr-only rather than
+/// refusing to serve sessions.
+fn init_logging() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    let file = {
+        let path = paths::daemon_log();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok()
+    };
+    let file_layer = file.map(|f| {
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(f))
+    });
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(file_layer)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .init();
+}
+
 fn parse_listen(value: &str) -> Result<SocketAddr> {
     if let Ok(addr) = value.parse::<SocketAddr>() {
         return Ok(addr);
@@ -98,12 +131,7 @@ fn parse_listen(value: &str) -> Result<SocketAddr> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    init_logging();
 
     // Subcommands before flags: they answer and exit, and share only the
     // on-disk material with the daemon.

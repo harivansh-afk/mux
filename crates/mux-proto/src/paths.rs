@@ -99,3 +99,20 @@ pub fn daemon_token() -> PathBuf {
 pub fn daemon_pid() -> PathBuf {
     daemon_state_dir().join("muxd.pid")
 }
+
+/// Daemon log: `~/.local/state/muxd/muxd.log`. The daemon is spawned
+/// detached with stderr on /dev/null, so without a file the whole pty
+/// lifecycle (created/attached/killed/exited) is unobservable - and a
+/// session that vanished cannot be diagnosed after the fact.
+#[must_use]
+pub fn daemon_log() -> PathBuf {
+    daemon_state_dir().join("muxd.log")
+}
+
+/// Relay log: `~/.local/state/mux/attach.log`. One line per attach
+/// outcome and exit, and one per kill request (with the requesting
+/// parent pid): the client-side half of the same post-mortem trail.
+#[must_use]
+pub fn attach_log() -> PathBuf {
+    client_state_dir().join("attach.log")
+}
