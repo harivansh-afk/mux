@@ -191,12 +191,13 @@ extension MuxWindowController {
         (container.bounds.width * 0.38).rounded()
     }
 
-    /// One spring for everything canvas. Response ~0.35s, slightly
-    /// under-damped: a hint of settle at the end, and - unlike a fixed
-    /// curve - it retargets from the current on-screen position, so
-    /// spamming open/close bends the motion instead of restarting it.
-    private static let canvasStiffness: CGFloat = 320
-    private static let canvasDamping: CGFloat = 30
+    /// One spring for everything canvas - slab, panel, and resume flight
+    /// share it so they always land together. Tuned for speed: response
+    /// ~0.18s, essentially critically damped (no bounce tax), arrival
+    /// reads at roughly 130ms. Retargetable: spamming open/close bends
+    /// the motion from its current on-screen position, never restarts.
+    private static let canvasStiffness: CGFloat = 1200
+    private static let canvasDamping: CGFloat = 68
 
     private static func canvasSpring(_ keyPath: String) -> CASpringAnimation {
         let spring = CASpringAnimation(keyPath: keyPath)
