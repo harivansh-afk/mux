@@ -15,14 +15,6 @@ extension PaneView {
             return
         }
 
-        // Font zoom stays pane-owned: libghostty has no way to read the
-        // font size back, so ghostty never sees these keys - the pane
-        // drives the change itself and tracks the delta for the snapshot.
-        if let step = Self.fontZoomStep(event) {
-            adjustFontSize(step)
-            return
-        }
-
         // We need to translate the mods (maybe) to handle configs such as
         // macos-option-as-alt.
         let translationModsGhostty = Self.eventModifierFlags(
@@ -185,17 +177,22 @@ extension PaneView {
         }
     }
 
-    /// cmd+= / cmd+- / cmd+0 as +1 / -1 / 0 (reset); nil for everything
-    /// else.
-    private static func fontZoomStep(_ event: NSEvent) -> Int? {
-        let mods = event.modifierFlags.intersection([.command, .control, .option])
-        guard mods == .command else { return nil }
-        return switch event.charactersIgnoringModifiers {
-        case "=", "+": 1
-        case "-": -1
-        case "0": 0
-        default: nil
+    /// cmd+= / cmd+- / cmd+0 as +1 / -1 / 0 (reset) for the focused
+    /// pane; the same keys with shift held step every pane in the app.
+    /// nil for everything else.
+    private static func fontZoomStep(_ event: NSEvent) -> (step: Int, allPanes: Bool)? {
+        let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        guard mods == .command || mods == [.command, .shift] else { return nil }
+        // Shift changes the character (= becomes +, - becomes _), so
+        // match on the key's unmodified character.
+        let step: Int
+        switch event.characters(byApplyingModifiers: []) {
+        case "=", "+": step = 1
+        case "-": step = -1
+        case "0": step = 0
+        default: return nil
         }
+        return (step, mods.contains(.shift))
     }
 
     override func keyUp(with event: NSEvent) {
@@ -213,6 +210,21 @@ extension PaneView {
         // than the first responder, and we don't want to handle those.
         if !focused {
             return false
+        }
+
+        // Font zoom stays mux-owned: libghostty has no way to read the
+        // font size back, so ghostty never sees these keys - the pane
+        // drives the change itself and tracks the delta for the
+        // snapshot. Intercepted here (not keyDown) because the shifted
+        // all-pane variants are not ghostty bindings and would otherwise
+        // take the doCommand detour.
+        if let zoom = Self.fontZoomStep(event) {
+            if zoom.allPanes {
+                Self.adjustAllFontSizes(zoom.step)
+            } else {
+                adjustFontSize(zoom.step)
+            }
+            return true
         }
 
         // Get information about if this is a binding. If a binding matches

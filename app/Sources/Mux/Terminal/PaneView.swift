@@ -396,7 +396,7 @@ final class PaneView: NSView {
 
     /// Adjust the font zoom by `step` points; 0 resets to the config
     /// default. Keeps `fontDelta` in lockstep with what ghostty applies.
-    func adjustFontSize(_ step: Int) {
+    func adjustFontSize(_ step: Int, save: Bool = true) {
         guard surface != nil else { return }
         if step == 0 {
             fontDelta = 0
@@ -407,7 +407,25 @@ final class PaneView: NSView {
                 step > 0 ? "increase_font_size:\(step)" : "decrease_font_size:\(-step)"
             )
         }
-        controller?.saveState()
+        if save {
+            controller?.saveState()
+        }
+    }
+
+    /// Apply the same zoom step to every pane in every window and
+    /// session (the shift variants of the zoom keys): all terminals
+    /// move by the same exact increment, so per-pane zoom differences
+    /// are preserved. 0 resets every pane to the config default.
+    static func adjustAllFontSizes(_ step: Int) {
+        guard let delegate = NSApp.delegate as? AppDelegate else { return }
+        for controller in delegate.controllers {
+            for session in controller.sessions {
+                for (_, pane) in session.panes {
+                    pane.adjustFontSize(step, save: false)
+                }
+            }
+        }
+        delegate.saveSnapshot()
     }
 
     /// Internal (not private): the context menu handlers in
