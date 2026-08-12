@@ -78,6 +78,10 @@ final class CanvasOverlayView: NSView {
         scroll.hasVerticalScroller = true
         scroll.scrollerStyle = .overlay
         scroll.automaticallyAdjustsContentInsets = false
+        // A bounded plane: the list stops at its edges, no rubber-band
+        // past the first or last card.
+        scroll.verticalScrollElasticity = .none
+        scroll.horizontalScrollElasticity = .none
         scroll.documentView = content
         addSubview(scroll)
         addSubview(titleLabel)
@@ -143,21 +147,36 @@ final class CanvasOverlayView: NSView {
         render()
     }
 
-    /// Move the highlight across cards, wrapping at both ends.
+    /// Move the highlight across cards, stopping at the ends: the list
+    /// is a bounded plane, not a ring.
     func move(by delta: Int) {
         guard !cards.isEmpty else { return }
-        index = (index + delta + cards.count) % cards.count
+        let next = min(max(index + delta, 0), cards.count - 1)
+        guard next != index else { return }
+        index = next
         render()
         cards[index].scrollToVisible(cards[index].bounds)
     }
 
-    /// The selected card's thumbnail rect in `view` coordinates, for the
-    /// jump animation.
-    func thumbFrame(of entry: Entry, in view: NSView) -> NSRect? {
+    /// The image rect inside a card's thumbnail - the aspect-fit rect
+    /// the mirror actually draws - in `view` coordinates. The resume
+    /// flight starts exactly on those pixels, so the image never
+    /// changes shape on the way to the pane.
+    func thumbContentFrame(of entry: Entry, in view: NSView) -> NSRect? {
         guard let card = cards.first(where: { $0.entry.paneID == entry.paneID }),
               card.window != nil
         else { return nil }
-        return card.thumb.convert(card.thumb.bounds, to: view)
+        var rect = card.thumb.bounds
+        if let size = entry.pane?.frame.size, size.width > 1, size.height > 1 {
+            let scale = min(rect.width / size.width, rect.height / size.height)
+            rect = NSRect(
+                x: rect.midX - size.width * scale / 2,
+                y: rect.midY - size.height * scale / 2,
+                width: size.width * scale,
+                height: size.height * scale
+            )
+        }
+        return card.thumb.convert(rect, to: view)
     }
 
     // MARK: - Live mirrors

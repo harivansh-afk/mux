@@ -191,19 +191,52 @@ extension MuxWindowController {
         (container.bounds.width * 0.38).rounded()
     }
 
-    /// One curve for everything canvas: Apple's sheet feel - fast out
-    /// of the gate, gravity into the landing.
-    private func animateCanvas(
-        _ changes: @escaping () -> Void, completion: (() -> Void)? = nil
-    ) {
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.34
-            context.timingFunction = CAMediaTimingFunction(
-                controlPoints: 0.32, 0.72, 0.0, 1.0
-            )
-            context.allowsImplicitAnimation = true
-            changes()
-        }, completionHandler: completion)
+    /// One spring for everything canvas. Response ~0.35s, slightly
+    /// under-damped: a hint of settle at the end, and - unlike a fixed
+    /// curve - it retargets from the current on-screen position, so
+    /// spamming open/close bends the motion instead of restarting it.
+    private static let canvasStiffness: CGFloat = 320
+    private static let canvasDamping: CGFloat = 30
+
+    private static func canvasSpring(_ keyPath: String) -> CASpringAnimation {
+        let spring = CASpringAnimation(keyPath: keyPath)
+        spring.stiffness = canvasStiffness
+        spring.damping = canvasDamping
+        spring.mass = 1
+        spring.duration = spring.settlingDuration
+        return spring
+    }
+
+    /// Where a view visually is right now (mid-flight included), so a
+    /// new spring picks up from there.
+    private func presentedPosition(of view: NSView) -> CGPoint? {
+        view.layer.map { $0.presentation()?.position ?? $0.position }
+    }
+
+    /// Run `changes` (which parks the workspace slab and the panel at
+    /// their model positions), then spring both from wherever they were.
+    private func slideCanvas(_ changes: () -> Void) {
+        let workspaceFrom = presentedPosition(of: workspace)
+        let panelFrom = presentedPosition(of: canvasOverlay)
+        changes()
+        for (view, from) in [(workspace, workspaceFrom), (canvasOverlay, panelFrom)] {
+            guard let layer = view.layer, let from, from != layer.position else { continue }
+            let spring = Self.canvasSpring("position")
+            spring.fromValue = from
+            layer.add(spring, forKey: "canvas-slide")
+        }
+    }
+
+    /// The spring outlives the mode change; tear the panel down only
+    /// after it settles, and only if nobody reopened it meanwhile.
+    private func scheduleCanvasTeardown() {
+        let settle = Self.canvasSpring("position").settlingDuration
+        DispatchQueue.main.asyncAfter(deadline: .now() + settle) { [weak self] in
+            guard let self, !canvasOpen, canvasClosing else { return }
+            canvasClosing = false
+            canvasOverlay.removeFromSuperview()
+            applyCanvasOcclusion()
+        }
     }
 
     /// prefix f: every pane in the window as a live card, stacked in a
@@ -219,18 +252,22 @@ extension MuxWindowController {
             self?.commitCanvas(entry)
             (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
         }
-        canvasOverlay.removeFromSuperview()
-        container.addSubview(canvasOverlay)
-        // Start just offscreen at the final size, so the slide-in is the
-        // only motion.
-        let bounds = container.bounds
-        canvasOverlay.frame = NSRect(
-            x: bounds.width, y: 0, width: canvasPanelWidth, height: bounds.height
-        )
-        canvasOverlay.layoutSubtreeIfNeeded()
+        if canvasOverlay.superview == nil {
+            container.addSubview(canvasOverlay)
+            // Start just offscreen at the final size, so the slide-in is
+            // the only motion.
+            let bounds = container.bounds
+            canvasOverlay.frame = NSRect(
+                x: bounds.width, y: 0, width: canvasPanelWidth, height: bounds.height
+            )
+            canvasOverlay.layoutSubtreeIfNeeded()
+        }
+        // Reopening mid-close: the pending teardown sees canvasOpen and
+        // stands down; the spring retargets from wherever the panel is.
+        canvasClosing = false
         canvasOpen = true
         applyCanvasOcclusion()
-        animateCanvas { [self] in
+        slideCanvas { [self] in
             layoutPanes()
             positionCanvasOverlay()
         }
@@ -240,14 +277,11 @@ extension MuxWindowController {
         guard canvasOverlay.superview != nil, !canvasClosing else { return }
         canvasClosing = true
         canvasOpen = false
-        animateCanvas({ [self] in
+        slideCanvas { [self] in
             layoutPanes()
             positionCanvasOverlay()
-        }, completion: { [self] in
-            canvasOverlay.removeFromSuperview()
-            canvasClosing = false
-            applyCanvasOcclusion()
-        })
+        }
+        scheduleCanvasTeardown()
     }
 
     func moveCanvasOverlay(by delta: Int) {
@@ -281,54 +315,62 @@ extension MuxWindowController {
         let session = sessions[entry.sessionIndex]
         guard let pane = session.panes[entry.paneID] else { return }
         guard canvasOverlay.superview != nil, !canvasClosing else { return }
-        let ghostStart = canvasOverlay.thumbFrame(of: entry, in: container)
+        // The flight starts on the thumbnail's actual pixels (the
+        // aspect-fit image rect, not the letterboxed card), so the image
+        // never changes shape on the way.
+        let ghostStart = canvasOverlay.thumbContentFrame(of: entry, in: container)
         let contents = pane.layer?.contents
         canvasClosing = true
         canvasOpen = false
-        animateCanvas({ [self] in
+        slideCanvas { [self] in
             selectSession(entry.sessionIndex)
             session.reveal(pane)
             layoutPanes()
             positionCanvasOverlay()
-        }, completion: { [self] in
-            canvasOverlay.removeFromSuperview()
-            canvasClosing = false
-            applyCanvasOcclusion()
-        })
-        if let ghostStart, let contents {
-            // Model values are final now; the ghost flies to the pane's
-            // real (slid-back) rect.
-            animateJump(from: ghostStart, to: pane.scrollHost?.frame ?? pane.frame,
-                        contents: contents)
+        }
+        scheduleCanvasTeardown()
+        if let ghostStart, let contents, pane.scrollHost != nil {
+            animateJump(from: ghostStart, to: pane, contents: contents)
         }
     }
 
-    /// Spatial continuity for the resume: a throwaway layer showing the
-    /// pane's frame, on the same curve and clock as the slide.
-    private func animateJump(from start: NSRect, to end: NSRect, contents: Any) {
+    /// The resume flight: the card's image morphs into the pane itself.
+    /// The destination stays hidden until the ghost lands, so there is
+    /// never a double image - the picture that flies IS the terminal
+    /// that appears. Same spring as the slide; everything settles as
+    /// one gesture.
+    private func animateJump(from start: NSRect, to pane: PaneView, contents: Any) {
+        guard let containerLayer = container.layer, let host = pane.scrollHost else { return }
+        host.isHidden = true
         let ghost = CALayer()
         ghost.contents = contents
-        ghost.contentsGravity = .resizeAspect
+        // The start rect already has the pane's aspect; plain resize
+        // keeps the pixels glued to the layer edge to edge.
+        ghost.contentsGravity = .resize
         ghost.zPosition = 1000
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        ghost.frame = end
-        container.layer?.addSublayer(ghost)
+        // Model = destination (the pane's rect once the slab is home).
+        ghost.frame = host.frame
+        containerLayer.addSublayer(ghost)
         CATransaction.commit()
 
-        let position = CABasicAnimation(keyPath: "position")
+        let position = Self.canvasSpring("position")
         position.fromValue = CGPoint(x: start.midX, y: start.midY)
-        let boundsAnim = CABasicAnimation(keyPath: "bounds")
-        boundsAnim.fromValue = CGRect(origin: .zero, size: start.size)
-        let group = CAAnimationGroup()
-        group.animations = [position, boundsAnim]
-        group.duration = 0.34
-        group.timingFunction = CAMediaTimingFunction(
-            controlPoints: 0.32, 0.72, 0.0, 1.0
-        )
+        let bounds = Self.canvasSpring("bounds")
+        bounds.fromValue = CGRect(origin: .zero, size: start.size)
         CATransaction.begin()
-        CATransaction.setCompletionBlock { ghost.removeFromSuperlayer() }
-        ghost.add(group, forKey: "jump")
+        CATransaction.setCompletionBlock { [weak self, weak pane] in
+            host.isHidden = false
+            ghost.removeFromSuperlayer()
+            // Hiding the host resigned first responder; hand focus back
+            // now that the real pane is on screen.
+            if let pane {
+                self?.focus(pane)
+            }
+        }
+        ghost.add(position, forKey: "jump-position")
+        ghost.add(bounds, forKey: "jump-bounds")
         CATransaction.commit()
     }
 
