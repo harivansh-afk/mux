@@ -193,7 +193,17 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
     // PATH search, and building pointer tables after the fork.
     let exec_path = resolve_in_path(exec_path);
     let mut env: Vec<CString> = std::env::vars_os()
-        .filter(|(k, _)| !matches!(k.to_str(), Some("TERM" | "COLORTERM")))
+        .filter(|(k, _)| match k.to_str() {
+            // TERM/COLORTERM are re-added below. CLAUDE*/AI_AGENT are
+            // per-session markers of whatever agent happened to start the
+            // daemon; leaking them makes every pane shell look like a
+            // nested agent session (e.g. claude disables transcript
+            // saving under CLAUDE_CODE_CHILD_SESSION).
+            Some(k) => {
+                !matches!(k, "TERM" | "COLORTERM" | "AI_AGENT") && !k.starts_with("CLAUDE")
+            }
+            None => true,
+        })
         .filter_map(|(k, v)| {
             use std::os::unix::ffi::OsStringExt;
             let mut bytes = k.into_vec();
