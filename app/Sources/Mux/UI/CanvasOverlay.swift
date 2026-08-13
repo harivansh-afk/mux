@@ -342,7 +342,7 @@ final class CanvasOverlayView: NSView {
         // brightness in the room.
         let dark = !palette.panelBg.isLightColor
         scrim.layer?.backgroundColor = NSColor.black
-            .withAlphaComponent(dark ? 0.82 : 0.5).cgColor
+            .withAlphaComponent(dark ? 0.9 : 0.62).cgColor
         stage.layer?.backgroundColor = palette.panelBg.cgColor
         stage.layer?.borderColor = palette.accent.cgColor
 

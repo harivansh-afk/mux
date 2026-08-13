@@ -11,7 +11,7 @@ import AppKit
 ///   prefix z      zoom toggle          prefix x      close pane
 ///   prefix c      new session          prefix 1..9   select session
 ///   prefix n/p    next/prev session    prefix r      resize mode
-///   prefix t      hosts window         prefix f      canvas
+///   prefix t      hosts window         prefix space  canvas (f: alias)
 ///   prefix ?      keybinds overlay     prefix ctrl+b send a literal ctrl+b
 ///   prefix esc    cancel
 /// Held-ctrl aliasing: ctrl+<key> in prefix mode means <key> (the nvim-mux
@@ -294,7 +294,9 @@ final class PrefixEngine {
         case "x": controller?.closeFocusedPane()
         case "r": setMode(.resize)
         case "t": setMode(.hosts)
-        case "f": setMode(.canvas)
+        // Space: the canvas is the navigation surface, it gets the
+        // biggest key. f stays as the original alias.
+        case " ", "f": setMode(.canvas)
         case "?": setMode(.help)
         // Sessions.
         case "c": controller?.newSession()

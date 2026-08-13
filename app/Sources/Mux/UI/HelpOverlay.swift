@@ -21,7 +21,7 @@ final class HelpOverlayView: NSView {
             ("x", "close pane"),
             ("r", "resize mode"),
             ("t", "hosts and ix vms"),
-            ("f", "canvas"),
+            ("space / f", "canvas"),
             ("?", "keybinds"),
             ("esc", "cancel"),
         ]),
@@ -44,8 +44,8 @@ final class HelpOverlayView: NSView {
             ("y", "copy client digest"),
             ("esc / q", "close"),
         ]),
-        Section(title: "canvas  prefix f", rows: [
-            ("h / j / k / l", "choose pane"),
+        Section(title: "canvas  prefix space", rows: [
+            ("j / k", "choose pane"),
             ("enter / click", "jump to it"),
             ("esc / q", "cancel"),
         ]),
