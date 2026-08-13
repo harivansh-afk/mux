@@ -1,0 +1,19 @@
+diff --git a/src/Surface.zig b/src/Surface.zig
+index 3002e9f58..38e7e7c4b 100644
+--- a/src/Surface.zig
++++ b/src/Surface.zig
+@@ -488,6 +488,14 @@ pub fn init(
+         // don't need to dupe memory here because termio will derive
+         // it. We preserve this so directory inheritance works.
+         c.@"working-directory" = config_original.@"working-directory";
++
++        // Same for the command (and its wait flag): an embedder sets
++        // these per-surface (apprt surface options), so they are not
++        // config-file state and the replay above rebuilds without
++        // them - finalize would then substitute the user's shell for
++        // the requested command.
++        c.command = config_original.command;
++        c.@"wait-after-command" = config_original.@"wait-after-command";
+         break :config c;
+     } else config_original;
+ 
