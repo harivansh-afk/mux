@@ -161,7 +161,7 @@ export fn ghostty_vt_terminal_cursor_pending_wrap(
 ///   4. Scroll region (DECSTBM/DECSLRM — homes cursor)
 ///   5. Tab stops (CSI 3g clear + HTS per stop — moves cursor)
 ///   6. ModifyOtherKeys
-///   7. PWD (OSC 7)
+///   7. PWD (OSC 7) and title (OSC 0)
 ///   8. Screen extras: style, hyperlink, protection, kitty keyboard, charsets
 ///   9. Origin mode (CSI ?6h — homes cursor to scroll region)
 ///  10. CUP (DECOM-aware cursor positioning)
@@ -265,6 +265,13 @@ fn renderReattach(
     // 7. PWD via OSC 7.
     if (t.pwd.items.len > 0) {
         try writer.print("\x1b]7;{s}\x1b\\", .{t.pwd.items});
+    }
+
+    // 7b. Title via OSC 0: what the program last called itself. Coding
+    //     agents encode their state in the title's leading glyph, so a
+    //     reattaching client must learn it now, not at the next write.
+    if (t.getTitle()) |title| {
+        try writer.print("\x1b]0;{s}\x1b\\", .{title});
     }
 
     // 8. Screen extras that do NOT move the cursor: SGR style,

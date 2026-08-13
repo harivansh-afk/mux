@@ -286,6 +286,36 @@ mod tests {
     }
 
     #[test]
+    fn render_screen_bytes_replays_title() {
+        let mut term = Terminal::new(24, 80).expect("terminal creation");
+        // OSC 0 (BEL-terminated, as programs usually emit it). Coding
+        // agents encode their state in the title's leading glyph, so a
+        // reattaching client must learn it from the replay.
+        term.feed("\x1b]0;\u{25D0} busy topic\x07".as_bytes());
+
+        let bytes = term.render_screen_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(
+            text.contains("\x1b]0;\u{25D0} busy topic\x1b\\"),
+            "title lost in replay: {text:?}"
+        );
+    }
+
+    #[test]
+    fn render_screen_bytes_omits_unset_title() {
+        let mut term = Terminal::new(4, 10).expect("terminal creation");
+        term.feed(b"no title here");
+
+        let bytes = term.render_screen_bytes();
+
+        assert!(
+            !bytes.windows(b"\x1b]0;".len()).any(|w| w == b"\x1b]0;"),
+            "replay must not clear a client title the pty never set"
+        );
+    }
+
+    #[test]
     fn render_screen_bytes_preserves_truecolor_sgr() {
         let mut term = Terminal::new(24, 80).expect("terminal creation");
         term.feed(b"\x1b[38;2;10;200;30mrgb text");

@@ -319,15 +319,19 @@ final class CanvasOverlayView: NSView {
         stageTitle.sizeToFit()
         stageMeta.sizeToFit()
         let maxLabelWidth = max(0, stage.frame.width - 1)
+        // No topic line: the directory line moves up and stands alone.
+        let hasTitle = stageTitle.attributedStringValue.length > 0
+        stageTitle.isHidden = !hasTitle
+        let labelY = stage.frame.maxY + 10
         stageTitle.frame = NSRect(
             x: stage.frame.minX + 1,
-            y: stage.frame.maxY + 10,
+            y: labelY,
             width: min(stageTitle.frame.width, maxLabelWidth),
             height: stageTitle.frame.height
         )
         stageMeta.frame = NSRect(
             x: stage.frame.minX + 1,
-            y: stageTitle.frame.maxY + 3,
+            y: hasTitle ? stageTitle.frame.maxY + 3 : labelY,
             width: min(stageMeta.frame.width, maxLabelWidth),
             height: stageMeta.frame.height
         )
@@ -368,17 +372,20 @@ final class CanvasOverlayView: NSView {
         //   <directory> [<host>]
         // No session number - the session indicator highlights the
         // selection's session live instead.
+        // A pane with no agent and no topic gets no first line at all -
+        // the descriptor is just where it lives.
         let parts = PaneLabelParts.parts(for: pane)
         let first = parts.first
         let title = NSMutableAttributedString()
         if let glyph = Self.stateGlyph(for: pane, palette: palette, font: Chrome.uiTitleFont) {
             title.append(glyph)
         }
-        let topic = first?.role == .title ? first?.text : nil
-        title.append(NSAttributedString(
-            string: topic ?? "shell",
-            attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
-        ))
+        if first?.role == .title, let topic = first?.text {
+            title.append(NSAttributedString(
+                string: topic,
+                attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
+            ))
+        }
         stageTitle.attributedStringValue = title
 
         let meta = NSMutableAttributedString()
