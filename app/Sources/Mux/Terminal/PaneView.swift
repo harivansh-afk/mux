@@ -424,17 +424,16 @@ final class PaneView: NSView {
         }
     }
 
-    /// Apply the same zoom step to every pane in every window and
-    /// session (the shift variants of the zoom keys): all terminals
-    /// move by the same exact increment, so per-pane zoom differences
-    /// are preserved. 0 resets every pane to the config default.
+    /// Apply the same zoom step to every pane in every session (the
+    /// shift variants of the zoom keys): all terminals move by the same
+    /// exact increment, so per-pane zoom differences are preserved. 0
+    /// resets every pane to the config default.
     static func adjustAllFontSizes(_ step: Int) {
-        guard let delegate = NSApp.delegate as? AppDelegate else { return }
-        for controller in delegate.controllers {
-            for session in controller.sessions {
-                for (_, pane) in session.panes {
-                    pane.adjustFontSize(step, save: false)
-                }
+        guard let delegate = NSApp.delegate as? AppDelegate,
+              let controller = delegate.controller else { return }
+        for session in controller.sessions {
+            for (_, pane) in session.panes {
+                pane.adjustFontSize(step, save: false)
             }
         }
         delegate.saveSnapshot()

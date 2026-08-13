@@ -108,11 +108,3 @@ pub fn daemon_pid() -> PathBuf {
 pub fn daemon_log() -> PathBuf {
     daemon_state_dir().join("muxd.log")
 }
-
-/// Relay log: `~/.local/state/mux/attach.log`. One line per attach
-/// outcome and exit, and one per kill request (with the requesting
-/// parent pid): the client-side half of the same post-mortem trail.
-#[must_use]
-pub fn attach_log() -> PathBuf {
-    client_state_dir().join("attach.log")
-}

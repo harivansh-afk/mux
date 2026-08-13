@@ -298,7 +298,7 @@ dependencies = [
 
 [[package]]
 name = "ghostty-vt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nix",
  "serde",
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "mux-attach"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "mux-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "postcard",
  "serde",
@@ -490,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "muxd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
