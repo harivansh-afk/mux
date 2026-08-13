@@ -178,6 +178,18 @@ final class ThemeManager {
         // the scheme per surface on .muxThemeDidChange below.
         if let app = GhosttyRuntime.shared?.app {
             ghostty_app_set_color_scheme(app, colorScheme)
+            // Synchronously re-derive the app config under the new state
+            // before anything else runs. The call above only marks the
+            // state and requests an async soft reload; a surface created
+            // before that lands clones a config whose conditional state
+            // disagrees with the app's, and the core then replays the
+            // config file for that surface - dropping everything set
+            // per-surface, above all the attach command: the pane
+            // silently becomes a bare local shell and nothing reaches
+            // the daemon. refresh runs on the main thread, where panes
+            // are born, so after this line no surface can ever see the
+            // mismatch.
+            GhosttyRuntime.shared?.reloadConfig(soft: true)
         }
 
         NotificationCenter.default.post(name: .muxThemeDidChange, object: nil)
