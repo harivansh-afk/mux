@@ -1,56 +1,10 @@
 import AppKit
 
-/// The one grammar for pane labels everywhere they exist (prefix tags,
-/// wheel cards, the stage): title · host · directory, deduplicated. A
-/// remote shell often titles itself after its host, and a local one
-/// after its directory - repeating the word teaches nothing. When the
-/// title IS the host, the host keeps the slot: where a pane lives
-/// outranks what it calls itself.
+/// The stage's directory line, shared with anything else that names
+/// where a pane lives. What a pane calls itself is only ever shown as
+/// an agent topic (behind a state glyph); a shell's self-title is
+/// noise the directory line already covers.
 enum PaneLabelParts {
-    enum Role {
-        case title
-        case host
-        case dir
-    }
-
-    static func parts(for pane: PaneView) -> [(text: String, role: Role)] {
-        // Every pane wears a host badge - local too, in the same pink,
-        // so the grammar reads identically everywhere.
-        let host = pane.target ?? "local"
-        var title = pane.displayTitle
-
-        // Shell title formats often lead with their own host - "(spark)
-        // ~/x", "[spark] x", "spark: x". The badge already says it, in
-        // pink; strip the repeat instead of printing it twice.
-        for prefix in ["(\(host))", "[\(host)]", "\(host):"]
-            where title.lowercased().hasPrefix(prefix.lowercased())
-        {
-            title = String(title.dropFirst(prefix.count))
-                .trimmingCharacters(in: .whitespaces)
-            break
-        }
-
-        var out: [(text: String, role: Role)] = []
-        if title.isEmpty || title.caseInsensitiveCompare(host) == .orderedSame {
-            out.append((host, .host))
-        } else {
-            out.append((title, .title))
-            out.append((host, .host))
-        }
-
-        // A path-shaped title already names the directory better than
-        // its tail could; otherwise add the tail unless it repeats a
-        // word already on the label.
-        let titleIsPath = title.hasPrefix("~") || title.hasPrefix("/")
-        if !titleIsPath,
-           let dir = (pane.pwd as NSString?)?.lastPathComponent, !dir.isEmpty,
-           !out.contains(where: { $0.text.caseInsensitiveCompare(dir) == .orderedSame })
-        {
-            out.append((dir, .dir))
-        }
-        return out
-    }
-
     /// The pane's directory the way its prompt would print it: the full
     /// path with the home prefix folded to `~`. Remote paths fold their
     /// own home (/home/x or /Users/x) - the pane's pwd names the pane's

@@ -372,19 +372,21 @@ final class CanvasOverlayView: NSView {
         //   <directory> [<host>]
         // No session number - the session indicator highlights the
         // selection's session live instead.
-        // A pane with no agent and no topic gets no first line at all -
-        // the descriptor is just where it lives.
-        let parts = PaneLabelParts.parts(for: pane)
-        let first = parts.first
+        // The first line exists only when the pane announces an agent
+        // (the state glyph is the proof); a bare shell gets no first
+        // line at all, whatever it titled itself - shells love titling
+        // themselves after their directory, which the second line
+        // already says.
         let title = NSMutableAttributedString()
         if let glyph = Self.stateGlyph(for: pane, palette: palette, font: Chrome.uiTitleFont) {
             title.append(glyph)
-        }
-        if first?.role == .title, let topic = first?.text {
-            title.append(NSAttributedString(
-                string: topic,
-                attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
-            ))
+            let topic = pane.displayTitle
+            if !topic.isEmpty {
+                title.append(NSAttributedString(
+                    string: topic,
+                    attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
+                ))
+            }
         }
         stageTitle.attributedStringValue = title
 
