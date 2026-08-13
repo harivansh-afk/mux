@@ -69,10 +69,11 @@ enum PaneLabelParts {
     }
 }
 
-/// A small tag at a pane's top-right while the prefix is armed: what
-/// runs here and where (the PaneLabelParts grammar). A quiet panel
-/// background floats it above any cell content; no border - the box is
-/// the chrome, the text is the information.
+/// A small tag at a pane's top-right while the prefix is armed: the
+/// pane's host, in pink, and nothing else - titles and directories
+/// belong to the canvas. A quiet panel background floats it above any
+/// cell content; no border - the box is the chrome, the text is the
+/// information.
 final class PaneLabelView: NSView {
     private weak var pane: PaneView?
     private let label = NSTextField(labelWithString: "")
@@ -136,26 +137,13 @@ final class PaneLabelView: NSView {
         guard let pane else { return }
         let palette = ThemeManager.shared.palette
         layer?.backgroundColor = palette.panelBg.withAlphaComponent(0.94).cgColor
-
-        // Hosts read in pink (the active-item color), never in gray.
-        let line = NSMutableAttributedString()
-        for part in PaneLabelParts.parts(for: pane) {
-            if line.length > 0 {
-                line.append(NSAttributedString(string: " · ", attributes: [
-                    .font: Chrome.metaFont,
-                    .foregroundColor: palette.dim.withAlphaComponent(0.7),
-                ]))
-            }
-            let style: (font: NSFont, color: NSColor) = switch part.role {
-            case .title: (Chrome.metaBoldFont, palette.text)
-            case .host: (Chrome.metaBoldFont, palette.pink)
-            case .dir: (Chrome.metaFont, palette.dim)
-            }
-            line.append(NSAttributedString(string: part.text, attributes: [
-                .font: style.font,
-                .foregroundColor: style.color,
-            ]))
-        }
-        label.attributedStringValue = line
+        // The host alone, in pink (the active-item color), never gray.
+        label.attributedStringValue = NSAttributedString(
+            string: pane.target ?? "local",
+            attributes: [
+                .font: Chrome.metaBoldFont,
+                .foregroundColor: palette.pink,
+            ]
+        )
     }
 }

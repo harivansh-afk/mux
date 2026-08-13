@@ -225,6 +225,7 @@ extension MuxWindowController {
     /// so its renderer keeps producing the frames the mirrors show;
     /// hide restores the normal rule.
     func showCanvasOverlay() {
+        refreshPaneDirectories()
         // Wired before reload: reload fires the first selection, and the
         // indicator should track it from the first frame.
         canvasOverlay.onSelectionChange = { [weak self] entry in
@@ -322,20 +323,45 @@ extension MuxWindowController {
     private func canvasGroups() -> [CanvasOverlayView.Group] {
         sessions.enumerated().map { sessionIndex, session in
             var entries: [CanvasOverlayView.Entry] = []
-            for (paneIndex, paneID) in (session.tree?.leaves ?? []).enumerated() {
+            for paneID in session.tree?.leaves ?? [] {
                 guard let pane = session.panes[paneID] else { continue }
                 entries.append(CanvasOverlayView.Entry(
                     sessionIndex: sessionIndex,
                     paneID: paneID,
-                    index: "\(sessionIndex + 1).\(paneIndex + 1)",
                     pane: pane
                 ))
             }
-            return CanvasOverlayView.Group(
-                title: "session \(sessionIndex + 1)",
-                entries: entries,
-                current: sessionIndex == activeSessionIndex
-            )
+            return CanvasOverlayView.Group(entries: entries)
+        }
+    }
+
+    /// The directory a pane shows must not depend on shell integration:
+    /// most shells never report OSC 7, and reattach replays screen
+    /// bytes, not escapes. The daemons resolve every pty's cwd from its
+    /// live process, so each canvas open asks them once (a discrete
+    /// user action, not a poll) and fills in whatever OSC 7 has not.
+    func refreshPaneDirectories() {
+        var hosts: Set<String?> = []
+        var panesByID: [UUID: PaneView] = [:]
+        for session in sessions {
+            for (id, pane) in session.panes {
+                // ix panes excluded: their local pty cwd is where `ix
+                // shell` started, not where the shell in the VM is.
+                guard IX.vm(of: pane.target) == nil else { continue }
+                hosts.insert(pane.target)
+                panesByID[id] = pane
+            }
+        }
+        for host in hosts {
+            Muxd.list(host: host) { listings in
+                for listing in listings ?? [] {
+                    guard let id = UUID(uuidString: listing.name),
+                          let pane = panesByID[id], pane.target == host,
+                          let cwd = listing.cwd
+                    else { continue }
+                    pane.pwd = cwd
+                }
+            }
         }
     }
 

@@ -59,6 +59,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for host in targets {
             Muxd.list(host: host) { [weak self] listings in
                 guard let self, let controller, let listings, !listings.isEmpty else { return }
+                // The same answer that finds orphans also carries every
+                // known pane's live cwd - the daemon resolves it from
+                // the pty's process, which no shell integration has to
+                // report. Seed the restored panes with it (OSC 7, when
+                // it exists, overwrites later). ix panes excluded: their
+                // local pty cwd is not the VM shell's.
+                for session in controller.sessions {
+                    for (id, pane) in session.panes
+                        where pane.target == host && IX.vm(of: pane.target) == nil
+                    {
+                        if let listing = listings.first(where: { $0.name == id.uuidString }),
+                           let cwd = listing.cwd
+                        {
+                            pane.pwd = cwd
+                        }
+                    }
+                }
                 let known = Set(controller.sessions.flatMap(\.panes.keys))
                 let orphans = listings.compactMap { l -> (UUID, String?, String?)? in
                     // Only pane-shaped names: the pane UUID namespace is

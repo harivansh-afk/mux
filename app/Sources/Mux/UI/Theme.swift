@@ -69,12 +69,15 @@ struct Palette {
     /// The active-item highlight (session indicator's current number).
     let pink: NSColor
     /// Live status in the hosts overlay: a host that answered. Also the
-    /// canvas agent-state check when the agent finished.
+    /// agent-state idle ring (seen).
     let ok: NSColor
     /// Live status in the hosts overlay: a host that did not.
     let bad: NSColor
-    /// Work in progress (the canvas agent-state dot while an agent runs).
+    /// Agent-state working (the half-circle while an agent runs).
     let busy: NSColor
+    /// Agent-state done (idle reached unseen: the check that waits for
+    /// the user to look).
+    let teal: NSColor
     /// Pane separator lines. Derived from the terminal background exactly
     /// like ghostty's default `split-divider-color` (Ghostty.Config.swift
     /// splitDividerColor): darken a light background by 0.08, a dark one
@@ -94,6 +97,7 @@ struct Palette {
             ok: NSColor(hex: 0xA9B665),
             bad: NSColor(hex: 0xEA6962),
             busy: NSColor(hex: 0xD8A657),
+            teal: NSColor(hex: 0x89B482),
             divider: bg.ghosttyDividerColor
         )
     }()
@@ -110,6 +114,7 @@ struct Palette {
             ok: NSColor(hex: 0x6C782E),
             bad: NSColor(hex: 0xC14A4A),
             busy: NSColor(hex: 0xB47109),
+            teal: NSColor(hex: 0x35A77C),
             divider: bg.ghosttyDividerColor
         )
     }()

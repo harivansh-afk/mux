@@ -25,15 +25,14 @@ final class CanvasOverlayView: NSView {
     struct Entry {
         let sessionIndex: Int
         let paneID: UUID
-        /// `<session>.<pane>` in tree (visual) order.
-        let index: String
         weak var pane: PaneView?
     }
 
+    /// One session's cards. No header, no session number: the gap
+    /// between groups is the grouping, and the session indicator
+    /// highlights the selection's number live.
     struct Group {
-        let title: String
         let entries: [Entry]
-        let current: Bool
     }
 
     // One spacing scale, derived from the chrome size knob.
@@ -65,7 +64,6 @@ final class CanvasOverlayView: NSView {
     private let track = FlippedView()
 
     private var groups: [Group] = []
-    private var headerLabels: [NSTextField] = []
     private var items: [WheelItemView] = []
     private var index = 0
     /// The pane the user came from (the focused pane on open).
@@ -134,18 +132,12 @@ final class CanvasOverlayView: NSView {
         self.groups = groups
         cameFrom = selected
 
-        for view in headerLabels + items {
+        for view in items {
             view.removeFromSuperview()
         }
-        headerLabels = []
         items = []
 
         for group in groups {
-            let header = NSTextField(labelWithString: "")
-            header.lineBreakMode = .byTruncatingTail
-            track.addSubview(header)
-            headerLabels.append(header)
-
             for entry in group.entries {
                 let item = WheelItemView(entry: entry)
                 item.onClick = { [weak self] in self?.clicked(item) }
@@ -253,12 +245,7 @@ final class CanvasOverlayView: NSView {
     private func positionTrack(animated: Bool) {
         var y: CGFloat = 0
         var itemIndex = 0
-        let headerHeight = (Chrome.fontSize * 1.2).rounded()
-        for (i, group) in groups.enumerated() {
-            headerLabels[i].frame = NSRect(
-                x: 2, y: y, width: Self.wheelWidth - 4, height: headerHeight
-            )
-            y += headerHeight + 6
+        for group in groups {
             for _ in group.entries {
                 let item = items[itemIndex]
                 let height = item.height(for: Self.wheelWidth)
@@ -358,24 +345,6 @@ final class CanvasOverlayView: NSView {
             .withAlphaComponent(dark ? 0.9 : 0.62).cgColor
         stage.layer?.backgroundColor = palette.panelBg.cgColor
         stage.layer?.borderColor = palette.accent.cgColor
-
-        for (i, group) in groups.enumerated() {
-            let line = NSMutableAttributedString()
-            line.append(NSAttributedString(
-                string: group.title,
-                attributes: [.font: Chrome.metaBoldFont, .foregroundColor: palette.pink]
-            ))
-            let hosts = Set(group.entries.map { $0.pane?.target ?? "local" })
-            var meta = "  \(hosts.sorted().joined(separator: " "))"
-            if group.current {
-                meta += " · current"
-            }
-            line.append(NSAttributedString(
-                string: meta,
-                attributes: [.font: Chrome.metaFont, .foregroundColor: palette.dim]
-            ))
-            headerLabels[i].attributedStringValue = line
-        }
         renderSelection()
         needsLayout = true
     }
@@ -392,65 +361,57 @@ final class CanvasOverlayView: NSView {
             )
             item.alphaValue = i == index ? 1 : (abs(i - index) == 1 ? 0.6 : 0.35)
         }
-        for header in headerLabels {
-            header.alphaValue = 0.55
-        }
 
         guard let entry = selection, let pane = entry.pane else { return }
-        // The stage descriptor, stacked: line one is what runs here (the
-        // agent's state glyph - busy dot working, ok check done - then
-        // the title, pink when it is the host), line two is where (the
-        // directory as its prompt would print it, then the host in
-        // pink). No "session N" text: the session indicator highlights
-        // the selection's session live instead.
+        // The stage descriptor, two stacked lines and nothing else:
+        //   <state glyph> <agent topic>
+        //   <directory> [<host>]
+        // No session number - the session indicator highlights the
+        // selection's session live instead.
         let parts = PaneLabelParts.parts(for: pane)
         let first = parts.first
         let title = NSMutableAttributedString()
         if let glyph = Self.stateGlyph(for: pane, palette: palette, font: Chrome.uiTitleFont) {
             title.append(glyph)
         }
+        let topic = first?.role == .title ? first?.text : nil
         title.append(NSAttributedString(
-            string: first?.text ?? "shell",
-            attributes: [
-                .font: Chrome.uiTitleFont,
-                .foregroundColor: first?.role == .host ? palette.pink : palette.text,
-            ]
+            string: topic ?? "shell",
+            attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
         ))
         stageTitle.attributedStringValue = title
 
         let meta = NSMutableAttributedString()
         if let dir = PaneLabelParts.promptDir(for: pane) {
             meta.append(NSAttributedString(
-                string: dir,
+                string: dir + " ",
                 attributes: [.font: Chrome.metaFont, .foregroundColor: palette.dim]
             ))
         }
-        if first?.role != .host {
-            if meta.length > 0 {
-                meta.append(NSAttributedString(string: "  "))
-            }
-            meta.append(NSAttributedString(
-                string: pane.target ?? "local",
-                attributes: [.font: Chrome.metaBoldFont, .foregroundColor: palette.pink]
-            ))
-        }
+        meta.append(NSAttributedString(
+            string: "[\(pane.target ?? "local")]",
+            attributes: [.font: Chrome.metaBoldFont, .foregroundColor: palette.pink]
+        ))
         stageMeta.attributedStringValue = meta
         needsLayout = true
     }
 
-    /// The agent-state glyph shared by the stage and the cards: a busy
-    /// dot while the agent works, an ok check when it finished. Nothing
-    /// for panes that do not announce a state.
+    /// The agent-state indicator shared by the stage and the cards, one
+    /// glyph and one color per state: ◐ working (busy yellow), ✓ done
+    /// (teal - idle reached before the user looked), ○ idle (ok green).
+    /// Nothing for panes that announce no state.
     static func stateGlyph(
         for pane: PaneView, palette: Palette, font: NSFont
     ) -> NSAttributedString? {
         guard let state = pane.agentState else { return nil }
+        let (glyph, color): (String, NSColor) = switch (state, pane.agentStateSeen) {
+        case (.working, _): ("\u{25D0}", palette.busy)
+        case (.idle, false): ("\u{2713}", palette.teal)
+        case (.idle, true): ("\u{25CB}", palette.ok)
+        }
         return NSAttributedString(
-            string: state == .working ? "\u{25CF} " : "\u{2713} ",
-            attributes: [
-                .font: font,
-                .foregroundColor: state == .working ? palette.busy : palette.ok,
-            ]
+            string: glyph + " ",
+            attributes: [.font: font, .foregroundColor: color]
         )
     }
 }
