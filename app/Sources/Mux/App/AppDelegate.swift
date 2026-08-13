@@ -55,15 +55,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// what makes a lost or stale state.json recoverable: the shells
     /// are alive on the daemon either way.
     private func adoptOrphanedPanes() {
-        // An isolated instance (MUX_STATE_DIR, scripts/run-dev.sh) never
-        // adopts: the daily setup's ptys are not its to take. Its own
-        // MUXD_SOCKET hides the local ones, but the broker would still
-        // list the real remote ptys - and adopting those would attach a
-        // second relay to sessions the daily app is using right now.
-        guard ProcessInfo.processInfo.environment["MUX_STATE_DIR"] == nil else {
-            AppLog.log("isolated instance (MUX_STATE_DIR); skipping orphan adoption")
-            return
-        }
         let targets: [String?] = [nil] + HostsConfig.aliases().map(Optional.some)
         for host in targets {
             Muxd.list(host: host) { [weak self] listings in
