@@ -64,35 +64,6 @@ fn socket_path() -> std::path::PathBuf {
     peer::socket_path(nix::unistd::getuid().as_raw())
 }
 
-/// Append one line to `~/.local/state/mux/attach.log`. The relay is the
-/// only witness to what a pane actually did (attached or created, how it
-/// ended, who asked for a kill); without this file a lost session leaves
-/// no trail. Best effort: a log that cannot be written never affects the
-/// session it describes.
-fn log_event(message: &str) {
-    use std::io::Write;
-    let path = mux_proto::paths::attach_log();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    else {
-        return;
-    };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let _ = writeln!(
-        file,
-        "{now} pid={} ppid={} {message}",
-        std::process::id(),
-        nix::unistd::getppid().as_raw(),
-    );
-}
-
 /// Reconnect pacing after the daemon goes away. A successor daemon binds
 /// the socket within milliseconds of the handoff, so start short.
 const RECONNECT_BACKOFF: Duration = Duration::from_millis(100);
@@ -268,9 +239,6 @@ fn main() -> Result<()> {
         return run_control(target, OpenMode::List, json);
     }
     if let Some(kill_target) = kill {
-        // Kills destroy sessions; the requester's identity (ppid) is the
-        // first question when one vanishes unexpectedly.
-        log_event(&format!("kill requested target={kill_target}"));
         let (kill_host, name) = parse_target(&kill_target)?;
         return run_control(kill_host, OpenMode::Kill { name }, json);
     }
@@ -499,10 +467,6 @@ impl Uplink {
 enum Relay {
     /// The remote process exited: this is our exit code too.
     Exited(i32),
-    /// Another client attached and took the pty; this relay's turn is
-    /// over. Its own exit reason in the log, so a pane that ends this
-    /// way is distinguishable from its process exiting.
-    Detached,
     /// Socket EOF with no `Exit` event: the daemon went away (upgrade or
     /// crash) and the pty may well still be running under its successor.
     DaemonGone,
@@ -526,8 +490,6 @@ struct Attach {
 
 fn run_attach(attach: &Attach) -> Result<()> {
     let size = winsize();
-    let target = attach.target.as_deref().unwrap_or("local");
-    let label = format!("{target}:{}", attach.name);
     let uplink = Uplink::new();
     let stdin_closed = Arc::new(AtomicBool::new(false));
 
@@ -540,23 +502,15 @@ fn run_attach(attach: &Attach) -> Result<()> {
     let (stream, created) = match first {
         Ok(opened) => opened,
         Err(e) if attach.expect_existing => {
-            log_event(&format!("attach failed target={label} error={e:#}"));
             print_notice(&format!("cannot attach ({e:#}); retrying"));
             let _raw = RawModeGuard::enable();
             spawn_input_threads(&uplink, &stdin_closed, size);
-            let stream = reconnect(attach, &stdin_closed, &label);
-            return relay_loop(attach, stream, &uplink, &stdin_closed, &label);
+            let stream = reconnect(attach, &stdin_closed);
+            return relay_loop(attach, stream, &uplink, &stdin_closed);
         }
-        Err(e) => {
-            log_event(&format!("attach failed target={label} error={e:#}"));
-            return Err(e);
-        }
+        Err(e) => return Err(e),
     };
 
-    log_event(&format!(
-        "attached target={label} created={created} expect_existing={}",
-        attach.expect_existing
-    ));
     let _raw = RawModeGuard::enable();
     if created && attach.expect_existing {
         print_recreated_notice();
@@ -565,7 +519,7 @@ fn run_attach(attach: &Attach) -> Result<()> {
     // fresh read: a resize landing between the two reads would otherwise
     // never be sent, leaving the daemon pty stuck at the handshake size.
     spawn_input_threads(&uplink, &stdin_closed, size);
-    relay_loop(attach, stream, &uplink, &stdin_closed, &label)
+    relay_loop(attach, stream, &uplink, &stdin_closed)
 }
 
 /// Pump connections until the pane's process exits (or the pane itself
@@ -575,32 +529,19 @@ fn relay_loop(
     mut stream: UnixStream,
     uplink: &Uplink,
     stdin_closed: &Arc<AtomicBool>,
-    label: &str,
 ) -> Result<()> {
     loop {
         uplink.set(Some(stream.try_clone()?));
         let relay = pump(&mut stream);
         uplink.set(None);
         match relay {
-            Relay::Exited(code) => {
-                log_event(&format!("exited target={label} code={code}"));
-                exit(code);
-            }
-            Relay::Detached => {
-                log_event(&format!("detached target={label} (another client attached)"));
-                exit(0);
-            }
+            Relay::Exited(code) => exit(code),
             // Our own pty died with the pane, so there is nothing left to
             // reattach: the daemon keeps the pty for the next client.
-            Relay::DaemonGone if stdin_closed.load(Ordering::SeqCst) => {
-                log_event(&format!("pane pty closed target={label}"));
-                exit(0);
-            }
-            Relay::DaemonGone => {
-                log_event(&format!("daemon gone target={label}; reconnecting"));
-            }
+            Relay::DaemonGone if stdin_closed.load(Ordering::SeqCst) => exit(0),
+            Relay::DaemonGone => {}
         }
-        stream = reconnect(attach, stdin_closed, label);
+        stream = reconnect(attach, stdin_closed);
     }
 }
 
@@ -662,19 +603,17 @@ fn open_session(attach: &Attach, stream: UnixStream, size: (u16, u16)) -> Result
 /// Wait out a daemon that went away and reattach by name. Waits forever:
 /// exiting instead would make the app erase the pane, so a long outage
 /// is announced in the terminal rather than fatal.
-fn reconnect(attach: &Attach, stdin_closed: &AtomicBool, label: &str) -> UnixStream {
+fn reconnect(attach: &Attach, stdin_closed: &AtomicBool) -> UnixStream {
     let started = Instant::now();
     let mut backoff = RECONNECT_BACKOFF;
     let mut notified = false;
     loop {
         // The pane died while we were waiting: nothing left to attach to.
         if stdin_closed.load(Ordering::SeqCst) {
-            log_event(&format!("pane pty closed target={label} (while reconnecting)"));
             exit(0);
         }
         if !notified && started.elapsed() > RECONNECT_NOTIFY {
             notified = true;
-            log_event(&format!("still waiting for muxd target={label}"));
             print_notice("muxd is not answering; still retrying");
         }
         std::thread::sleep(backoff);
@@ -687,7 +626,6 @@ fn reconnect(attach: &Attach, stdin_closed: &AtomicBool, label: &str) -> UnixStr
         };
         if let Some(socket) = socket {
             if let Ok((stream, created)) = open_session(attach, socket, winsize()) {
-                log_event(&format!("reattached target={label} created={created}"));
                 // A reconnect always expected the pty to survive: the
                 // daemon creating one means the shell was lost.
                 if created {
@@ -754,7 +692,7 @@ fn pump(reader: &mut UnixStream) -> Relay {
             }
             OUT_LANE_EVENTS => match peer::decode::<ServerEvent>(&frame.payload) {
                 Ok(ServerEvent::Exit { code }) => return Relay::Exited(code),
-                Ok(ServerEvent::Detached) => return Relay::Detached,
+                Ok(ServerEvent::Detached) => return Relay::Exited(0),
                 Err(_) => {}
             },
             _ => {}
