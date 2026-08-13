@@ -46,16 +46,20 @@ final class PaneLabelView: NSTextField {
         halo.shadowColor = palette.panelBg.withAlphaComponent(0.9)
         halo.shadowBlurRadius = 3
 
-        var parts: [(text: String, color: NSColor)] = [(pane.displayTitle, palette.text)]
+        // The host is the label's whole reason to exist: it reads in
+        // pink (the active-item color), never in gray.
+        var parts: [(text: String, color: NSColor, font: NSFont)] = [
+            (pane.displayTitle, palette.text, Chrome.metaBoldFont),
+        ]
         if let target = pane.target {
-            parts.append((target, palette.dim))
+            parts.append((target, palette.pink, Chrome.metaBoldFont))
         }
         if let tail = (pane.pwd as NSString?)?.lastPathComponent, !tail.isEmpty {
-            parts.append((tail, palette.dim))
+            parts.append((tail, palette.dim, Chrome.metaFont))
         }
 
         let line = NSMutableAttributedString()
-        for (i, part) in parts.enumerated() where !part.text.isEmpty {
+        for part in parts where !part.text.isEmpty {
             if line.length > 0 {
                 line.append(NSAttributedString(string: " · ", attributes: [
                     .font: Chrome.metaFont,
@@ -64,7 +68,7 @@ final class PaneLabelView: NSTextField {
                 ]))
             }
             line.append(NSAttributedString(string: part.text, attributes: [
-                .font: i == 0 ? Chrome.metaBoldFont : Chrome.metaFont,
+                .font: part.font,
                 .foregroundColor: part.color,
                 .shadow: halo,
             ]))

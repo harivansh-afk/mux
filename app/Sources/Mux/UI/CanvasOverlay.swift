@@ -85,7 +85,17 @@ final class CanvasOverlayView: NSView {
 
         stage.wantsLayer = true
         stage.layer?.borderWidth = 1
+        stage.layer?.cornerRadius = 8
+        // Depth is what separates the stage from the wall behind it:
+        // one wide soft shadow, path-backed so it costs a blit, not a
+        // mask pass.
+        stage.layer?.shadowColor = NSColor.black.cgColor
+        stage.layer?.shadowOpacity = 0.55
+        stage.layer?.shadowRadius = 28
+        stage.layer?.shadowOffset = CGSize(width: 0, height: 14)
         stageMirror.contentsGravity = .resizeAspect
+        stageMirror.cornerRadius = 7
+        stageMirror.masksToBounds = true
         stage.layer?.addSublayer(stageMirror)
         stage.onClick = { [weak self] in
             guard let self, let selection else { return }
@@ -306,6 +316,9 @@ final class CanvasOverlayView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         stageMirror.frame = stage.bounds
+        stage.layer?.shadowPath = CGPath(
+            roundedRect: stage.bounds, cornerWidth: 8, cornerHeight: 8, transform: nil
+        )
         CATransaction.commit()
 
         stageTitle.sizeToFit()
@@ -324,9 +337,12 @@ final class CanvasOverlayView: NSView {
 
     @objc private func render() {
         let palette = ThemeManager.shared.palette
-        // The scrim dims toward the chrome background, so it reads right
-        // in both appearances.
-        scrim.layer?.backgroundColor = palette.panelBg.withAlphaComponent(0.72).cgColor
+        // The scrim drops the workspace well back - Mission Control
+        // dark, not a light mist - so the live mirrors carry all the
+        // brightness in the room.
+        let dark = !palette.panelBg.isLightColor
+        scrim.layer?.backgroundColor = NSColor.black
+            .withAlphaComponent(dark ? 0.82 : 0.5).cgColor
         stage.layer?.backgroundColor = palette.panelBg.cgColor
         stage.layer?.borderColor = palette.accent.cgColor
 
@@ -361,10 +377,10 @@ final class CanvasOverlayView: NSView {
                 selected: i == index,
                 cameFrom: item.entry.paneID == cameFrom
             )
-            item.alphaValue = i == index ? 1 : (abs(i - index) == 1 ? 0.55 : 0.3)
+            item.alphaValue = i == index ? 1 : (abs(i - index) == 1 ? 0.6 : 0.35)
         }
         for header in headerLabels {
-            header.alphaValue = 0.45
+            header.alphaValue = 0.55
         }
 
         guard let entry = selection, let pane = entry.pane else { return }
@@ -372,14 +388,24 @@ final class CanvasOverlayView: NSView {
             string: pane.displayTitle,
             attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
         )
-        var parts = ["session \(entry.sessionIndex + 1)", pane.target ?? "local"]
-        if let tail = (pane.pwd as NSString?)?.lastPathComponent, !tail.isEmpty {
-            parts.append(tail)
-        }
-        stageMeta.attributedStringValue = NSAttributedString(
-            string: parts.joined(separator: " · "),
+        // Hosts read in pink - the active-item color - so where a pane
+        // lives is the first thing the meta line answers.
+        let meta = NSMutableAttributedString()
+        meta.append(NSAttributedString(
+            string: "session \(entry.sessionIndex + 1) · ",
             attributes: [.font: Chrome.metaFont, .foregroundColor: palette.dim]
-        )
+        ))
+        meta.append(NSAttributedString(
+            string: pane.target ?? "local",
+            attributes: [.font: Chrome.metaBoldFont, .foregroundColor: palette.pink]
+        ))
+        if let tail = (pane.pwd as NSString?)?.lastPathComponent, !tail.isEmpty {
+            meta.append(NSAttributedString(
+                string: " · \(tail)",
+                attributes: [.font: Chrome.metaFont, .foregroundColor: palette.dim]
+            ))
+        }
+        stageMeta.attributedStringValue = meta
         needsLayout = true
     }
 }
@@ -407,7 +433,14 @@ private final class WheelItemView: NSView {
         self.entry = entry
         super.init(frame: .zero)
         thumb.wantsLayer = true
+        thumb.layer?.cornerRadius = 5
+        thumb.layer?.shadowColor = NSColor.black.cgColor
+        thumb.layer?.shadowOpacity = 0.4
+        thumb.layer?.shadowRadius = 10
+        thumb.layer?.shadowOffset = CGSize(width: 0, height: 5)
         mirror.contentsGravity = .resizeAspect
+        mirror.cornerRadius = 4.5
+        mirror.masksToBounds = true
         thumb.layer?.addSublayer(mirror)
         addSubview(thumb)
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -447,6 +480,9 @@ private final class WheelItemView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         mirror.frame = thumb.bounds
+        thumb.layer?.shadowPath = CGPath(
+            roundedRect: thumb.bounds, cornerWidth: 5, cornerHeight: 5, transform: nil
+        )
         CATransaction.commit()
     }
 
@@ -465,6 +501,13 @@ private final class WheelItemView: NSView {
                 .foregroundColor: selected ? palette.text : palette.dim,
             ]
         ))
+        // A remote card wears its host in pink, right on the wheel.
+        if let target = entry.pane?.target {
+            line.append(NSAttributedString(
+                string: "  \(target)",
+                attributes: [.font: Chrome.metaFont, .foregroundColor: palette.pink]
+            ))
+        }
         titleLabel.attributedStringValue = line
         thumb.layer?.backgroundColor = palette.panelBg.cgColor
         thumb.layer?.borderColor = selected
