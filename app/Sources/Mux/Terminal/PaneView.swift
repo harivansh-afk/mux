@@ -51,7 +51,11 @@ final class PaneView: NSView {
     private(set) var surface: ghostty_surface_t?
     weak var controller: MuxWindowController?
 
-    var title: String = "mux"
+    /// Only ever what the program in the pane set (OSC 0/2). Reattach
+    /// replays screen contents, not title escapes, so a restored pane
+    /// starts empty and chrome falls back to host/directory - never a
+    /// default word that reads like data.
+    var title: String = ""
     var pwd: String?
 
     /// The title as chrome shows it (canvas cards, pane labels): the
@@ -66,6 +70,26 @@ final class PaneView: NSView {
                 .trimmingCharacters(in: .whitespaces)
         }
         return cleaned
+    }
+
+    /// What a coding agent in the pane says it is doing, read from that
+    /// same leading glyph: a braille spinner while working, U+2733 when
+    /// it finished and waits.
+    enum AgentState {
+        case working
+        case done
+    }
+
+    var agentState: AgentState? {
+        guard let first = title.trimmingCharacters(in: .whitespaces).unicodeScalars.first
+        else { return nil }
+        if (0x2800 ... 0x28FF).contains(first.value) {
+            return .working
+        }
+        if first.value == 0x2733 {
+            return .done
+        }
+        return nil
     }
 
     /// Points added to the config font size via cmd+= / cmd+- (font
@@ -159,6 +183,11 @@ final class PaneView: NSView {
         self.fontDelta = fontDelta
         self.expectExisting = expectExisting
         super.init(frame: initialFrame)
+
+        // Seed the directory from the snapshot/daemon cwd (remote panes
+        // included: the path names their host's filesystem, same as
+        // pwd). OSC 7 takes over the moment the shell reports.
+        pwd = workingDirectory
 
         wantsLayer = true
 
@@ -474,7 +503,7 @@ final class PaneView: NSView {
             guard let self else { return }
             self.title = title
             if focused {
-                window?.title = title
+                window?.title = title.isEmpty ? "mux" : title
             }
         }
     }
@@ -656,7 +685,7 @@ final class PaneView: NSView {
         guard let surface else { return }
         ghostty_surface_set_focus(surface, value)
         if value {
-            window?.title = title
+            window?.title = title.isEmpty ? "mux" : title
             controller?.noteFocused(self)
         }
     }
