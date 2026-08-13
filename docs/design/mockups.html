@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mux - design mockups</title>
+<style>
+  /* ============================================================
+     mux design language
+     - theme: the app's own gruvbox palette (Theme.swift), untouched
+     - voices: SF Pro (labels about content) / Berkeley Mono (content)
+     - layers: ambient (color+geometry) / glance (hold prefix) / command
+     - decided ground: prefix 1-9 = sessions; canvas = pane-level,
+       live mirrors at true pane aspect (never resized, never reflowed)
+     ============================================================ */
+  :root {
+    --page:        #080808;
+    --term-bg:     #101010;
+    --panel:       #101010;
+    --panel-hi:    #181817;
+    --divider:     #0a0a0a;
+    --hairline:    #2a2827;
+    --hairline-hi: #3c3836;
+    --text:        #d4be98;
+    --text-soft:   #a89984;
+    --dim:         #7c6f64;
+    --faint:       #504945;
+    --accent:      #ebdbb2;
+    --accent-ink:  #101010;
+    --pink:        #d3869b;
+    --ok:          #a9b665;
+    --bad:         #ea6962;
+    --run:         #d8a657;
+    --host-spark:  #7daea3;
+    --host-ix:     #89b482;
+    --t-blue:  #7daea3; --t-aqua: #89b482; --t-yellow: #d8a657;
+    --t-green: #a9b665; --t-red:  #ea6962; --t-purple: #d3869b;
+
+    --mono: "Berkeley Mono", "TX-02", "SF Mono", ui-monospace, "Menlo", monospace;
+    --sf:   -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+
+    --radius-win: 10px;
+    --radius-chrome: 6px;
+    --chrome-shadow:
+      inset 0 1px 0 rgba(255,255,255,.03),
+      0 0 0 1px var(--hairline),
+      0 8px 24px rgba(0,0,0,.5),
+      0 2px 6px rgba(0,0,0,.4);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { background: var(--page); color: var(--text); font-family: var(--sf); -webkit-font-smoothing: antialiased; overflow: hidden; }
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: .3;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0.04 0 0 0 0 0.038 0 0 0 0 0.03 0 0 0 0.5 0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* ---------- top nav ---------- */
+  nav { position: fixed; top: 0; left: 0; right: 0; z-index: 50; display: flex; align-items: center; gap: 4px; padding: 14px 20px; }
+  nav .wordmark { font-family: var(--mono); font-size: 13px; color: var(--text); margin-right: 18px; }
+  nav .wordmark::after { content: " design"; color: var(--faint); }
+  nav button { font-family: var(--sf); font-size: 12px; font-weight: 500; color: var(--dim); background: transparent; border: 0; padding: 5px 10px; border-radius: 5px; cursor: pointer; }
+  nav button:hover { color: var(--text-soft); }
+  nav button.active { color: var(--text); background: var(--panel-hi); box-shadow: 0 0 0 1px var(--hairline); }
+  nav button b { font-family: var(--mono); font-weight: 400; color: var(--faint); margin-right: 6px; }
+  nav button.active b { color: var(--pink); }
+  nav .hint { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+
+  /* ---------- screens ---------- */
+  .screen { display: none; position: fixed; inset: 0; padding-top: 48px; z-index: 1; }
+  .screen.active { display: flex; align-items: center; justify-content: center; }
+  .screen .caption { position: absolute; bottom: 18px; left: 0; right: 0; text-align: center; font-size: 12px; color: var(--dim); }
+  .caption b { color: var(--text-soft); font-weight: 500; }
+  .caption code { font-family: var(--mono); font-size: 11px; color: var(--accent); background: var(--panel); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--hairline); }
+
+  /* ---------- window mock ---------- */
+  .window {
+    width: min(1280px, 92vw); aspect-ratio: 1280 / 780;
+    background: var(--divider); border-radius: var(--radius-win);
+    box-shadow: inset 0 0 0 0.5px rgba(255,255,255,.07), 0 0 0 1px rgba(0,0,0,.6), 0 30px 80px rgba(0,0,0,.65), 0 8px 24px rgba(0,0,0,.5);
+    position: relative; overflow: hidden; display: flex; flex-direction: column;
+    animation: rise .3s cubic-bezier(.2,.9,.3,1) both;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px) scale(.995); } }
+  .titlebar { height: 30px; flex: none; display: flex; align-items: center; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--hairline); }
+  .lights { display: flex; gap: 8px; }
+  .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; box-shadow: inset 0 0 0 .5px rgba(0,0,0,.25); }
+  .lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+  .titlebar .title { flex: 1; text-align: center; font-size: 12px; font-weight: 500; color: var(--dim); }
+  .workspace { flex: 1; position: relative; padding: 1px; display: flex; gap: 1px; }
+
+  /* ---------- panes ---------- */
+  .pane { background: var(--term-bg); position: relative; overflow: hidden; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; color: var(--text-soft); }
+  .pane .cells { padding: 10px 12px; white-space: pre; }
+  .spine { position: absolute; top: 0; right: 0; bottom: 0; width: 3px; background: var(--spine-color, transparent); opacity: .75; }
+  .b { color: var(--t-blue); } .t { color: var(--t-aqua); } .a { color: var(--t-yellow); }
+  .g { color: var(--t-green); } .r { color: var(--t-red); } .m { color: var(--t-purple); }
+  .d { color: var(--dim); } .w { color: var(--text); } .f { color: var(--faint); }
+  .cursor { display: inline-block; width: 7px; height: 14px; background: var(--text); vertical-align: -2px; animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .vim-status { position: absolute; left: 0; right: 0; bottom: 0; display: flex; font-size: 11.5px; }
+  .vim-status .mode { background: var(--t-blue); color: var(--term-bg); padding: 1px 8px; font-weight: 500; }
+  .vim-status .file { background: #1b1b1a; color: var(--text-soft); padding: 1px 8px; flex: 1; }
+  .vim-status .pos  { background: #1b1b1a; color: var(--dim); padding: 1px 8px; }
+
+  /* ---------- bottom chrome ---------- */
+  .bottombar { position: absolute; left: 8px; right: 8px; bottom: 8px; display: flex; align-items: flex-end; pointer-events: none; z-index: 30; }
+  .modebox, .chiprow, .hostbox { background: var(--panel); border-radius: var(--radius-chrome); box-shadow: var(--chrome-shadow); pointer-events: auto; }
+  .modebox { padding: 4px; display: flex; align-items: center; gap: 8px; }
+  .badge { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; background: var(--accent); color: var(--accent-ink); padding: 2px 7px; border-radius: 3px; font-weight: 500; }
+  .modebox .keys { font-family: var(--mono); font-size: 10.5px; color: var(--dim); padding-right: 6px; }
+  .modebox .keys b { color: var(--text-soft); font-weight: 400; }
+  .chiprow { margin: 0 auto; display: flex; gap: 2px; padding: 3px; }
+  .chip { display: flex; align-items: center; gap: 7px; padding: 4px 10px 4px 8px; border-radius: 4px; position: relative; }
+  .chip .n { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+  .chip .name { font-size: 11.5px; font-weight: 500; color: var(--dim); letter-spacing: .01em; }
+  .chip.active { background: var(--panel-hi); box-shadow: inset 0 0 0 1px var(--hairline); }
+  .chip.active .name { color: var(--text); }
+  .chip.active .n { color: var(--pink); }
+  .chip .dot { width: 5px; height: 5px; border-radius: 50%; flex: none; }
+  /* the only idle animation anywhere: a slow, shallow breath - readable
+     from the corner of the eye, invisible when you're not looking for it */
+  .chip .dot.run  { background: var(--run); animation: pulse 2.2s ease-in-out infinite; }
+  .chip .dot.done { background: var(--ok); }
+  .chip .dot.bell { background: var(--bad); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+  .chip .ticks { position: absolute; left: 8px; right: 10px; bottom: 2px; height: 2px; display: flex; gap: 2px; overflow: hidden; }
+  .chip .ticks i { flex: 1; border-radius: 1px; }
+  .chip .status { display: none; font-family: var(--mono); font-size: 10px; color: var(--dim); }
+  .glance-on .chip .status { display: inline; }
+  .chip .status .s-run { color: var(--run); } .chip .status .s-ok { color: var(--ok); } .chip .status .s-bell { color: var(--bad); }
+  .hostbox { padding: 6px 10px; display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+  .hostbox .hdot { width: 6px; height: 6px; border-radius: 2px; }
+
+  /* ---------- glance layer ---------- */
+  .glance .pane .cells, .glance .vim-status { opacity: .72; }
+  .tag {
+    position: absolute; top: 6px; right: 6px; z-index: 5;
+    background: var(--panel); border-radius: 4px;
+    box-shadow: 0 0 0 1px var(--hairline), 0 4px 12px rgba(0,0,0,.4);
+    padding: 3px 9px; font-family: var(--mono); font-size: 10.5px; color: var(--dim);
+    animation: tag-in .12s cubic-bezier(.2,.9,.3,1) both; white-space: nowrap;
+  }
+  @keyframes tag-in { from { opacity: 0; transform: translateY(-2px); } }
+  .tag .ttl { color: var(--text); }
+  .tag .hostname { color: var(--host, var(--dim)); }
+  .tag .s-run { color: var(--run); } .tag .s-ok { color: var(--ok); }
+
+  /* ---------- canvas: floating picker over the dimmed workspace ----------
+     pane-level (the decided abstraction). the selected pane previews
+     center-left at its TRUE aspect - a live mirror, never resized, so the
+     terminal inside is always its real shape. the right side is a wheel:
+     selection centered, neighbors above/below, air everywhere. */
+  .scrim { position: absolute; inset: 0; background: rgba(4,4,4,.68); z-index: 10; }
+  .picker { position: absolute; inset: 0; z-index: 20; display: flex; align-items: stretch; padding: 44px 56px 64px 72px; gap: 56px; }
+  .stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 0; }
+  .preview {
+    position: relative; overflow: hidden; border-radius: 4px; background: var(--term-bg);
+    box-shadow: 0 0 0 1px var(--accent), 0 24px 70px rgba(0,0,0,.65);
+  }
+  .preview .cells { padding: 10px 12px; white-space: pre; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; color: var(--text-soft); }
+  .preview .spine { width: 3px; }
+  .stage-label { display: flex; align-items: baseline; gap: 10px; padding-top: 12px; }
+  .stage-label .sname { font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: -.01em; }
+  .stage-label .smeta { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+  .stage-label .smeta .hostname { color: var(--host-c, var(--dim)); }
+
+  .wheel { width: 200px; flex: none; position: relative; overflow: hidden;
+    -webkit-mask-image: linear-gradient(180deg, transparent, #000 18%, #000 82%, transparent);
+            mask-image: linear-gradient(180deg, transparent, #000 18%, #000 82%, transparent); }
+  .wheel-track { position: absolute; left: 2px; right: 2px; transition: transform .18s cubic-bezier(.2,.9,.3,1); }
+  .wheel-item { margin-bottom: 14px; }
+  .wheel-item .thumb { border-radius: 4px; overflow: hidden; position: relative; background: var(--term-bg);
+    box-shadow: 0 0 0 1px rgba(80,73,69,.35); width: 100%; }
+  .wheel-item .thumb::before { content: ""; position: absolute; inset: 7px 25% 7px 7px;
+    background: repeating-linear-gradient(180deg, var(--faint) 0 2px, transparent 2px 7px); opacity: .5; }
+  .wheel-item.busy .thumb::before { inset: 7px 12% 7px 7px; opacity: .7; }
+  .wheel-item .thumb .spine { width: 2.5px; }
+  .wheel-item .wlabel { display: flex; align-items: center; gap: 6px; padding: 4px 1px 0; font-family: var(--mono); font-size: 10px; color: var(--faint); }
+  .wheel-item .wlabel .wttl { color: var(--dim); font-family: var(--sf); font-size: 11px; font-weight: 500; }
+  .wheel-item .wdot { width: 4px; height: 4px; border-radius: 50%; margin-left: auto; }
+  /* distance from the centered selection */
+  .wheel-item { opacity: .3; transform: scale(.96); transition: opacity .18s, transform .18s; cursor: pointer; }
+  .wheel-item.near { opacity: .55; transform: scale(.98); }
+  .wheel-item.focus { opacity: 1; transform: none; }
+  .wheel-item.focus .thumb { box-shadow: 0 0 0 1px var(--accent); }
+  .wheel-item.focus .wlabel .wttl { color: var(--text); }
+  .wheel-group { font-family: var(--mono); font-size: 9.5px; color: var(--faint); letter-spacing: .08em; margin: 2px 1px 8px; }
+  .wheel-group .gnum { color: var(--pink); }
+
+  /* ---------- system sheet ---------- */
+  .sheet { width: min(1150px, 90vw); max-height: calc(100vh - 110px); overflow: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 48px 64px; padding: 20px 8px 60px; }
+  .sheet::-webkit-scrollbar { display: none; }
+  .spec h2 { font-size: 11px; font-weight: 600; letter-spacing: .10em; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; }
+  .spec .rule { height: 1px; background: var(--hairline); margin-bottom: 18px; }
+  .spec p.note { font-size: 12px; color: var(--dim); line-height: 1.6; margin-top: 12px; max-width: 46ch; }
+  .spec p.note b { color: var(--text-soft); font-weight: 500; }
+  .type-row { display: flex; align-items: baseline; gap: 20px; margin-bottom: 14px; }
+  .type-row .sample { flex: 1; }
+  .type-row .spec-label { font-family: var(--mono); font-size: 10px; color: var(--faint); text-align: right; white-space: nowrap; }
+  .swatches { display: flex; gap: 10px; flex-wrap: wrap; }
+  .swatch { width: 92px; }
+  .swatch .chipcolor { height: 44px; border-radius: 5px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.05); margin-bottom: 6px; }
+  .swatch .cname { font-size: 11px; font-weight: 500; color: var(--text-soft); }
+  .swatch .cval { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+  .demo-strip { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+
+  /* ---------- motion doctrine ----------
+     everything reads as a keystroke, not an animation: 120-180ms,
+     cubic-bezier(.2,.9,.3,1) (the fast-out of the app's spring), one
+     retargetable motion per surface. nothing idles except the running
+     pulse and the terminal's own cursor. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="wordmark">mux</span>
+  <button data-s="s1" class="active"><b>1</b>default</button>
+  <button data-s="s2"><b>2</b>glance</button>
+  <button data-s="s3"><b>3</b>canvas</button>
+  <button data-s="s4"><b>4</b>system</button>
+  <span class="hint">1-4 switch &middot; canvas: j/k</span>
+</nav>
+
+<!-- ============================================================
+     SCREEN 1 - DEFAULT
+============================================================ -->
+<section class="screen active" id="s1">
+  <div class="window">
+    <div class="titlebar"><div class="lights"><i></i><i></i><i></i></div><div class="title">mux</div><div style="width:52px"></div></div>
+    <div class="workspace">
+      <div class="pane" style="flex: 1.35;">
+        <div class="cells"><span class="d"> 41 </span><span class="m">final class</span> <span class="w">Session</span> {
+<span class="d"> 42 </span>    <span class="m">private(set)</span> <span class="m">var</span> <span class="w">tree</span>: <span class="t">SplitNode</span>?
+<span class="d"> 43 </span>    <span class="m">private(set)</span> <span class="m">var</span> <span class="w">panes</span>: [<span class="t">UUID</span>: <span class="t">PaneView</span>] = [:]
+<span class="d"> 44 </span>
+<span class="d"> 45 </span>    <span class="b">func</span> <span class="a">move</span>(<span class="w">pane</span>: <span class="t">PaneView</span>, <span class="w">to</span> <span class="w">other</span>: <span class="t">Session</span>) {
+<span class="d"> 46 </span>        <span class="b">guard</span> panes[pane.id] != <span class="m">nil</span> <span class="b">else</span> { <span class="b">return</span> }
+<span class="d"> 47 </span>        tree = tree?.<span class="a">removing</span>(pane.id)<span class="cursor"></span>
+<span class="d"> 48 </span>    }
+<span class="d"> 49 </span>}
+<span class="f">  ~</span>
+<span class="f">  ~</span>
+<span class="f">  ~</span></div>
+        <div class="vim-status"><span class="mode">NORMAL</span><span class="file"> Session.swift </span><span class="pos"> 47:31 </span></div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column; gap: 1px;">
+        <div class="pane" style="flex: 1.2; --spine-color: var(--host-spark);">
+          <div class="spine"></div>
+          <div class="cells"><span class="g">hari@spark</span><span class="d">:</span><span class="b">~/sim</span><span class="d">$</span> <span class="w">cargo build --release</span>
+<span class="g">   Compiling</span> <span class="d">quinn v0.11.6</span>
+<span class="g">   Compiling</span> <span class="d">rustls v0.23.19</span>
+<span class="g">   Compiling</span> <span class="d">mux-proto v0.2.0</span>
+<span class="g">   Compiling</span> <span class="w">muxd v0.2.0</span>
+<span class="a">    Building</span> <span class="d">[=======>                 ] 231/612</span></div>
+        </div>
+        <div class="pane" style="flex: 1;">
+          <div class="cells"><span class="d">~/mux</span> <span class="a">main</span>
+<span class="g">❯</span> <span class="cursor"></span></div>
+        </div>
+      </div>
+      <div class="bottombar">
+        <div style="flex:1"></div>
+        <div class="chiprow">
+          <div class="chip active"><span class="n">1</span><span class="name">mux</span></div>
+          <div class="chip"><span class="n">2</span><span class="name">sim</span><span class="dot run"></span><span class="ticks"><i style="background:var(--host-spark)"></i></span></div>
+          <div class="chip"><span class="n">3</span><span class="name">infra</span><span class="dot done"></span><span class="ticks"><i style="background:var(--host-ix)"></i><i style="background:var(--host-spark)"></i></span></div>
+          <div class="chip"><span class="n">4</span><span class="name">scratch</span></div>
+        </div>
+        <div style="flex:1; display:flex; justify-content:flex-end;">
+          <div class="hostbox"><span class="hdot" style="background:var(--faint)"></span>local</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="caption"><b>Default.</b> Ambient only: 3px host spines on remote panes, session chips with a 5px state dot. Yellow pulse = running, green = finished since you last looked.</p>
+</section>
+
+<!-- ============================================================
+     SCREEN 2 - GLANCE (holding ctrl+b)
+============================================================ -->
+<section class="screen" id="s2">
+  <div class="window">
+    <div class="titlebar"><div class="lights"><i></i><i></i><i></i></div><div class="title">mux</div><div style="width:52px"></div></div>
+    <div class="workspace glance glance-on">
+      <div class="pane" style="flex: 1.35;">
+        <div class="cells"><span class="d"> 41 </span><span class="m">final class</span> <span class="w">Session</span> {
+<span class="d"> 42 </span>    <span class="m">private(set)</span> <span class="m">var</span> <span class="w">tree</span>: <span class="t">SplitNode</span>?
+<span class="d"> 43 </span>    <span class="m">private(set)</span> <span class="m">var</span> <span class="w">panes</span>: [<span class="t">UUID</span>: <span class="t">PaneView</span>] = [:]
+<span class="d"> 44 </span>
+<span class="d"> 45 </span>    <span class="b">func</span> <span class="a">move</span>(<span class="w">pane</span>: <span class="t">PaneView</span>, <span class="w">to</span> <span class="w">other</span>: <span class="t">Session</span>) {
+<span class="d"> 46 </span>        <span class="b">guard</span> panes[pane.id] != <span class="m">nil</span> <span class="b">else</span> { <span class="b">return</span> }
+<span class="d"> 47 </span>        tree = tree?.<span class="a">removing</span>(pane.id)
+<span class="d"> 48 </span>    }
+<span class="d"> 49 </span>}
+<span class="f">  ~</span>
+<span class="f">  ~</span>
+<span class="f">  ~</span></div>
+        <div class="vim-status"><span class="mode">NORMAL</span><span class="file"> Session.swift </span><span class="pos"> 47:31 </span></div>
+        <div class="tag"><span class="ttl">nvim</span> &middot; ~/mux</div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column; gap: 1px;">
+        <div class="pane" style="flex: 1.2; --spine-color: var(--host-spark); --host: var(--host-spark);">
+          <div class="spine"></div>
+          <div class="cells"><span class="g">hari@spark</span><span class="d">:</span><span class="b">~/sim</span><span class="d">$</span> <span class="w">cargo build --release</span>
+<span class="g">   Compiling</span> <span class="d">quinn v0.11.6</span>
+<span class="g">   Compiling</span> <span class="d">rustls v0.23.19</span>
+<span class="g">   Compiling</span> <span class="d">mux-proto v0.2.0</span>
+<span class="g">   Compiling</span> <span class="w">muxd v0.2.0</span>
+<span class="a">    Building</span> <span class="d">[=======>                 ] 231/612</span></div>
+          <div class="tag" style="animation-delay:.03s"><span class="ttl">cargo build</span> &middot; <span class="hostname">spark</span> &middot; <span class="s-run">4m 12s</span></div>
+        </div>
+        <div class="pane" style="flex: 1;">
+          <div class="cells"><span class="d">~/mux</span> <span class="a">main</span>
+<span class="g">❯</span></div>
+          <div class="tag" style="animation-delay:.06s"><span class="ttl">zsh</span> &middot; ~/mux</div>
+        </div>
+      </div>
+      <div class="bottombar">
+        <div class="modebox"><span class="badge">PREFIX</span><span class="keys"><b>1-9</b> session &nbsp;<b>f</b> canvas &nbsp;<b>?</b> keybinds</span></div>
+        <div class="chiprow" style="margin: 0 auto;">
+          <div class="chip active"><span class="n">1</span><span class="name">mux</span></div>
+          <div class="chip"><span class="n">2</span><span class="name">sim</span><span class="status"><span class="s-run">build 4m</span></span><span class="dot run"></span></div>
+          <div class="chip"><span class="n">3</span><span class="name">infra</span><span class="status"><span class="s-ok">done 2m</span></span><span class="dot done"></span></div>
+          <div class="chip"><span class="n">4</span><span class="name">scratch</span></div>
+        </div>
+        <div style="flex:0; display:flex; justify-content:flex-end;">
+          <div class="hostbox"><span class="hdot" style="background:var(--faint)"></span>local</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="caption"><b>Glance.</b> Hold <code>ctrl+b</code>: one small tag per pane (title &middot; host &middot; state), chips gain a short inline status. <code>1-9</code> selects a session, as it always has. Release: everything vanishes.</p>
+</section>
+
+<!-- ============================================================
+     SCREEN 3 - CANVAS: pane picker floating over the dimmed workspace
+============================================================ -->
+<section class="screen" id="s3">
+  <div class="window">
+    <div class="titlebar"><div class="lights"><i></i><i></i><i></i></div><div class="title">mux</div><div style="width:52px"></div></div>
+    <div class="workspace">
+      <!-- the live workspace, dimmed underneath -->
+      <div class="pane" style="flex: 1.35;">
+        <div class="cells"><span class="d"> 41 </span><span class="m">final class</span> <span class="w">Session</span> {
+<span class="d"> 42 </span>    <span class="m">private(set)</span> <span class="m">var</span> <span class="w">tree</span>: <span class="t">SplitNode</span>?
+<span class="d"> 43 </span>    <span class="m">private(set)</span> <span class="m">var</span> <span class="w">panes</span>: [<span class="t">UUID</span>: <span class="t">PaneView</span>] = [:]</div>
+      </div>
+      <div style="flex: 1; display: flex; flex-direction: column; gap: 1px;">
+        <div class="pane" style="flex: 1.2;"><div class="cells"><span class="g">   Compiling</span> <span class="d">muxd v0.2.0</span></div></div>
+        <div class="pane" style="flex: 1;"><div class="cells"><span class="g">❯</span></div></div>
+      </div>
+      <div class="scrim"></div>
+
+      <!-- the picker: stage left, wheel right, air everywhere -->
+      <div class="picker">
+        <div class="stage">
+          <div class="preview" id="preview"></div>
+          <div class="stage-label" id="stage-label"></div>
+        </div>
+        <div class="wheel" id="wheel"><div class="wheel-track" id="wheel-track"></div></div>
+      </div>
+
+      <div class="bottombar">
+        <div class="modebox"><span class="badge">CANVAS</span><span class="keys"><b>j/k</b> choose &nbsp;<b>enter</b> go &nbsp;<b>esc</b> back</span></div>
+        <div style="flex:1"></div>
+      </div>
+    </div>
+  </div>
+  <p class="caption"><b>Canvas.</b> Pane-level, floating over the dimmed workspace. The wheel keeps the selection centered with its neighbors above and below - <code>j/k</code> to scroll (try it). The preview is the live mirror at the pane's true shape: never resized, never reflowed, no bars.</p>
+</section>
+
+<!-- ============================================================
+     SCREEN 4 - SYSTEM SHEET
+============================================================ -->
+<section class="screen" id="s4">
+  <div class="sheet">
+    <div class="spec">
+      <h2>Two voices</h2>
+      <div class="rule"></div>
+      <div class="type-row"><div class="sample" style="font-size:15px; font-weight:600; letter-spacing:-.01em;">Sessions are places</div><div class="spec-label">SF Pro &middot; 15/600 &middot; -1%</div></div>
+      <div class="type-row"><div class="sample" style="font-size:13px; font-weight:600; letter-spacing:-.01em;">nvim &middot; Session.swift</div><div class="spec-label">SF Pro &middot; 13/600 &middot; title</div></div>
+      <div class="type-row"><div class="sample" style="font-size:12px; font-weight:500; color:var(--text-soft);">3 panes across two hosts</div><div class="spec-label">SF Pro &middot; 12/500 &middot; body</div></div>
+      <div class="type-row"><div class="sample" style="font-size:11px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--dim);">Section header</div><div class="spec-label">SF Pro &middot; 11/600 &middot; caps</div></div>
+      <div class="rule" style="margin-top:18px;"></div>
+      <div class="type-row"><div class="sample" style="font-family:var(--mono); font-size:12.5px;">hari@spark:~/sim$ cargo build</div><div class="spec-label">Berkeley Mono &middot; 12.5</div></div>
+      <div class="type-row"><div class="sample" style="font-family:var(--mono); font-size:10.5px; color:var(--dim);">spark &middot; ~/sim &middot; running &middot; 4m 12s</div><div class="spec-label">Berkeley Mono &middot; 10.5 &middot; meta</div></div>
+      <div class="type-row"><div class="sample"><span class="badge">PREFIX</span></div><div class="spec-label">Berkeley Mono &middot; badge</div></div>
+      <p class="note"><b>The rule:</b> mono is for content - anything the machine said or the user could type (commands, paths, hosts, keys). SF is for labels about content - titles, names, counts. Never the reverse.</p>
+    </div>
+    <div class="spec">
+      <h2>Color: the existing palette, plus three jobs</h2>
+      <div class="rule"></div>
+      <div class="swatches">
+        <div class="swatch"><div class="chipcolor" style="background:var(--term-bg)"></div><div class="cname">panelBg</div><div class="cval">#101010</div></div>
+        <div class="swatch"><div class="chipcolor" style="background:var(--accent)"></div><div class="cname">accent</div><div class="cval">#EBDBB2</div></div>
+        <div class="swatch"><div class="chipcolor" style="background:var(--pink)"></div><div class="cname">pink</div><div class="cval">#D3869B</div></div>
+        <div class="swatch"><div class="chipcolor" style="background:var(--ok)"></div><div class="cname">ok</div><div class="cval">#A9B665</div></div>
+        <div class="swatch"><div class="chipcolor" style="background:var(--bad)"></div><div class="cname">bad</div><div class="cval">#EA6962</div></div>
+      </div>
+      <div style="height:16px"></div>
+      <div class="swatches">
+        <div class="swatch"><div class="chipcolor" style="background:var(--run)"></div><div class="cname">running</div><div class="cval">#D8A657</div></div>
+        <div class="swatch"><div class="chipcolor" style="background:var(--host-spark)"></div><div class="cname">host: spark</div><div class="cval">#7DAEA3</div></div>
+        <div class="swatch"><div class="chipcolor" style="background:var(--host-ix)"></div><div class="cname">host: ix</div><div class="cval">#89B482</div></div>
+      </div>
+      <p class="note">Top row is <b>Theme.swift verbatim</b>. The three additions stay in the gruvbox family: yellow for the running pulse, blue/aqua as host identity (spines and chip ticks only). Selection stays accent, the active item stays pink. Chrome keeps deriving from the terminal background.</p>
+    </div>
+    <div class="spec">
+      <h2>Chip states</h2>
+      <div class="rule"></div>
+      <div class="demo-strip">
+        <div class="chiprow" style="margin:0;">
+          <div class="chip active"><span class="n">1</span><span class="name">mux</span></div>
+          <div class="chip"><span class="n">2</span><span class="name">sim</span><span class="dot run"></span></div>
+          <div class="chip"><span class="n">3</span><span class="name">infra</span><span class="dot done"></span></div>
+          <div class="chip"><span class="n">4</span><span class="name">deploy</span><span class="dot bell"></span></div>
+          <div class="chip"><span class="n">5</span><span class="name">scratch</span></div>
+        </div>
+        <div class="chiprow glance-on" style="margin:0;">
+          <div class="chip"><span class="n">2</span><span class="name">sim</span><span class="status"><span class="s-run">build 4m</span></span><span class="dot run"></span></div>
+          <div class="chip"><span class="n">4</span><span class="name">deploy</span><span class="status"><span class="s-bell">exit 1 &middot; 40s</span></span><span class="dot bell"></span></div>
+        </div>
+      </div>
+      <p class="note">Chips are sessions - the numbers are the same <code>prefix 1-9</code> that already exists. Active &middot; running (pulsing yellow) &middot; finished-since-last-look (green) &middot; bell / exit&ne;0 (red) &middot; idle (nothing). While the prefix is held they gain a few words inline, never growing taller. Data is OSC 133 marks + terminal titles via muxd.</p>
+    </div>
+    <div class="spec">
+      <h2>Interaction layers</h2>
+      <div class="rule"></div>
+      <div style="font-size:12.5px; line-height:2.1; color:var(--text-soft);">
+        <div><b style="color:var(--text); font-weight:600;">Ambient</b> &nbsp;always on &nbsp;&middot;&nbsp; color + geometry only, never text &nbsp;&middot;&nbsp; spines, dots, ticks</div>
+        <div><b style="color:var(--text); font-weight:600;">Glance</b> &nbsp;hold prefix &nbsp;&middot;&nbsp; one-line tags + inline chip status &nbsp;&middot;&nbsp; release to dismiss</div>
+        <div><b style="color:var(--text); font-weight:600;">Command</b> &nbsp;modal &nbsp;&middot;&nbsp; canvas (panes), hosts, palette &nbsp;&middot;&nbsp; full detail, full control</div>
+      </div>
+      <p class="note"><b>The contract:</b> the default view never gains a new persistent element. New capability lands in glance, in canvas, or in the palette - so the terminal stays a terminal.</p>
+    </div>
+  </div>
+  <p class="caption"><b>System.</b> The rules that keep it minimal while it grows.</p>
+</section>
+
+<script>
+  /* ---- screens ---- */
+  const tabs = document.querySelectorAll('nav button');
+  const screens = document.querySelectorAll('.screen');
+  let current = 's1';
+  function show(id) {
+    current = id;
+    screens.forEach(s => s.classList.toggle('active', s.id === id));
+    tabs.forEach(t => t.classList.toggle('active', t.dataset.s === id));
+    if (id === 's3') requestAnimationFrame(() => { sizePreview(); positionWheel(false); });
+  }
+  tabs.forEach(t => t.addEventListener('click', () => show(t.dataset.s)));
+
+  /* ---- canvas: pane-level picker ----
+     every pane keeps its true aspect (w/h from its real frame). the mock
+     stands in for live IOSurface mirrors. */
+  const SPARK = 'var(--host-spark)', IX = 'var(--host-ix)';
+  const CELLS = {
+    nvim: `<span class="d"> 45 </span>    <span class="b">func</span> <span class="a">move</span>(<span class="w">pane</span>: <span class="t">PaneView</span>, <span class="w">to</span> <span class="w">other</span>: <span class="t">Session</span>) {\n<span class="d"> 46 </span>        <span class="b">guard</span> panes[pane.id] != <span class="m">nil</span> <span class="b">else</span> { <span class="b">return</span> }\n<span class="d"> 47 </span>        tree = tree?.<span class="a">removing</span>(pane.id)\n<span class="d"> 48 </span>    }`,
+    build: `<span class="g">hari@spark</span><span class="d">:</span><span class="b">~/sim</span><span class="d">$</span> <span class="w">cargo build --release</span>\n<span class="g">   Compiling</span> <span class="d">mux-proto v0.2.0</span>\n<span class="g">   Compiling</span> <span class="w">muxd v0.2.0</span>\n<span class="a">    Building</span> <span class="d">[=======>                 ] 231/612</span>`,
+    zsh: `<span class="d">~/mux</span> <span class="a">main</span>\n<span class="g">❯</span>`,
+    deploy: `<span class="g">hari@ix-fmt</span><span class="d">:</span><span class="b">~</span><span class="d">$</span> <span class="w">nix run .#deploy</span>\n<span class="d">copying 214 paths...</span>\n<span class="g">✓ activation finished</span>`,
+    logs: `<span class="d">Aug 13 14:02:11</span> <span class="t">muxd</span><span class="d">[812]:</span> pane attached\n<span class="d">Aug 13 14:02:14</span> <span class="t">muxd</span><span class="d">[812]:</span> replay 48 rows`,
+  };
+  // aspect = the pane's real frame ratio; the preview NEVER stretches it
+  const panes = [
+    { sess: '1 mux', title: 'nvim', meta: 'local · ~/mux', aspect: 736/729, host: null, cells: CELLS.nvim, busy: false },
+    { sess: '1 mux', title: 'cargo build', meta: 'spark · ~/sim · running 4m', aspect: 542/437, host: SPARK, cells: CELLS.build, busy: true, hostc: SPARK },
+    { sess: '1 mux', title: 'zsh', meta: 'local · ~/mux', aspect: 542/291, host: null, cells: CELLS.zsh, busy: false },
+    { sess: '2 sim', title: 'cargo build', meta: 'spark · ~/sim · running 4m', aspect: 1278/729, host: SPARK, cells: CELLS.build, busy: true, hostc: SPARK },
+    { sess: '3 infra', title: 'nix deploy', meta: 'ix-fmt · done 2m ago', aspect: 639/729, host: IX, cells: CELLS.deploy, busy: false, hostc: IX },
+    { sess: '3 infra', title: 'journalctl', meta: 'spark · following', aspect: 639/729, host: SPARK, cells: CELLS.logs, busy: true, hostc: SPARK },
+    { sess: '4 scratch', title: 'zsh', meta: 'local · ~', aspect: 1278/729, host: null, cells: CELLS.zsh, busy: false },
+  ];
+  let sel = 0;
+  const track = document.getElementById('wheel-track');
+  const wheelEl = document.getElementById('wheel');
+  const preview = document.getElementById('preview');
+  const stageLabel = document.getElementById('stage-label');
+  const stage = document.querySelector('.stage');
+
+  // build the wheel: session group labels flow with the pane cards
+  let html = '', lastSess = null;
+  panes.forEach((p, i) => {
+    if (p.sess !== lastSess) {
+      const [num, ...name] = p.sess.split(' ');
+      html += `<div class="wheel-group"><span class="gnum">${num}</span> ${name.join(' ')}</div>`;
+      lastSess = p.sess;
+    }
+    html += `
+      <div class="wheel-item${p.busy ? ' busy' : ''}" data-i="${i}">
+        <div class="thumb" style="aspect-ratio:${p.aspect}">${p.host ? `<div class="spine" style="--spine-color:${p.host}"></div>` : ''}</div>
+        <div class="wlabel"><span class="wttl">${p.title}</span>${p.busy ? '<span class="wdot" style="background:var(--run)"></span>' : ''}</div>
+      </div>`;
+  });
+  track.innerHTML = html;
+  const items = [...track.querySelectorAll('.wheel-item')];
+
+  function sizePreview() {
+    const p = panes[sel];
+    const maxW = stage.clientWidth * .96, maxH = stage.clientHeight * .82;
+    let w = maxW, h = w / p.aspect;
+    if (h > maxH) { h = maxH; w = h * p.aspect; }
+    preview.style.width = w + 'px';
+    preview.style.height = h + 'px';
+  }
+  function renderStage(animate) {
+    const p = panes[sel];
+    preview.innerHTML = `${p.host ? `<div class="spine" style="--spine-color:${p.host}"></div>` : ''}<div class="cells">${p.cells}</div>`;
+    stageLabel.innerHTML = `<span class="sname">${p.title}</span><span class="smeta" style="--host-c:${p.hostc || 'var(--dim)'}">${p.sess} &middot; <span class="hostname">${p.meta}</span></span>`;
+    sizePreview();
+    if (animate) preview.animate(
+      [{ opacity: .5, transform: 'scale(.99)' }, { opacity: 1, transform: 'none' }],
+      { duration: 130, easing: 'cubic-bezier(.2,.9,.3,1)' }
+    );
+  }
+  function positionWheel(animate) {
+    const it = items[sel];
+    const center = wheelEl.clientHeight / 2;
+    const target = it.offsetTop + it.offsetHeight / 2;
+    if (!animate) track.style.transition = 'none';
+    track.style.transform = `translateY(${center - target}px)`;
+    if (!animate) requestAnimationFrame(() => track.style.transition = '');
+    items.forEach((el, i) => {
+      el.classList.toggle('focus', i === sel);
+      el.classList.toggle('near', Math.abs(i - sel) === 1);
+    });
+  }
+  function select(i, animate = true) {
+    sel = Math.max(0, Math.min(panes.length - 1, i));
+    renderStage(animate);
+    positionWheel(animate);
+  }
+  track.addEventListener('click', e => {
+    const it = e.target.closest('.wheel-item');
+    if (it) select(+it.dataset.i);
+  });
+  addEventListener('resize', () => { if (current === 's3') { sizePreview(); positionWheel(false); } });
+  addEventListener('keydown', e => {
+    if (current === 's3' && (e.key === 'j' || e.key === 'k')) {
+      select(sel + (e.key === 'j' ? 1 : -1));
+      return;
+    }
+    if (e.key >= '1' && e.key <= '4') show('s' + e.key);
+  });
+  select(0, false);
+</script>
+</body>
+</html>
