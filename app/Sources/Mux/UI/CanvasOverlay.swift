@@ -505,28 +505,19 @@ private final class WheelItemView: NSView {
                 attributes: [.font: Chrome.metaFont, .foregroundColor: palette.accent]
             ))
         }
-        // The shared grammar, directories left to the stage: the agent
-        // state glyph, then the title in the product voice, the host in
-        // pink - once, never repeated.
+        // Cards carry only the state glyph and the host - topics and
+        // directories live on the stage, where there is room to read
+        // them.
         if let pane = entry.pane {
             if let glyph = CanvasOverlayView.stateGlyph(
                 for: pane, palette: palette, font: Chrome.metaFont
             ) {
                 line.append(glyph)
             }
-            for (i, part) in PaneLabelParts.parts(for: pane).enumerated()
-                where part.role != .dir
-            {
-                if i > 0, line.length > 0 {
-                    line.append(NSAttributedString(string: "  "))
-                }
-                line.append(NSAttributedString(string: part.text, attributes: [
-                    .font: part.role == .host ? Chrome.metaFont : Chrome.uiFont,
-                    .foregroundColor: part.role == .host
-                        ? palette.pink
-                        : (selected ? palette.text : palette.dim),
-                ]))
-            }
+            line.append(NSAttributedString(
+                string: pane.target ?? "local",
+                attributes: [.font: Chrome.metaFont, .foregroundColor: palette.pink]
+            ))
         }
         titleLabel.attributedStringValue = line
         thumb.layer?.backgroundColor = palette.panelBg.cgColor

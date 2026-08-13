@@ -1,6 +1,6 @@
 # mux
 
-https://github.com/user-attachments/assets/6e9fb624-bdd2-4310-ba92-209cc5248a67
+<video src="https://git.harivan.sh/harivansh-afk/mux/releases/download/demo/demo.mp4" controls width="100%"></video>
 
 A macOS-native terminal multiplexer
 
