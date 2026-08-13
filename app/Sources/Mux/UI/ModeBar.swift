@@ -46,13 +46,11 @@ final class ModeBarView: NSView {
     /// Flush with the window corners: the bars sit ON the edge, no air.
     static let margin: CGFloat = 0
 
-    /// The badge is the visual edge of the bar, so its inset inside the
-    /// box must be identical on every side. The horizontal inset is
-    /// therefore derived from the vertical slack
-    /// ((height - label height) / 2), making left gap == bottom gap
-    /// exactly.
+    /// The badge is the visual edge of the bar. Horizontal inset is half
+    /// the vertical slack: the full slack read wider than the gap under
+    /// the badge, so the sides sit at half to match it optically.
     private var textInset: CGFloat {
-        max(0, (Self.height - label.fittingSize.height) / 2)
+        (max(0, (Self.height - label.fittingSize.height) / 2) / 2).rounded()
     }
 
     /// Content-sized width for the current segments.
@@ -141,11 +139,12 @@ final class ModeBarView: NSView {
     override func layout() {
         super.layout()
         let size = label.fittingSize
-        let inset = max(0, (bounds.height - size.height) / 2)
+        let insetY = max(0, (bounds.height - size.height) / 2)
+        let insetX = textInset
         label.frame = NSRect(
-            x: inset,
-            y: inset,
-            width: min(size.width, bounds.width - inset * 2),
+            x: insetX,
+            y: insetY,
+            width: min(size.width, bounds.width - insetX * 2),
             height: size.height
         )
     }
