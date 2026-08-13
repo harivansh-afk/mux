@@ -388,28 +388,13 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_: Notification) {
-        // A deliberate window close kills its daemon ptys. During app
-        // termination this is a detach instead: survival across quit and
-        // crash is the point of M2. Closing the LAST window IS app
-        // termination (terminateAfterLastWindowClosed), so it gets quit
-        // semantics: the state is saved while the sessions are still
-        // alive, and every pty detaches. Anything else turns a habitual
-        // close-to-quit into killing every session and persisting the
-        // emptiness - the exact loss the daemon exists to prevent.
+        // The window is the app, so closing it is quitting: save while
+        // the sessions are still alive, then detach - every pty survives
+        // for the next launch. Killing ptys is only ever a per-pane act
+        // (prefix x), never a side effect of the app going away.
         let delegate = NSApp.delegate as? AppDelegate
-        if !(delegate?.isTerminating ?? false), delegate?.controllers.count == 1 {
-            delegate?.beginTermination(reason: "last window closed")
-        }
-        let terminating = delegate?.isTerminating ?? false
-        let panes = sessions.map(\.panes.count).reduce(0, +)
-        AppLog.log("windowWillClose terminating=\(terminating) sessions=\(sessions.count) panes=\(panes)")
+        delegate?.beginTermination(reason: "window closed")
         for session in sessions {
-            if !terminating {
-                for (_, pane) in session.panes {
-                    AppLog.log("kill pane=\(pane.id.uuidString) (window closed)")
-                    pane.killRemote()
-                }
-            }
             session.destroyAllSurfaces()
         }
         sessions.removeAll()

@@ -85,9 +85,9 @@ final class PrefixEngine {
         .key("esc"), .dim(" back"),
     ]
 
-    /// Resolves the controller of the key window.
+    /// The single window's controller.
     private var controller: MuxWindowController? {
-        (NSApp.delegate as? AppDelegate)?.keyController
+        (NSApp.delegate as? AppDelegate)?.controller
     }
 
     func install() {

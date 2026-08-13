@@ -3,14 +3,15 @@ import GhosttyKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var runtime: GhosttyRuntime?
-    private(set) var controllers: [MuxWindowController] = []
+    /// The one window. mux is deliberately single-window: sessions are
+    /// the unit of grouping (prefix c / 1..9 / canvas), and a second
+    /// window would only add a second copy of every window-scoped
+    /// invariant (focus routing, snapshot identity, close semantics)
+    /// for no capability.
+    private(set) var controller: MuxWindowController?
     /// Internal (not private): the canvas overlay's click-to-jump ends
     /// the mode through the engine, exactly like enter does.
     let prefixEngine = PrefixEngine()
-
-    var keyController: MuxWindowController? {
-        controllers.first { $0.window.isKeyWindow } ?? controllers.first
-    }
 
     func applicationDidFinishLaunching(_: Notification) {
         // Before the snapshot is loaded: an unclean previous exit freezes
@@ -38,8 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppLog.log("restoring windows=\(snapshot.windows.count) panes=\(panes.joined(separator: ","))")
             restore(snapshot)
         } else {
-            AppLog.log("no restorable snapshot; opening a fresh window")
-            newWindow(nil)
+            AppLog.log("no restorable snapshot; starting fresh")
+            makeWindow()?.addInitialPane()
         }
 
         // The snapshot is a claim, not the truth: the daemons know which
@@ -57,10 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let targets: [String?] = [nil] + HostsConfig.aliases().map(Optional.some)
         for host in targets {
             Muxd.list(host: host) { [weak self] listings in
-                guard let self, let listings, !listings.isEmpty else { return }
-                let known = Set(controllers.flatMap { c in
-                    c.sessions.flatMap(\.panes.keys)
-                })
+                guard let self, let controller, let listings, !listings.isEmpty else { return }
+                let known = Set(controller.sessions.flatMap(\.panes.keys))
                 let orphans = listings.compactMap { l -> (UUID, String?, String?)? in
                     // Only pane-shaped names: the pane UUID namespace is
                     // the app's, anything else is not ours to adopt.
@@ -71,7 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 guard !orphans.isEmpty else { return }
                 AppLog.log("adopting \(orphans.count) orphaned pty(s) from \(host ?? "local"): \(orphans.map(\.0.uuidString).joined(separator: ","))")
-                (keyController ?? controllers.first)?.addRecoverySession(orphans)
+                controller.addRecoverySession(orphans)
             }
         }
     }
@@ -106,9 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Mark the app as exiting: save while the sessions are still alive,
     /// then freeze the snapshot against the teardown that follows. Called
     /// from every path that ends the app - shouldTerminate for a real
-    /// quit, and the last window's close, which auto-terminates and must
-    /// get quit semantics (detach, keep state), not close semantics
-    /// (kill, wipe state).
+    /// quit, and the window's close, which with one window IS quitting.
     func beginTermination(reason: String) {
         guard !isTerminating else { return }
         AppLog.log("terminating (\(reason))")
@@ -120,9 +117,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
         // Save before raising the flag: saveSnapshot is a no-op once
-        // terminating, so the teardown saves (windowControllerDidClose
-        // fires as AppKit closes each window with zero sessions left)
-        // cannot clobber this snapshot with an empty one.
+        // terminating, so the teardown saves cannot clobber this
+        // snapshot with an empty one.
         beginTermination(reason: "applicationShouldTerminate")
         return .terminateNow
     }
@@ -137,24 +133,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
-    // MARK: - Windows
+    // MARK: - The window
 
-    @objc func newWindow(_: Any?) {
-        guard let runtime else { return }
+    /// Create the single window. Returns nil if it already exists (or
+    /// the runtime is gone); there is never a second one.
+    @discardableResult
+    private func makeWindow() -> MuxWindowController? {
+        guard controller == nil, let runtime else { return nil }
         let controller = MuxWindowController(runtime: runtime)
-        controllers.append(controller)
-        // New windows follow the key pane's target and cwd, like prefix c.
-        let source = keyController?.focusedPane
-        controller.addInitialPane(
-            workingDirectory: source?.pwd, cwdFrom: source?.id, target: source?.target
-        )
+        self.controller = controller
         controller.window.makeKeyAndOrderFront(nil)
-        saveSnapshot()
+        return controller
     }
 
-    func windowControllerDidClose(_ controller: MuxWindowController) {
-        controllers.removeAll { $0 === controller }
-        saveSnapshot()
+    func windowControllerDidClose(_: MuxWindowController) {
+        // The window is the app: with it gone the app terminates
+        // (terminateAfterLastWindowClosed); the snapshot was saved by
+        // beginTermination before teardown.
+        controller = nil
     }
 
     // MARK: - Snapshot
@@ -179,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A direct save supersedes any pending debounced one.
         pendingSave?.cancel()
         pendingSave = nil
-        let windows: [WindowSnapshot] = controllers.compactMap { c in
+        let windows: [WindowSnapshot] = controller.flatMap { c in
             let sessions: [SessionSnapshot] = c.sessions.compactMap { s in
                 guard let tree = s.tree else { return nil }
                 var paneMeta: [UUID: PaneSnapshot] = [:]
@@ -201,29 +197,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sessions: sessions,
                 activeSession: c.activeSessionIndex
             )
-        }
+        }.map { [$0] } ?? []
         let panes = windows.flatMap(\.sessions).map(\.panes.count).reduce(0, +)
         AppLog.log("save windows=\(windows.count) panes=\(panes)")
         SnapshotStore.save(AppSnapshot(windows: windows))
     }
 
+    /// Rebuild the single window from a snapshot. Files written by
+    /// multi-window builds fold every window's sessions into it, so
+    /// nothing is dropped on the way through.
     private func restore(_ snapshot: AppSnapshot) {
-        guard let runtime else { return }
-        for w in snapshot.windows {
-            let controller = MuxWindowController(runtime: runtime)
-            controllers.append(controller)
-            if w.frame.count == 4 {
-                restoreFrame(
-                    NSRect(x: w.frame[0], y: w.frame[1], width: w.frame[2], height: w.frame[3]),
-                    on: controller.window
-                )
-            }
-            controller.restoreSessions(w.sessions, active: w.activeSession)
-            controller.window.makeKeyAndOrderFront(nil)
+        guard let controller = makeWindow() else { return }
+        let first = snapshot.windows[0]
+        if first.frame.count == 4 {
+            restoreFrame(
+                NSRect(x: first.frame[0], y: first.frame[1], width: first.frame[2], height: first.frame[3]),
+                on: controller.window
+            )
         }
-        if controllers.isEmpty {
-            newWindow(nil)
-        }
+        controller.restoreSessions(
+            snapshot.windows.flatMap(\.sessions), active: first.activeSession
+        )
     }
 
     /// Frames saved under a different display arrangement can land
@@ -248,7 +242,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.setFrame(rect, display: false)
     }
 
-    // MARK: - Clipboard menu actions
+    // MARK: - Menu actions
+
+    @objc func newSession(_: Any?) {
+        controller?.newSession()
+    }
 
     @objc func copyFromPane(_: Any?) {
         bindingAction("copy_to_clipboard")
@@ -259,7 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func bindingAction(_ action: String) {
-        guard let surface = keyController?.focusedPane?.surface else { return }
+        guard let surface = controller?.focusedPane?.surface else { return }
         _ = action.withCString { ptr in
             ghostty_surface_binding_action(surface, ptr, UInt(action.utf8.count))
         }
@@ -282,7 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let fileMenuItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
-        fileMenu.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "n")
+        fileMenu.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "n")
         fileMenuItem.submenu = fileMenu
         main.addItem(fileMenuItem)
 
