@@ -393,10 +393,10 @@ extension MuxWindowController {
         paneLabels.removeAll()
     }
 
-    /// Top-right corner of each pane; wide labels truncate rather than
+    /// Flush with each pane's top-right corner, mirroring the bottom
+    /// bars on their window corners; wide labels truncate rather than
     /// cross a divider.
     func positionPaneLabels() {
-        let inset: CGFloat = 8
         for label in paneLabels {
             guard let frame = label.paneFrame else {
                 label.isHidden = true
@@ -404,10 +404,10 @@ extension MuxWindowController {
             }
             label.isHidden = false
             label.fit()
-            let width = min(label.frame.width, max(0, frame.width - inset * 2))
+            let width = min(label.frame.width, frame.width)
             label.frame = NSRect(
-                x: frame.maxX - inset - width,
-                y: frame.minY + inset,
+                x: frame.maxX - width,
+                y: frame.minY,
                 width: width,
                 height: label.frame.height
             )

@@ -69,27 +69,19 @@ enum PaneLabelParts {
     }
 }
 
-/// A small tag at a pane's top-right while the prefix is armed: the
-/// pane's host, in pink, and nothing else - titles and directories
-/// belong to the canvas. A quiet panel background floats it above any
-/// cell content; no border - the box is the chrome, the text is the
-/// information.
+/// A tag flush with a pane's top-right corner while the prefix is
+/// armed: the pane's host, in pink, and nothing else - titles and
+/// directories belong to the canvas. Styled exactly like the bottom
+/// bars: an opaque panel_bg box at bar height with the same half-slack
+/// text inset, square corners, no shadow.
 final class PaneLabelView: NSView {
     private weak var pane: PaneView?
     private let label = NSTextField(labelWithString: "")
-
-    private static let padX: CGFloat = 9
-    private static let padY: CGFloat = 4
 
     init(pane: PaneView) {
         self.pane = pane
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.cornerRadius = 4
-        layer?.shadowColor = NSColor.black.cgColor
-        layer?.shadowOpacity = 0.35
-        layer?.shadowRadius = 8
-        layer?.shadowOffset = CGSize(width: 0, height: 3)
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
         render()
@@ -113,21 +105,31 @@ final class PaneLabelView: NSView {
         nil
     }
 
-    /// Size the tag to its text plus padding; the positioner may then
-    /// clamp the width, and layout keeps the text inset either way.
+    /// The bottom bars' metric: horizontal inset is half the vertical
+    /// slack inside the bar-height box.
+    private var textInset: CGFloat {
+        (max(0, (ModeBarView.height - label.fittingSize.height) / 2) / 2).rounded()
+    }
+
+    /// Size the tag to its text plus the shared inset; the positioner
+    /// may then clamp the width, and layout keeps the text inset either
+    /// way.
     func fit() {
-        label.sizeToFit()
         setFrameSize(NSSize(
-            width: label.frame.width + Self.padX * 2,
-            height: label.frame.height + Self.padY * 2
+            width: label.fittingSize.width + textInset * 2,
+            height: ModeBarView.height
         ))
     }
 
     override func layout() {
         super.layout()
-        label.frame = bounds.insetBy(dx: Self.padX, dy: Self.padY)
-        layer?.shadowPath = CGPath(
-            roundedRect: bounds, cornerWidth: 4, cornerHeight: 4, transform: nil
+        let size = label.fittingSize
+        let insetX = textInset
+        label.frame = NSRect(
+            x: insetX,
+            y: max(0, (bounds.height - size.height) / 2),
+            width: min(size.width, bounds.width - insetX * 2),
+            height: size.height
         )
     }
 
@@ -136,12 +138,13 @@ final class PaneLabelView: NSView {
     private func render() {
         guard let pane else { return }
         let palette = ThemeManager.shared.palette
-        layer?.backgroundColor = palette.panelBg.withAlphaComponent(0.94).cgColor
-        // The host alone, in pink (the active-item color), never gray.
+        layer?.backgroundColor = palette.panelBg.cgColor
+        // The host alone, in pink (the active-item color), never gray -
+        // the session indicator's highlight voice.
         label.attributedStringValue = NSAttributedString(
             string: pane.target ?? "local",
             attributes: [
-                .font: Chrome.metaBoldFont,
+                .font: Chrome.boldFont,
                 .foregroundColor: palette.pink,
             ]
         )
