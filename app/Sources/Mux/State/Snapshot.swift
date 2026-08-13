@@ -62,10 +62,19 @@ private struct AppSnapshotV1: Decodable {
 
 enum SnapshotStore {
     static var url: URL {
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        )[0]
-        let dir = base.appendingPathComponent("mux", isDirectory: true)
+        // MUX_STATE_DIR: an isolated state root for a side-by-side test
+        // instance (scripts/run-dev.sh) - its state.json, backups and
+        // app.log all land there, so the daily setup's files are never
+        // touched. The daily app never sets it.
+        let dir: URL
+        if let isolated = ProcessInfo.processInfo.environment["MUX_STATE_DIR"] {
+            dir = URL(fileURLWithPath: isolated, isDirectory: true)
+        } else {
+            let base = FileManager.default.urls(
+                for: .applicationSupportDirectory, in: .userDomainMask
+            )[0]
+            dir = base.appendingPathComponent("mux", isDirectory: true)
+        }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("state.json")
     }
