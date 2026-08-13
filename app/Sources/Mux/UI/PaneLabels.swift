@@ -14,19 +14,36 @@ enum PaneLabelParts {
     }
 
     static func parts(for pane: PaneView) -> [(text: String, role: Role)] {
-        let title = pane.displayTitle
+        // Every pane wears a host badge - local too, in the same pink,
+        // so the grammar reads identically everywhere.
+        let host = pane.target ?? "local"
+        var title = pane.displayTitle
+
+        // Shell title formats often lead with their own host - "(spark)
+        // ~/x", "[spark] x", "spark: x". The badge already says it, in
+        // pink; strip the repeat instead of printing it twice.
+        for prefix in ["(\(host))", "[\(host)]", "\(host):"]
+            where title.lowercased().hasPrefix(prefix.lowercased())
+        {
+            title = String(title.dropFirst(prefix.count))
+                .trimmingCharacters(in: .whitespaces)
+            break
+        }
+
         var out: [(text: String, role: Role)] = []
-        if let host = pane.target, title.caseInsensitiveCompare(host) == .orderedSame {
+        if title.isEmpty || title.caseInsensitiveCompare(host) == .orderedSame {
             out.append((host, .host))
         } else {
-            if !title.isEmpty {
-                out.append((title, .title))
-            }
-            if let host = pane.target {
-                out.append((host, .host))
-            }
+            out.append((title, .title))
+            out.append((host, .host))
         }
-        if let dir = (pane.pwd as NSString?)?.lastPathComponent, !dir.isEmpty,
+
+        // A path-shaped title already names the directory better than
+        // its tail could; otherwise add the tail unless it repeats a
+        // word already on the label.
+        let titleIsPath = title.hasPrefix("~") || title.hasPrefix("/")
+        if !titleIsPath,
+           let dir = (pane.pwd as NSString?)?.lastPathComponent, !dir.isEmpty,
            !out.contains(where: { $0.text.caseInsensitiveCompare(dir) == .orderedSame })
         {
             out.append((dir, .dir))
