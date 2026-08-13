@@ -1,5 +1,7 @@
 # mux
 
+https://github.com/user-attachments/assets/6e9fb624-bdd2-4310-ba92-209cc5248a67
+
 A macOS-native terminal multiplexer
 
 Every pane is a GhosttyKit Metal surface. 
