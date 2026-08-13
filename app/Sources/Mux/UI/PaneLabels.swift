@@ -105,8 +105,9 @@ final class PaneLabelView: NSView {
         nil
     }
 
-    /// The bottom bars' metric: horizontal inset is half the vertical
-    /// slack inside the bar-height box.
+    /// The bottom bars' text inset (half their vertical slack), applied
+    /// on ALL four sides here: the tag hugs its text symmetrically, so
+    /// nothing reads as a gap between the box and the pane corner.
     private var textInset: CGFloat {
         (max(0, (ModeBarView.height - label.fittingSize.height) / 2) / 2).rounded()
     }
@@ -115,20 +116,21 @@ final class PaneLabelView: NSView {
     /// may then clamp the width, and layout keeps the text inset either
     /// way.
     func fit() {
+        let size = label.fittingSize
         setFrameSize(NSSize(
-            width: label.fittingSize.width + textInset * 2,
-            height: ModeBarView.height
+            width: size.width + textInset * 2,
+            height: size.height + textInset * 2
         ))
     }
 
     override func layout() {
         super.layout()
         let size = label.fittingSize
-        let insetX = textInset
+        let inset = textInset
         label.frame = NSRect(
-            x: insetX,
-            y: max(0, (bounds.height - size.height) / 2),
-            width: min(size.width, bounds.width - insetX * 2),
+            x: inset,
+            y: inset,
+            width: min(size.width, bounds.width - inset * 2),
             height: size.height
         )
     }
