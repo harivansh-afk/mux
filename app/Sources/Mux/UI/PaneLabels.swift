@@ -1,21 +1,27 @@
 import AppKit
 
-/// Bare text at a pane's top-right while the prefix is armed: what runs
-/// here and where (title · host · directory). Deliberately chromeless -
-/// no box, no border, no background. A soft halo in the panel
-/// background color keeps the line readable over any cells and melts
-/// into them when they match.
-final class PaneLabelView: NSTextField {
+/// A small tag at a pane's top-right while the prefix is armed: what
+/// runs here and where (title · host · directory). A quiet panel
+/// background floats it above any cell content; no border - the box is
+/// the chrome, the text is the information.
+final class PaneLabelView: NSView {
     private weak var pane: PaneView?
+    private let label = NSTextField(labelWithString: "")
+
+    private static let padX: CGFloat = 9
+    private static let padY: CGFloat = 4
 
     init(pane: PaneView) {
         self.pane = pane
         super.init(frame: .zero)
-        isEditable = false
-        isSelectable = false
-        isBordered = false
-        drawsBackground = false
-        lineBreakMode = .byTruncatingTail
+        wantsLayer = true
+        layer?.cornerRadius = 4
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = 0.35
+        layer?.shadowRadius = 8
+        layer?.shadowOffset = CGSize(width: 0, height: 3)
+        label.lineBreakMode = .byTruncatingTail
+        addSubview(label)
         render()
     }
 
@@ -37,14 +43,30 @@ final class PaneLabelView: NSTextField {
         nil
     }
 
+    /// Size the tag to its text plus padding; the positioner may then
+    /// clamp the width, and layout keeps the text inset either way.
+    func fit() {
+        label.sizeToFit()
+        setFrameSize(NSSize(
+            width: label.frame.width + Self.padX * 2,
+            height: label.frame.height + Self.padY * 2
+        ))
+    }
+
+    override func layout() {
+        super.layout()
+        label.frame = bounds.insetBy(dx: Self.padX, dy: Self.padY)
+        layer?.shadowPath = CGPath(
+            roundedRect: bounds, cornerWidth: 4, cornerHeight: 4, transform: nil
+        )
+    }
+
     /// Labels are momentary (the prefix is armed for a beat) and are
     /// rebuilt on every show; no live refresh needed.
     private func render() {
         guard let pane else { return }
         let palette = ThemeManager.shared.palette
-        let halo = NSShadow()
-        halo.shadowColor = palette.panelBg.withAlphaComponent(0.9)
-        halo.shadowBlurRadius = 3
+        layer?.backgroundColor = palette.panelBg.withAlphaComponent(0.94).cgColor
 
         // The host is the label's whole reason to exist: it reads in
         // pink (the active-item color), never in gray.
@@ -64,15 +86,13 @@ final class PaneLabelView: NSTextField {
                 line.append(NSAttributedString(string: " · ", attributes: [
                     .font: Chrome.metaFont,
                     .foregroundColor: palette.dim.withAlphaComponent(0.7),
-                    .shadow: halo,
                 ]))
             }
             line.append(NSAttributedString(string: part.text, attributes: [
                 .font: part.font,
                 .foregroundColor: part.color,
-                .shadow: halo,
             ]))
         }
-        attributedStringValue = line
+        label.attributedStringValue = line
     }
 }
