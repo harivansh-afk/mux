@@ -43,9 +43,8 @@ struct ModeBarSegment {
 final class ModeBarView: NSView {
     /// One terminal-ish row.
     static let height = Chrome.barHeight
-    /// Equal inset from the left and bottom edges of the terminal area,
-    /// so the box sits concentric with the corner.
-    static let margin: CGFloat = 4
+    /// Flush with the window corners: the bars sit ON the edge, no air.
+    static let margin: CGFloat = 0
 
     /// The badge is the visual edge of the bar, so its inset inside the
     /// box must be identical on every side. The horizontal inset is

@@ -106,10 +106,6 @@ final class PaneView: NSView {
         return nil
     }
 
-    /// Attention: an agent that reached idle while the pane was
-    /// unfocused is "done" (unseen) until the pane gains focus - louder
-    /// than plain idle, so a finished agent is visible from the canvas.
-    private(set) var agentStateSeen = true
 
     /// Points added to the config font size via cmd+= / cmd+- (font
     /// zoom). libghostty owns the actual value and exposes no getter,
@@ -520,13 +516,7 @@ final class PaneView: NSView {
             repeats: false
         ) { [weak self] _ in
             guard let self else { return }
-            let oldState = agentState
             self.title = title
-            // Reaching idle in an unfocused pane is news the user has
-            // not seen; every other transition is seen by definition.
-            if agentState != oldState {
-                agentStateSeen = !(agentState == .idle && !focused)
-            }
             if focused {
                 window?.title = title.isEmpty ? "mux" : title
             }
@@ -710,9 +700,6 @@ final class PaneView: NSView {
         guard let surface else { return }
         ghostty_surface_set_focus(surface, value)
         if value {
-            // Focusing the pane is looking at it: a done agent reads as
-            // plain idle from here on.
-            agentStateSeen = true
             window?.title = title.isEmpty ? "mux" : title
             controller?.noteFocused(self)
         }

@@ -403,22 +403,20 @@ final class CanvasOverlayView: NSView {
         needsLayout = true
     }
 
-    /// The agent-state indicator shared by the stage and the cards, one
-    /// glyph and one color per state: ◐ working (busy yellow), ✓ done
-    /// (teal - idle reached before the user looked), ○ idle (ok green).
+    /// The agent-state indicator shared by the stage and the cards.
+    /// Exactly two states: ◐ working (busy yellow), ✓ done (ok green).
     /// Nothing for panes that announce no state.
     static func stateGlyph(
         for pane: PaneView, palette: Palette, font: NSFont
     ) -> NSAttributedString? {
         guard let state = pane.agentState else { return nil }
-        let (glyph, color): (String, NSColor) = switch (state, pane.agentStateSeen) {
-        case (.working, _): ("\u{25D0}", palette.busy)
-        case (.idle, false): ("\u{2713}", palette.teal)
-        case (.idle, true): ("\u{25CB}", palette.ok)
-        }
+        let working = state == .working
         return NSAttributedString(
-            string: glyph + " ",
-            attributes: [.font: font, .foregroundColor: color]
+            string: (working ? "\u{25D0}" : "\u{2713}") + " ",
+            attributes: [
+                .font: font,
+                .foregroundColor: working ? palette.busy : palette.ok,
+            ]
         )
     }
 }
