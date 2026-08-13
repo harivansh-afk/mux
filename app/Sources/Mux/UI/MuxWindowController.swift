@@ -47,13 +47,17 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     private(set) var sessions: [Session] = []
     private(set) var activeSessionIndex = 0
 
-    /// Canvas panel state (managed by MuxWindowController+Overlays.swift):
-    /// while open, layoutPanes parks the workspace slab left by the
-    /// panel's width - translation only, sizes untouched, so no pty ever
-    /// resizes for the canvas. `canvasClosing` keeps the slide-out spring
-    /// from being torn down by the mode change that follows a commit.
+    /// Canvas state (managed by MuxWindowController+Overlays.swift):
+    /// the picker floats over the workspace, which never moves for it -
+    /// sizes and positions untouched, so no pty ever observes the
+    /// canvas. `canvasClosing` keeps the fade-out from being torn down
+    /// by the mode change that follows a commit.
     var canvasOpen = false
     var canvasClosing = false
+
+    /// Bare per-pane labels while the prefix is armed (managed by
+    /// MuxWindowController+Overlays.swift).
+    var paneLabels: [PaneLabelView] = []
 
     var activeSession: Session? {
         sessions.indices.contains(activeSessionIndex) ? sessions[activeSessionIndex] : nil
@@ -336,18 +340,14 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         if hostsWindow.superview != nil {
             positionHostsWindow()
         }
+        if !paneLabels.isEmpty {
+            positionPaneLabels()
+        }
 
-        // The canvas pushes the whole workspace slab by the panel's
-        // extent - left for the sidebar, up for the bottom bar: one
-        // view, one motion (the spring lives in slideCanvas; a plain
-        // layout pass just parks it). Translation only - sizes never
-        // change, so the ptys see nothing.
-        let docksBottom = canvasDocksBottom
-        workspace.frame = NSRect(
-            x: canvasOpen && !docksBottom ? -canvasPanelWidth : 0,
-            y: canvasOpen && docksBottom ? -canvasPanelHeight : 0,
-            width: bounds.width, height: bounds.height
-        )
+        // The workspace never moves for the canvas: the picker floats
+        // above it and the scrim dims it in place. Sizes and positions
+        // untouched, so the ptys see nothing.
+        workspace.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height)
         for (index, session) in sessions.enumerated() {
             session.applyLayout(in: workspace.bounds, visible: index == activeSessionIndex)
         }

@@ -183,68 +183,30 @@ extension MuxWindowController {
         center(hostsWindow, size: hostsWindow.desiredSize(in: container.bounds))
     }
 
-    // MARK: - Canvas panel
+    // MARK: - Canvas picker
 
-    /// The panel's share of the window; the workspace slides left by
-    /// exactly this much, so the two motions read as one push.
-    var canvasPanelWidth: CGFloat {
-        (container.bounds.width * 0.38).rounded()
+    /// The canvas comes and goes as one quick fade - fast enough to
+    /// read as a keystroke. The workspace never moves for it.
+    private static let canvasFade: CFTimeInterval = 0.14
+
+    /// Retargetable: reopening mid-close bends the fade from wherever
+    /// the overlay's opacity currently is, never restarts it.
+    private func fadeCanvas(to opacity: Float) {
+        guard let layer = canvasOverlay.layer else { return }
+        let from = layer.presentation()?.opacity ?? layer.opacity
+        layer.opacity = opacity
+        guard from != opacity else { return }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = from
+        fade.duration = Self.canvasFade
+        fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1)
+        layer.add(fade, forKey: "canvas-fade")
     }
 
-    /// A sidebar needs real width to be readable; when the window can't
-    /// give it that (half-screen and narrower), the canvas docks to the
-    /// bottom edge as a full-width bar instead, and the workspace slides
-    /// up by the bar's height.
-    var canvasDocksBottom: Bool {
-        canvasPanelWidth < 320
-    }
-
-    var canvasPanelHeight: CGFloat {
-        min(320, (container.bounds.height * 0.35).rounded())
-    }
-
-    /// One spring for everything canvas - slab and panel share it so
-    /// they always land together. Tuned for speed: response
-    /// ~0.18s, essentially critically damped (no bounce tax), arrival
-    /// reads at roughly 130ms. Retargetable: spamming open/close bends
-    /// the motion from its current on-screen position, never restarts.
-    private static let canvasStiffness: CGFloat = 1200
-    private static let canvasDamping: CGFloat = 68
-
-    private static func canvasSpring(_ keyPath: String) -> CASpringAnimation {
-        let spring = CASpringAnimation(keyPath: keyPath)
-        spring.stiffness = canvasStiffness
-        spring.damping = canvasDamping
-        spring.mass = 1
-        spring.duration = spring.settlingDuration
-        return spring
-    }
-
-    /// Where a view visually is right now (mid-flight included), so a
-    /// new spring picks up from there.
-    private func presentedPosition(of view: NSView) -> CGPoint? {
-        view.layer.map { $0.presentation()?.position ?? $0.position }
-    }
-
-    /// Run `changes` (which parks the workspace slab and the panel at
-    /// their model positions), then spring both from wherever they were.
-    private func slideCanvas(_ changes: () -> Void) {
-        let workspaceFrom = presentedPosition(of: workspace)
-        let panelFrom = presentedPosition(of: canvasOverlay)
-        changes()
-        for (view, from) in [(workspace, workspaceFrom), (canvasOverlay, panelFrom)] {
-            guard let layer = view.layer, let from, from != layer.position else { continue }
-            let spring = Self.canvasSpring("position")
-            spring.fromValue = from
-            layer.add(spring, forKey: "canvas-slide")
-        }
-    }
-
-    /// The spring outlives the mode change; tear the panel down only
-    /// after it settles, and only if nobody reopened it meanwhile.
+    /// The fade outlives the mode change; tear the overlay down only
+    /// after it lands, and only if nobody reopened it meanwhile.
     private func scheduleCanvasTeardown() {
-        let settle = Self.canvasSpring("position").settlingDuration
-        DispatchQueue.main.asyncAfter(deadline: .now() + settle) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.canvasFade + 0.02) { [weak self] in
             guard let self, !canvasOpen, canvasClosing else { return }
             canvasClosing = false
             canvasOverlay.removeFromSuperview()
@@ -252,54 +214,49 @@ extension MuxWindowController {
         }
     }
 
-    /// prefix f: every pane in the window as a live card, stacked in a
-    /// right panel, grouped by session. The panel slides in while the
-    /// workspace slides out left. Rebuilt from the live session model on
-    /// every open; the highlight starts on the focused pane. While the
-    /// canvas is up, every pane is un-occluded so its renderer keeps
-    /// producing the frames the thumbnails mirror; hide restores the
-    /// normal rule.
+    /// prefix f: the pane picker floating over the dimmed workspace -
+    /// the wheel of pane cards on the right, the selected pane
+    /// previewed live at its true aspect on the left. Rebuilt from the
+    /// live session model on every open; the selection starts on the
+    /// focused pane. While the canvas is up, every pane is un-occluded
+    /// so its renderer keeps producing the frames the mirrors show;
+    /// hide restores the normal rule.
     func showCanvasOverlay() {
         canvasOverlay.reload(groups: canvasGroups(), selected: focusedPane?.id)
         canvasOverlay.onJump = { [weak self] entry in
             self?.commitCanvas(entry)
             (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
         }
+        canvasOverlay.onCancel = {
+            (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
+        }
         if canvasOverlay.superview == nil {
+            canvasOverlay.layer?.opacity = 0
             container.addSubview(canvasOverlay)
-            // Start just offscreen at the final size (canvasOpen is
-            // still false, so this parks it), so the slide-in is the
-            // only motion.
             positionCanvasOverlay()
             canvasOverlay.layoutSubtreeIfNeeded()
         }
-        // The floating badges stay above the panel (they overlap it when
-        // it docks bottom); layoutPanes re-lifts the session indicator,
-        // the mode bar needs it here.
+        // The floating badges stay above the overlay; layoutPanes
+        // re-lifts the session indicator, the mode bar needs it here.
         if !modeBar.isHidden {
             modeBar.removeFromSuperview()
             container.addSubview(modeBar)
             positionModeBar()
         }
         // Reopening mid-close: the pending teardown sees canvasOpen and
-        // stands down; the spring retargets from wherever the panel is.
+        // stands down; the fade retargets from wherever it is.
         canvasClosing = false
         canvasOpen = true
         applyCanvasOcclusion()
-        slideCanvas { [self] in
-            layoutPanes()
-            positionCanvasOverlay()
-        }
+        layoutPanes()
+        fadeCanvas(to: 1)
     }
 
     func hideCanvasOverlay() {
         guard canvasOverlay.superview != nil, !canvasClosing else { return }
         canvasClosing = true
         canvasOpen = false
-        slideCanvas { [self] in
-            layoutPanes()
-            positionCanvasOverlay()
-        }
+        fadeCanvas(to: 0)
         scheduleCanvasTeardown()
     }
 
@@ -320,10 +277,9 @@ extension MuxWindowController {
     }
 
     /// Enter / click: jump to the selected pane, switching session if
-    /// needed and unzooming whatever covers it. The resume is the same
-    /// motion as esc - the workspace slides home as the panel leaves -
-    /// with focus landing on the chosen pane immediately. No extra
-    /// theater.
+    /// needed and unzooming whatever covers it. The jump is exactly the
+    /// close motion, with focus landing on the chosen pane immediately.
+    /// No extra theater.
     func commitCanvas() {
         guard let entry = canvasOverlay.selection else { return }
         commitCanvas(entry)
@@ -336,41 +292,20 @@ extension MuxWindowController {
         guard canvasOverlay.superview != nil, !canvasClosing else { return }
         canvasClosing = true
         canvasOpen = false
-        slideCanvas { [self] in
-            selectSession(entry.sessionIndex)
-            session.reveal(pane)
-            layoutPanes()
-            positionCanvasOverlay()
-        }
+        selectSession(entry.sessionIndex)
+        session.reveal(pane)
+        layoutPanes()
+        fadeCanvas(to: 0)
         scheduleCanvasTeardown()
     }
 
-    /// The panel owns the right edge - or the bottom one when the window
-    /// is too narrow for a sidebar. Closed (or closing) it parks just
-    /// offscreen so layout passes never fight the slide-out.
+    /// The overlay covers the whole container; its own layout puts the
+    /// air, the stage and the wheel inside.
     func positionCanvasOverlay() {
-        let bounds = container.bounds
-        let docksBottom = canvasDocksBottom
-        canvasOverlay.docksBottom = docksBottom
-        if docksBottom {
-            // The container is flipped: the bottom edge is maxY.
-            canvasOverlay.frame = NSRect(
-                x: 0,
-                y: canvasOpen ? bounds.height - canvasPanelHeight : bounds.height,
-                width: bounds.width,
-                height: canvasPanelHeight
-            )
-        } else {
-            canvasOverlay.frame = NSRect(
-                x: canvasOpen ? bounds.width - canvasPanelWidth : bounds.width,
-                y: 0,
-                width: canvasPanelWidth,
-                height: bounds.height
-            )
-        }
+        canvasOverlay.frame = container.bounds
     }
 
-    /// Canvas rows: sessions in order, panes in tree (visual) order.
+    /// Wheel rows: sessions in order, panes in tree (visual) order.
     private func canvasGroups() -> [CanvasOverlayView.Group] {
         sessions.enumerated().map { sessionIndex, session in
             var entries: [CanvasOverlayView.Entry] = []
@@ -386,8 +321,56 @@ extension MuxWindowController {
             return CanvasOverlayView.Group(
                 title: "session \(sessionIndex + 1)",
                 entries: entries,
-                tree: session.tree,
                 current: sessionIndex == activeSessionIndex
+            )
+        }
+    }
+
+    // MARK: - Pane labels (prefix)
+
+    /// Bare per-pane labels while the prefix is armed: every visible
+    /// pane of the active session names itself (title · host · dir).
+    /// Text only - no boxes, no borders, nothing persistent grows on
+    /// the panes.
+    func showPaneLabels() {
+        hidePaneLabels()
+        guard let session = activeSession else { return }
+        for id in session.tree?.leaves ?? [] {
+            guard let pane = session.panes[id] else { continue }
+            if let zoomed = session.zoomedID, zoomed != id {
+                continue
+            }
+            let label = PaneLabelView(pane: pane)
+            container.addSubview(label)
+            paneLabels.append(label)
+        }
+        positionPaneLabels()
+    }
+
+    func hidePaneLabels() {
+        for label in paneLabels {
+            label.removeFromSuperview()
+        }
+        paneLabels.removeAll()
+    }
+
+    /// Top-right corner of each pane; wide labels truncate rather than
+    /// cross a divider.
+    func positionPaneLabels() {
+        let inset: CGFloat = 8
+        for label in paneLabels {
+            guard let frame = label.paneFrame else {
+                label.isHidden = true
+                continue
+            }
+            label.isHidden = false
+            label.fit()
+            let width = min(label.frame.width, max(0, frame.width - inset * 2))
+            label.frame = NSRect(
+                x: frame.maxX - inset - width,
+                y: frame.minY + inset,
+                width: width,
+                height: label.frame.height
             )
         }
     }
