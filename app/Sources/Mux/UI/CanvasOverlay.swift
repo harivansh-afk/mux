@@ -1,28 +1,26 @@
 import AppKit
 
-/// The canvas panel (prefix f): a live overview of the whole window,
-/// sliding in from the right while the workspace slides left beneath it
-/// (translation only - pane sizes never change, so the ptys cannot
-/// observe the canvas). When the window is too narrow for a readable
-/// sidebar the panel docks to the bottom edge instead: same cards in
-/// one horizontal row, the workspace sliding up. Every pane is a
-/// stacked card whose thumbnail is
-/// the pane's real framebuffer, mirrored. Cards sit tight under their
-/// session header with space - not boxes - doing the grouping, and
-/// each carries a slot glyph: a miniature of the session's split tree
-/// with this pane's cell filled, so window membership reads without
-/// labels.
+/// The canvas (prefix f): a pane picker floating over the dimmed live
+/// workspace, with air on all sides - not a docked panel.
 ///
-/// Thumbnails are CALayers whose `contents` is the same IOSurface the
-/// pane's own layer shows (ghostty publishes each frame that way): zero
-/// copy, scaled by the compositor, refreshed by re-reading the pointer
-/// on a timer while the overlay is up. No screen state is ever copied or
-/// stored, and a pane's frame is NEVER touched to thumbnail it - that
-/// would resize the pty (PaneView.setFrameSize syncs the surface size).
+/// Right: the wheel - every pane as a card at its TRUE frame aspect,
+/// grouped under small session headers. The selection is always held at
+/// the wheel's vertical center: moving translates the whole track (one
+/// retargetable spring), the previous pane peeks above, the next below,
+/// and distance fades the rest. Left: the stage - the selected pane
+/// previewed large at its true aspect, scaled uniformly, never
+/// stretched.
 ///
-/// h/j/k/l walk the cards, enter or a click jumps, esc cancels. Rebuilt
-/// from the live session model on every open; PrefixEngine drives the
-/// keys and the overlay never takes focus.
+/// Thumbnails and the stage are mirror CALayers: ghostty publishes each
+/// frame as an IOSurface in the pane layer's `contents`; the mirrors
+/// assign the same object (zero copy, GPU-scaled) and re-read the
+/// pointer at 30Hz while the overlay is up. No screen state is copied or
+/// stored, and a pane's frame is NEVER touched to preview it - the pty
+/// cannot observe the canvas.
+///
+/// j/k (and arrows) move, click selects (click again jumps), enter
+/// jumps, esc or a click on the scrim cancels. PrefixEngine drives the
+/// keys; the overlay never takes focus.
 final class CanvasOverlayView: NSView {
     struct Entry {
         let sessionIndex: Int
@@ -35,78 +33,75 @@ final class CanvasOverlayView: NSView {
     struct Group {
         let title: String
         let entries: [Entry]
-        let tree: SplitNode?
         let current: Bool
     }
 
-    private static let font = Chrome.font
-    private static let boldFont = Chrome.boldFont
-    /// One spacing scale for the whole panel: one margin from every
-    /// edge, one small gap inside a session, one large gap between
-    /// sessions. Nothing else.
-    private static let inset: CGFloat = 20
-    private static let rowHeight = Chrome.rowHeight
-    /// Stacked same-size cards: width follows the panel, the thumbnail
-    /// keeps a wide terminal-ish aspect.
-    private static let thumbAspect: CGFloat = 0.55
-    private static let cardGap: CGFloat = 10
-    private static let sectionGap: CGFloat = 28
+    // One spacing scale, derived from the chrome size knob.
+    private static let margin: CGFloat = Chrome.fontSize * 2
+    private static let gap: CGFloat = Chrome.fontSize * 1.6
+    private static let wheelWidth: CGFloat = Chrome.fontSize * 9
+    private static let itemGap: CGFloat = 10
+    private static let sectionGap: CGFloat = 22
+    /// The floating badges keep their bottom strip.
+    private static let bottomReserve: CGFloat = ModeBarView.height + ModeBarView.margin * 2
 
-    private let titleLabel = NSTextField(labelWithString: "canvas")
-    private let countLabel = NSTextField(labelWithString: "")
-    private let cancelBadge = NSTextField(labelWithString: " esc cancel ")
-    private let scroll = NSScrollView()
-    private let content = FlippedView()
-    /// The panel's only stroke: a hairline on the edge it shares with
-    /// the workspace.
-    private let edge = NSView()
+    /// A click on a card that is already selected - or on the stage -
+    /// jumps; the controller commits and tells PrefixEngine to leave
+    /// the mode.
+    var onJump: ((Entry) -> Void)?
+    /// A click on the scrim leaves the mode, like esc.
+    var onCancel: (() -> Void)?
+
+    private let scrim = ScrimView()
+    private let stage = StageView()
+    private let stageMirror = CALayer()
+    private let stageTitle = NSTextField(labelWithString: "")
+    private let stageMeta = NSTextField(labelWithString: "")
+    private let wheel = FlippedView()
+    private let track = FlippedView()
 
     private var groups: [Group] = []
     private var headerLabels: [NSTextField] = []
-    private var cards: [CardView] = []
+    private var items: [WheelItemView] = []
     private var index = 0
     /// The pane the user came from (the focused pane on open).
     private var cameFrom: UUID?
 
-    /// A click on a card jumps straight to that pane; the controller
-    /// commits and tells PrefixEngine to leave the mode.
-    var onJump: ((Entry) -> Void)?
-
-    /// Bottom-docked (narrow window): cards run in one horizontal row.
-    /// The controller decides from the window's width and sets this
-    /// before positioning.
-    var docksBottom = false {
-        didSet {
-            if docksBottom != oldValue {
-                needsLayout = true
-            }
-        }
+    var selection: Entry? {
+        guard items.indices.contains(index) else { return nil }
+        return items[index].entry
     }
 
-    var selection: Entry? {
-        guard cards.indices.contains(index) else { return nil }
-        return cards[index].entry
+    override var isFlipped: Bool {
+        true
     }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        edge.wantsLayer = true
 
-        scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
-        scroll.scrollerStyle = .overlay
-        scroll.automaticallyAdjustsContentInsets = false
-        // A bounded plane: the list stops at its edges, no rubber-band
-        // past the first or last card.
-        scroll.verticalScrollElasticity = .none
-        scroll.horizontalScrollElasticity = .none
-        scroll.documentView = content
-        addSubview(scroll)
-        addSubview(titleLabel)
-        addSubview(countLabel)
-        addSubview(cancelBadge)
-        addSubview(edge)
+        scrim.onClick = { [weak self] in self?.onCancel?() }
+        addSubview(scrim)
+
+        stage.wantsLayer = true
+        stage.layer?.borderWidth = 1
+        stageMirror.contentsGravity = .resizeAspect
+        stage.layer?.addSublayer(stageMirror)
+        stage.onClick = { [weak self] in
+            guard let self, let selection else { return }
+            onJump?(selection)
+        }
+        addSubview(stage)
+        stageTitle.lineBreakMode = .byTruncatingTail
+        stageMeta.lineBreakMode = .byTruncatingTail
+        addSubview(stageTitle)
+        addSubview(stageMeta)
+
+        // The wheel clips; the track carries the cards and slides as one.
+        wheel.clipsToBounds = true
+        track.wantsLayer = true
+        wheel.addSubview(track)
+        addSubview(wheel)
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(render),
@@ -119,56 +114,68 @@ final class CanvasOverlayView: NSView {
         fatalError("not supported")
     }
 
-    /// Rebuild the cards; the highlight starts on `selected` (the focused
+    /// Rebuild the wheel; the selection starts on `selected` (the focused
     /// pane) so enter with no movement is a no-op jump.
     func reload(groups: [Group], selected: UUID?) {
         self.groups = groups
         cameFrom = selected
 
-        for view in headerLabels + cards {
+        for view in headerLabels + items {
             view.removeFromSuperview()
         }
         headerLabels = []
-        cards = []
+        items = []
 
         for group in groups {
             let header = NSTextField(labelWithString: "")
             header.lineBreakMode = .byTruncatingTail
-            content.addSubview(header)
+            track.addSubview(header)
             headerLabels.append(header)
 
             for entry in group.entries {
-                let card = CardView(entry: entry)
-                if let tree = group.tree {
-                    card.glyph.slots = (
-                        rects: tree.leaves.compactMap {
-                            tree.layout(in: SlotGlyphView.canvasRect, gap: 1)[$0]
-                        },
-                        mine: tree.leaves.firstIndex(of: entry.paneID) ?? 0
-                    )
-                }
-                card.onClick = { [weak self] in self?.onJump?(entry) }
-                content.addSubview(card)
-                cards.append(card)
+                let item = WheelItemView(entry: entry)
+                item.onClick = { [weak self] in self?.clicked(item) }
+                track.addSubview(item)
+                items.append(item)
             }
         }
 
-        index = cards.firstIndex { $0.entry.paneID == selected } ?? 0
-        let total = cards.count
-        countLabel.stringValue = "\(total == 1 ? "1 pane" : "\(total) panes")"
-            + " : \(groups.count == 1 ? "1 session" : "\(groups.count) sessions")"
+        index = items.firstIndex { $0.entry.paneID == selected } ?? 0
         render()
+        needsLayout = true
     }
 
-    /// Move the highlight across cards, stopping at the ends: the list
-    /// is a bounded plane, not a ring.
+    /// Click: selecting is one click, going is a second - the first
+    /// updates the preview, matching j/k.
+    private func clicked(_ item: WheelItemView) {
+        guard let i = items.firstIndex(where: { $0 === item }) else { return }
+        if i == index {
+            onJump?(item.entry)
+        } else {
+            move(by: i - index)
+        }
+    }
+
+    /// Move the selection, stopping at the ends: the wheel is a bounded
+    /// plane, not a ring.
     func move(by delta: Int) {
-        guard !cards.isEmpty else { return }
-        let next = min(max(index + delta, 0), cards.count - 1)
+        guard !items.isEmpty else { return }
+        let next = min(max(index + delta, 0), items.count - 1)
         guard next != index else { return }
         index = next
-        render()
-        cards[index].scrollToVisible(cards[index].bounds)
+        positionTrack(animated: true)
+        layoutStage()
+        renderSelection()
+        // The stage retargets with a blink-quick tick, not a crossfade:
+        // the mirror swap is instant, this only softens the cut.
+        if let layer = stage.layer {
+            let tick = CABasicAnimation(keyPath: "opacity")
+            tick.fromValue = 0.7
+            tick.toValue = 1
+            tick.duration = 0.13
+            tick.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1)
+            layer.add(tick, forKey: "stage-tick")
+        }
     }
 
     // MARK: - Live mirrors
@@ -190,20 +197,21 @@ final class CanvasOverlayView: NSView {
         refreshMirrors()
     }
 
-    /// One pointer read and one assignment per card: the pane's layer
-    /// holds the IOSurface of its latest frame, the mirror shows the
-    /// same object. Titles and directories drift slower, so they refresh
-    /// on a coarser beat.
+    /// One pointer read and one assignment per mirror: the pane's layer
+    /// holds the IOSurface of its latest frame, the mirrors show the
+    /// same object. Titles drift slower, so they refresh on a coarser
+    /// beat.
     private func refreshMirrors() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for card in cards {
-            card.mirror.contents = card.entry.pane?.layer?.contents
+        for item in items {
+            item.mirror.contents = item.entry.pane?.layer?.contents
         }
+        stageMirror.contents = selection?.pane?.layer?.contents
         CATransaction.commit()
         tick += 1
         if tick % 15 == 0 {
-            renderTitles()
+            renderSelection()
         }
     }
 
@@ -211,132 +219,104 @@ final class CanvasOverlayView: NSView {
 
     override func layout() {
         super.layout()
-        let inset = Self.inset
-        let row = Self.rowHeight
-        titleLabel.sizeToFit()
-        countLabel.sizeToFit()
-        cancelBadge.sizeToFit()
-        let titleMidY = bounds.height - inset - row / 2
-        titleLabel.frame.origin = NSPoint(
-            x: inset, y: titleMidY - titleLabel.frame.height / 2
+        scrim.frame = bounds
+        wheel.frame = NSRect(
+            x: bounds.width - Self.margin - Self.wheelWidth,
+            y: Self.margin,
+            width: Self.wheelWidth,
+            height: max(0, bounds.height - Self.margin - Self.bottomReserve)
         )
-        cancelBadge.frame.origin = NSPoint(
-            x: bounds.width - inset - cancelBadge.frame.width,
-            y: titleMidY - cancelBadge.frame.height / 2
-        )
-        countLabel.frame.origin = NSPoint(
-            x: cancelBadge.frame.minX - 16 - countLabel.frame.width,
-            y: titleMidY - countLabel.frame.height / 2
-        )
-        // The count yields rather than overlap the title when the panel
-        // is narrow.
-        countLabel.isHidden = countLabel.frame.minX < titleLabel.frame.maxX + 16
-
-        // The only stroke is a hairline on the edge the panel shares
-        // with the workspace: left when docked right, top when docked
-        // bottom.
-        if docksBottom {
-            edge.frame = NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1)
-            scroll.frame = NSRect(
-                x: 0, y: 0,
-                width: bounds.width,
-                height: max(0, bounds.height - inset - row)
-            )
-        } else {
-            edge.frame = NSRect(x: 0, y: 0, width: 1, height: bounds.height)
-            scroll.frame = NSRect(
-                x: 1, y: 0,
-                width: max(0, bounds.width - 1),
-                height: max(0, bounds.height - inset - row)
-            )
-        }
-        scroll.hasVerticalScroller = !docksBottom
-        scroll.hasHorizontalScroller = docksBottom
-        layoutContent()
+        positionTrack(animated: false)
+        layoutStage()
     }
 
-    private func layoutContent() {
-        if docksBottom {
-            layoutContentRow()
-        } else {
-            layoutContentColumn()
-        }
-    }
-
-    /// Docked right: same-width cards stacked in one column.
-    private func layoutContentColumn() {
-        let width = scroll.bounds.width - Self.inset * 2
-        guard width > 80 else { return }
-        let cardHeight = Chrome.barHeight + width * Self.thumbAspect
-        var y = Self.cardGap
-        var cardIndex = 0
-
+    /// Stack headers and cards top-down, then translate the whole track
+    /// so the selected card's center sits at the wheel's center. The
+    /// translate is the wheel's only motion: one spring, retargetable
+    /// mid-flight.
+    private func positionTrack(animated: Bool) {
+        var y: CGFloat = 0
+        var itemIndex = 0
+        let headerHeight = (Chrome.fontSize * 1.2).rounded()
         for (i, group) in groups.enumerated() {
-            let header = headerLabels[i]
-            header.sizeToFit()
-            header.frame = NSRect(
-                x: Self.inset, y: y,
-                width: min(header.frame.width, width), height: header.frame.height
+            headerLabels[i].frame = NSRect(
+                x: 2, y: y, width: Self.wheelWidth - 4, height: headerHeight
             )
-            y += header.frame.height + Self.cardGap
-
+            y += headerHeight + 6
             for _ in group.entries {
-                cards[cardIndex].frame = NSRect(
-                    x: Self.inset, y: y, width: width, height: cardHeight
-                )
-                y += cardHeight + Self.cardGap
-                cardIndex += 1
+                let item = items[itemIndex]
+                let height = item.height(for: Self.wheelWidth)
+                item.frame = NSRect(x: 0, y: y, width: Self.wheelWidth, height: height)
+                y += height + Self.itemGap
+                itemIndex += 1
             }
-            y += Self.sectionGap - Self.cardGap
+            y += Self.sectionGap - Self.itemGap
         }
-        content.frame = NSRect(
-            x: 0, y: 0, width: scroll.bounds.width, height: max(y, scroll.bounds.height)
+
+        let selectedMid = items.indices.contains(index) ? items[index].frame.midY : 0
+        let from = track.layer.map { $0.presentation()?.position ?? $0.position }
+        track.frame = NSRect(
+            x: 0, y: (wheel.bounds.height / 2 - selectedMid).rounded(),
+            width: Self.wheelWidth, height: y
         )
+        guard animated, let layer = track.layer, let from,
+              from != layer.position else { return }
+        let spring = CASpringAnimation(keyPath: "position")
+        spring.stiffness = 1200
+        spring.damping = 68
+        spring.mass = 1
+        spring.duration = spring.settlingDuration
+        spring.fromValue = from
+        layer.add(spring, forKey: "wheel")
     }
 
-    /// Docked bottom: same-height cards in one horizontal row, each
-    /// group's header above its first card. The floating badges (mode
-    /// bar, session indicator) live on the bar's bottom strip, so the
-    /// cards stop above them.
-    private func layoutContentRow() {
-        let viewport = scroll.bounds
-        var headerHeight: CGFloat = 0
-        for header in headerLabels {
-            header.sizeToFit()
-            headerHeight = max(headerHeight, header.frame.height)
+    /// The stage box takes the pane's true frame aspect and fits it into
+    /// the space left of the wheel - scaled uniformly, never stretched,
+    /// never resizing anything.
+    private func layoutStage() {
+        guard let pane = selection?.pane else {
+            stage.isHidden = true
+            stageTitle.isHidden = true
+            stageMeta.isHidden = true
+            return
         }
-        let reserve = ModeBarView.height + ModeBarView.margin * 2
-        let cardY = Self.cardGap + headerHeight + Self.cardGap
-        let cardHeight = viewport.height - cardY - reserve
-        guard cardHeight > Chrome.barHeight + 40 else { return }
-        let cardWidth = ((cardHeight - Chrome.barHeight) / Self.thumbAspect).rounded()
+        stage.isHidden = false
+        stageTitle.isHidden = false
+        stageMeta.isHidden = false
 
-        var x = Self.inset
-        var cardIndex = 0
-        for (i, group) in groups.enumerated() {
-            let header = headerLabels[i]
-            let groupWidth = CGFloat(group.entries.count) * (cardWidth + Self.cardGap)
-                - Self.cardGap
-            header.frame = NSRect(
-                x: x, y: Self.cardGap,
-                width: min(header.frame.width, max(groupWidth, 0)),
-                height: header.frame.height
-            )
-            for _ in group.entries {
-                cards[cardIndex].frame = NSRect(
-                    x: x, y: cardY, width: cardWidth, height: cardHeight
-                )
-                x += cardWidth + Self.cardGap
-                cardIndex += 1
-            }
-            x += Self.sectionGap - Self.cardGap
+        let areaX = Self.margin
+        let areaY = Self.margin
+        let areaW = max(1, wheel.frame.minX - Self.gap - areaX)
+        let labelBlock = (Chrome.fontSize * 1.8).rounded()
+        let areaH = max(1, bounds.height - Self.bottomReserve - areaY - Self.margin - labelBlock)
+
+        let size = pane.bounds.size
+        let aspect = size.width > 1 && size.height > 1 ? size.width / size.height : 16.0 / 9.0
+        var w = areaW
+        var h = (w / aspect).rounded()
+        if h > areaH {
+            h = areaH
+            w = (h * aspect).rounded()
         }
-        // x overshoots by one sectionGap; the row ends one margin after
-        // the last card.
-        content.frame = NSRect(
-            x: 0, y: 0,
-            width: max(x - Self.sectionGap + Self.inset, viewport.width),
-            height: viewport.height
+        stage.frame = NSRect(
+            x: (areaX + (areaW - w) / 2).rounded(),
+            y: (areaY + (areaH - h) / 2).rounded(),
+            width: w, height: h
+        )
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        stageMirror.frame = stage.bounds
+        CATransaction.commit()
+
+        stageTitle.sizeToFit()
+        stageMeta.sizeToFit()
+        let labelY = stage.frame.maxY + 10
+        stageTitle.frame.origin = NSPoint(x: stage.frame.minX + 1, y: labelY)
+        stageMeta.frame = NSRect(
+            x: stageTitle.frame.maxX + 12,
+            y: labelY + (stageTitle.frame.height - stageMeta.frame.height) / 2,
+            width: min(stageMeta.frame.width, max(0, stage.frame.maxX - stageTitle.frame.maxX - 12)),
+            height: stageMeta.frame.height
         )
     }
 
@@ -344,84 +324,94 @@ final class CanvasOverlayView: NSView {
 
     @objc private func render() {
         let palette = ThemeManager.shared.palette
-        layer?.backgroundColor = palette.panelBg.cgColor
-        edge.layer?.backgroundColor = palette.dim.cgColor
-
-        titleLabel.attributedStringValue = NSAttributedString(
-            string: "canvas",
-            attributes: [.font: Self.boldFont, .foregroundColor: palette.text]
-        )
-        countLabel.attributedStringValue = NSAttributedString(
-            string: countLabel.stringValue,
-            attributes: [.font: Self.font, .foregroundColor: palette.dim]
-        )
-        cancelBadge.attributedStringValue = NSAttributedString(
-            string: " esc cancel ",
-            attributes: [
-                .font: Self.boldFont,
-                .foregroundColor: palette.accentContrast,
-                .backgroundColor: palette.accent,
-            ]
-        )
+        // The scrim dims toward the chrome background, so it reads right
+        // in both appearances.
+        scrim.layer?.backgroundColor = palette.panelBg.withAlphaComponent(0.72).cgColor
+        stage.layer?.backgroundColor = palette.panelBg.cgColor
+        stage.layer?.borderColor = palette.accent.cgColor
 
         for (i, group) in groups.enumerated() {
             let line = NSMutableAttributedString()
             line.append(NSAttributedString(
                 string: group.title,
-                attributes: [.font: Self.boldFont, .foregroundColor: palette.pink]
+                attributes: [.font: Chrome.metaBoldFont, .foregroundColor: palette.pink]
             ))
             let hosts = Set(group.entries.map { $0.pane?.target ?? "local" })
-            var meta = "  \(group.entries.count == 1 ? "1 pane" : "\(group.entries.count) panes")"
-                + " : \(hosts.sorted().joined(separator: " "))"
+            var meta = "  \(hosts.sorted().joined(separator: " "))"
             if group.current {
-                meta += " : current"
+                meta += " · current"
             }
             line.append(NSAttributedString(
                 string: meta,
-                attributes: [.font: Self.font, .foregroundColor: palette.dim]
+                attributes: [.font: Chrome.metaFont, .foregroundColor: palette.dim]
             ))
             headerLabels[i].attributedStringValue = line
         }
-        renderTitles()
+        renderSelection()
         needsLayout = true
     }
 
-    /// Card titles come live from the pane (title and pwd change as the
-    /// program runs), so they re-render on the mirror timer's slow beat.
-    private func renderTitles() {
+    /// Everything that follows the selection or the live panes: card
+    /// labels and borders, distance fades, the stage labels.
+    private func renderSelection() {
         let palette = ThemeManager.shared.palette
-        for (i, card) in cards.enumerated() {
-            card.render(
+        for (i, item) in items.enumerated() {
+            item.render(
                 palette: palette,
                 selected: i == index,
-                cameFrom: card.entry.paneID == cameFrom
+                cameFrom: item.entry.paneID == cameFrom
             )
+            item.alphaValue = i == index ? 1 : (abs(i - index) == 1 ? 0.55 : 0.3)
         }
+        for header in headerLabels {
+            header.alphaValue = 0.45
+        }
+
+        guard let entry = selection, let pane = entry.pane else { return }
+        stageTitle.attributedStringValue = NSAttributedString(
+            string: pane.displayTitle,
+            attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
+        )
+        var parts = ["session \(entry.sessionIndex + 1)", pane.target ?? "local"]
+        if let tail = (pane.pwd as NSString?)?.lastPathComponent, !tail.isEmpty {
+            parts.append(tail)
+        }
+        stageMeta.attributedStringValue = NSAttributedString(
+            string: parts.joined(separator: " · "),
+            attributes: [.font: Chrome.metaFont, .foregroundColor: palette.dim]
+        )
+        needsLayout = true
     }
 }
 
-/// One pane card: a title row (index, directory, title, host - the
-/// PanesOverlay part grammar), the slot glyph, and the mirrored
-/// framebuffer beneath.
-private final class CardView: NSView {
+/// One wheel card: the mirrored framebuffer at the pane's true aspect,
+/// its title underneath in the product voice.
+private final class WheelItemView: NSView {
     let entry: CanvasOverlayView.Entry
-    let thumb = NSView()
     let mirror = CALayer()
-    let glyph = SlotGlyphView()
     var onClick: (() -> Void)?
 
+    private let thumb = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
+
+    /// The pane's real frame ratio; the card never stretches it.
+    private var aspect: CGFloat {
+        let size = entry.pane?.bounds.size ?? .zero
+        guard size.width > 1, size.height > 1 else { return 16.0 / 9.0 }
+        return size.width / size.height
+    }
+
+    private static let labelHeight = (Chrome.fontSize * 1.15).rounded()
 
     init(entry: CanvasOverlayView.Entry) {
         self.entry = entry
         super.init(frame: .zero)
-        titleLabel.lineBreakMode = .byTruncatingTail
-        addSubview(titleLabel)
-        addSubview(glyph)
         thumb.wantsLayer = true
         mirror.contentsGravity = .resizeAspect
         thumb.layer?.addSublayer(mirror)
         addSubview(thumb)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        addSubview(titleLabel)
     }
 
     @available(*, unavailable)
@@ -429,9 +419,13 @@ private final class CardView: NSView {
         fatalError("not supported")
     }
 
-    /// Title on top, thumbnail below: top-left math.
     override var isFlipped: Bool {
         true
+    }
+
+    func height(for width: CGFloat) -> CGFloat {
+        let thumbHeight = min(max((width / aspect).rounded(), 40), (width * 1.6).rounded())
+        return thumbHeight + 4 + Self.labelHeight
     }
 
     /// The whole card is one click target; labels never swallow the hit.
@@ -445,22 +439,10 @@ private final class CardView: NSView {
 
     override func layout() {
         super.layout()
-        let titleHeight = Chrome.barHeight
-        glyph.frame = NSRect(
-            x: bounds.width - SlotGlyphView.canvasRect.width,
-            y: (titleHeight - SlotGlyphView.canvasRect.height) / 2,
-            width: SlotGlyphView.canvasRect.width,
-            height: SlotGlyphView.canvasRect.height
-        )
-        titleLabel.sizeToFit()
+        let thumbHeight = bounds.height - 4 - Self.labelHeight
+        thumb.frame = NSRect(x: 0, y: 0, width: bounds.width, height: thumbHeight)
         titleLabel.frame = NSRect(
-            x: 0, y: (titleHeight - titleLabel.frame.height) / 2,
-            width: min(titleLabel.frame.width, glyph.frame.minX - 6),
-            height: titleLabel.frame.height
-        )
-        thumb.frame = NSRect(
-            x: 0, y: titleHeight,
-            width: bounds.width, height: bounds.height - titleHeight
+            x: 1, y: thumbHeight + 4, width: bounds.width - 2, height: Self.labelHeight
         )
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -473,84 +455,51 @@ private final class CardView: NSView {
         if cameFrom {
             line.append(NSAttributedString(
                 string: "\u{25C6} ",
-                attributes: [.font: Chrome.font, .foregroundColor: palette.accent]
+                attributes: [.font: Chrome.metaFont, .foregroundColor: palette.accent]
             ))
         }
-        var parts = [entry.index]
-        if let pane = entry.pane {
-            parts.append((pane.pwd as NSString?)?.lastPathComponent ?? "")
-            parts.append(Self.sessionTitle(pane.title))
-            parts.append(pane.target ?? "")
-        }
-        for (i, part) in parts.filter({ !$0.isEmpty }).enumerated() {
-            if i > 0 {
-                line.append(NSAttributedString(
-                    string: " : ",
-                    attributes: [.font: Chrome.font, .foregroundColor: palette.pink]
-                ))
-            }
-            line.append(NSAttributedString(
-                string: part,
-                attributes: [
-                    .font: i == 0 || selected ? Chrome.boldFont : Chrome.font,
-                    .foregroundColor: selected ? palette.accent : palette.text,
-                ]
-            ))
-        }
+        line.append(NSAttributedString(
+            string: entry.pane?.displayTitle ?? "",
+            attributes: [
+                .font: Chrome.uiFont,
+                .foregroundColor: selected ? palette.text : palette.dim,
+            ]
+        ))
         titleLabel.attributedStringValue = line
         thumb.layer?.backgroundColor = palette.panelBg.cgColor
         thumb.layer?.borderColor = selected
             ? palette.accent.cgColor
             : palette.dim.withAlphaComponent(0.35).cgColor
         thumb.layer?.borderWidth = selected ? 2 : 1
-        glyph.selected = selected
-        glyph.needsDisplay = true
         needsLayout = true
-    }
-
-    /// The pane title as a session name: drop the state glyph coding
-    /// agents prefix their titles with (claude uses U+2733 idle and a
-    /// braille spinner while working).
-    private static func sessionTitle(_ raw: String) -> String {
-        var title = raw.trimmingCharacters(in: .whitespaces)
-        if let first = title.unicodeScalars.first,
-           first.value == 0x2733 || (0x2800 ... 0x28FF).contains(first.value) {
-            title = String(title.unicodeScalars.dropFirst())
-                .trimmingCharacters(in: .whitespaces)
-        }
-        return title
     }
 }
 
-/// A miniature of the session's split tree with this pane's cell filled:
-/// which window the card belongs to and where it sits in it, without a
-/// label.
-private final class SlotGlyphView: NSView {
-    /// Glyph canvas, derived from the chrome size knob.
-    static let canvasRect = CGRect(
-        x: 0, y: 0, width: Chrome.fontSize * 1.3, height: Chrome.fontSize * 0.8
-    )
+/// The dimming layer under the picker; a click on it cancels, like esc.
+private final class ScrimView: NSView {
+    var onClick: (() -> Void)?
 
-    var slots: (rects: [CGRect], mine: Int) = ([], 0)
-    var selected = false
-
-    override var isFlipped: Bool {
-        true
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
     }
 
-    override func draw(_: NSRect) {
-        let palette = ThemeManager.shared.palette
-        for (i, rect) in slots.rects.enumerated() {
-            let path = NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5))
-            if i == slots.mine {
-                (selected ? palette.accent : palette.text).setFill()
-                path.fill()
-            } else {
-                palette.dim.setStroke()
-                path.lineWidth = 1
-                path.stroke()
-            }
-        }
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("not supported")
+    }
+
+    override func mouseDown(with _: NSEvent) {
+        onClick?()
+    }
+}
+
+/// The stage box; a click on it jumps to the previewed pane.
+private final class StageView: NSView {
+    var onClick: (() -> Void)?
+
+    override func mouseDown(with _: NSEvent) {
+        onClick?()
     }
 }
 
