@@ -54,6 +54,20 @@ final class PaneView: NSView {
     var title: String = "mux"
     var pwd: String?
 
+    /// The title as chrome shows it (canvas cards, pane labels): the
+    /// state glyph coding agents prefix their titles with is dropped
+    /// (claude uses U+2733 idle and a braille spinner while working).
+    var displayTitle: String {
+        var cleaned = title.trimmingCharacters(in: .whitespaces)
+        if let first = cleaned.unicodeScalars.first,
+           first.value == 0x2733 || (0x2800 ... 0x28FF).contains(first.value)
+        {
+            cleaned = String(cleaned.unicodeScalars.dropFirst())
+                .trimmingCharacters(in: .whitespaces)
+        }
+        return cleaned
+    }
+
     /// Points added to the config font size via cmd+= / cmd+- (font
     /// zoom). libghostty owns the actual value and exposes no getter,
     /// so the pane intercepts the keys, drives ghostty through binding
