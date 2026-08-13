@@ -51,6 +51,10 @@ final class CanvasOverlayView: NSView {
     var onJump: ((Entry) -> Void)?
     /// A click on the scrim leaves the mode, like esc.
     var onCancel: (() -> Void)?
+    /// Fires whenever the selection lands somewhere (reload, j/k, click):
+    /// the session indicator follows it live, so the numbers tell you
+    /// which session you are scrolling through as you scroll.
+    var onSelectionChange: ((Entry?) -> Void)?
 
     private let scrim = ScrimView()
     private let stage = StageView()
@@ -153,6 +157,7 @@ final class CanvasOverlayView: NSView {
         index = items.firstIndex { $0.entry.paneID == selected } ?? 0
         render()
         needsLayout = true
+        onSelectionChange?(selection)
     }
 
     /// Click: selecting is one click, going is a second - the first
@@ -176,6 +181,7 @@ final class CanvasOverlayView: NSView {
         positionTrack(animated: true)
         layoutStage()
         renderSelection()
+        onSelectionChange?(selection)
         // The stage retargets with a blink-quick tick, not a crossfade:
         // the mirror swap is instant, this only softens the cut.
         if let layer = stage.layer {
@@ -297,7 +303,9 @@ final class CanvasOverlayView: NSView {
         let areaX = Self.margin
         let areaY = Self.margin
         let areaW = max(1, wheel.frame.minX - Self.gap - areaX)
-        let labelBlock = (Chrome.fontSize * 1.8).rounded()
+        // Two stacked descriptor lines under the stage: title, then
+        // directory + host.
+        let labelBlock = (Chrome.fontSize * 2.7).rounded()
         let areaH = max(1, bounds.height - Self.bottomReserve - areaY - Self.margin - labelBlock)
 
         let size = pane.bounds.size
@@ -323,12 +331,17 @@ final class CanvasOverlayView: NSView {
 
         stageTitle.sizeToFit()
         stageMeta.sizeToFit()
-        let labelY = stage.frame.maxY + 10
-        stageTitle.frame.origin = NSPoint(x: stage.frame.minX + 1, y: labelY)
+        let maxLabelWidth = max(0, stage.frame.width - 1)
+        stageTitle.frame = NSRect(
+            x: stage.frame.minX + 1,
+            y: stage.frame.maxY + 10,
+            width: min(stageTitle.frame.width, maxLabelWidth),
+            height: stageTitle.frame.height
+        )
         stageMeta.frame = NSRect(
-            x: stageTitle.frame.maxX + 12,
-            y: labelY + (stageTitle.frame.height - stageMeta.frame.height) / 2,
-            width: min(stageMeta.frame.width, max(0, stage.frame.maxX - stageTitle.frame.maxX - 12)),
+            x: stage.frame.minX + 1,
+            y: stageTitle.frame.maxY + 3,
+            width: min(stageMeta.frame.width, maxLabelWidth),
             height: stageMeta.frame.height
         )
     }
@@ -384,34 +397,61 @@ final class CanvasOverlayView: NSView {
         }
 
         guard let entry = selection, let pane = entry.pane else { return }
-        // One label grammar (PaneLabelParts): the first part is the big
-        // title - pink when it is the host - and the rest follow the
-        // session number in the meta line. Never the same word twice.
+        // The stage descriptor, stacked: line one is what runs here (the
+        // agent's state glyph - busy dot working, ok check done - then
+        // the title, pink when it is the host), line two is where (the
+        // directory as its prompt would print it, then the host in
+        // pink). No "session N" text: the session indicator highlights
+        // the selection's session live instead.
         let parts = PaneLabelParts.parts(for: pane)
         let first = parts.first
-        stageTitle.attributedStringValue = NSAttributedString(
+        let title = NSMutableAttributedString()
+        if let glyph = Self.stateGlyph(for: pane, palette: palette, font: Chrome.uiTitleFont) {
+            title.append(glyph)
+        }
+        title.append(NSAttributedString(
             string: first?.text ?? "shell",
             attributes: [
                 .font: Chrome.uiTitleFont,
                 .foregroundColor: first?.role == .host ? palette.pink : palette.text,
             ]
-        )
-        let meta = NSMutableAttributedString(
-            string: "session \(entry.sessionIndex + 1)",
-            attributes: [.font: Chrome.metaFont, .foregroundColor: palette.dim]
-        )
-        for part in parts.dropFirst() {
+        ))
+        stageTitle.attributedStringValue = title
+
+        let meta = NSMutableAttributedString()
+        if let dir = PaneLabelParts.promptDir(for: pane) {
             meta.append(NSAttributedString(
-                string: " · ",
+                string: dir,
                 attributes: [.font: Chrome.metaFont, .foregroundColor: palette.dim]
             ))
-            meta.append(NSAttributedString(string: part.text, attributes: [
-                .font: part.role == .host ? Chrome.metaBoldFont : Chrome.metaFont,
-                .foregroundColor: part.role == .host ? palette.pink : palette.dim,
-            ]))
+        }
+        if first?.role != .host {
+            if meta.length > 0 {
+                meta.append(NSAttributedString(string: "  "))
+            }
+            meta.append(NSAttributedString(
+                string: pane.target ?? "local",
+                attributes: [.font: Chrome.metaBoldFont, .foregroundColor: palette.pink]
+            ))
         }
         stageMeta.attributedStringValue = meta
         needsLayout = true
+    }
+
+    /// The agent-state glyph shared by the stage and the cards: a busy
+    /// dot while the agent works, an ok check when it finished. Nothing
+    /// for panes that do not announce a state.
+    static func stateGlyph(
+        for pane: PaneView, palette: Palette, font: NSFont
+    ) -> NSAttributedString? {
+        guard let state = pane.agentState else { return nil }
+        return NSAttributedString(
+            string: state == .working ? "\u{25CF} " : "\u{2713} ",
+            attributes: [
+                .font: font,
+                .foregroundColor: state == .working ? palette.busy : palette.ok,
+            ]
+        )
     }
 }
 
@@ -499,9 +539,15 @@ private final class WheelItemView: NSView {
                 attributes: [.font: Chrome.metaFont, .foregroundColor: palette.accent]
             ))
         }
-        // The shared grammar, directories left to the stage: title in
-        // the product voice, the host in pink - once, never repeated.
+        // The shared grammar, directories left to the stage: the agent
+        // state glyph, then the title in the product voice, the host in
+        // pink - once, never repeated.
         if let pane = entry.pane {
+            if let glyph = CanvasOverlayView.stateGlyph(
+                for: pane, palette: palette, font: Chrome.metaFont
+            ) {
+                line.append(glyph)
+            }
             for (i, part) in PaneLabelParts.parts(for: pane).enumerated()
                 where part.role != .dir
             {

@@ -50,6 +50,23 @@ enum PaneLabelParts {
         }
         return out
     }
+
+    /// The pane's directory the way its prompt would print it: the full
+    /// path with the home prefix folded to `~`. Remote paths fold their
+    /// own home (/home/x or /Users/x) - the pane's pwd names the pane's
+    /// host, so the abbreviation reads exactly like a prompt there.
+    static func promptDir(for pane: PaneView) -> String? {
+        guard var dir = pane.pwd, !dir.isEmpty else { return nil }
+        let home = NSHomeDirectory()
+        if dir == home || dir.hasPrefix(home + "/") {
+            dir = "~" + dir.dropFirst(home.count)
+        } else if let match = dir.range(
+            of: "^/(home|Users)/[^/]+", options: .regularExpression
+        ) {
+            dir = "~" + dir[match.upperBound...]
+        }
+        return dir
+    }
 }
 
 /// A small tag at a pane's top-right while the prefix is armed: what

@@ -40,9 +40,12 @@ extension MuxWindowController {
 
     // MARK: - Session indicator
 
-    /// `1 2 3` with the active number highlighted. Mirrors the mode bar
-    /// across the bottom edge with the same concentric insets.
+    /// `1 2 3` with the active number highlighted - or, while the canvas
+    /// is up, the session of the selected card, so the numbers follow
+    /// the scroll live. Mirrors the mode bar across the bottom edge with
+    /// the same concentric insets.
     private var sessionSegments: [ModeBarSegment] {
+        let highlighted = canvasSessionHighlight ?? activeSessionIndex
         var segments: [ModeBarSegment] = []
         for index in sessions.indices {
             if index > 0 {
@@ -50,7 +53,7 @@ extension MuxWindowController {
             }
             let label = "\(index + 1)"
             segments.append(
-                index == activeSessionIndex ? .highlight(label) : .dim(label)
+                index == highlighted ? .highlight(label) : .dim(label)
             )
         }
         return segments
@@ -222,6 +225,12 @@ extension MuxWindowController {
     /// so its renderer keeps producing the frames the mirrors show;
     /// hide restores the normal rule.
     func showCanvasOverlay() {
+        // Wired before reload: reload fires the first selection, and the
+        // indicator should track it from the first frame.
+        canvasOverlay.onSelectionChange = { [weak self] entry in
+            self?.canvasSessionHighlight = entry?.sessionIndex
+            self?.updateSessionIndicator()
+        }
         canvasOverlay.reload(groups: canvasGroups(), selected: focusedPane?.id)
         canvasOverlay.onJump = { [weak self] entry in
             self?.commitCanvas(entry)
@@ -256,6 +265,8 @@ extension MuxWindowController {
         guard canvasOverlay.superview != nil, !canvasClosing else { return }
         canvasClosing = true
         canvasOpen = false
+        canvasSessionHighlight = nil
+        updateSessionIndicator()
         fadeCanvas(to: 0)
         scheduleCanvasTeardown()
     }
@@ -292,7 +303,9 @@ extension MuxWindowController {
         guard canvasOverlay.superview != nil, !canvasClosing else { return }
         canvasClosing = true
         canvasOpen = false
+        canvasSessionHighlight = nil
         selectSession(entry.sessionIndex)
+        updateSessionIndicator()
         session.reveal(pane)
         layoutPanes()
         fadeCanvas(to: 0)

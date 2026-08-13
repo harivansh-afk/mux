@@ -54,6 +54,10 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// by the mode change that follows a commit.
     var canvasOpen = false
     var canvasClosing = false
+    /// While the canvas is up, the session indicator highlights the
+    /// session of the selected card instead of the active session, so
+    /// the numbers follow the scroll in real time. nil = canvas closed.
+    var canvasSessionHighlight: Int?
 
     /// Bare per-pane labels while the prefix is armed (managed by
     /// MuxWindowController+Overlays.swift).
