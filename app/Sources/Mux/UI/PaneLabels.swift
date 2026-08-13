@@ -1,7 +1,42 @@
 import AppKit
 
+/// The one grammar for pane labels everywhere they exist (prefix tags,
+/// wheel cards, the stage): title · host · directory, deduplicated. A
+/// remote shell often titles itself after its host, and a local one
+/// after its directory - repeating the word teaches nothing. When the
+/// title IS the host, the host keeps the slot: where a pane lives
+/// outranks what it calls itself.
+enum PaneLabelParts {
+    enum Role {
+        case title
+        case host
+        case dir
+    }
+
+    static func parts(for pane: PaneView) -> [(text: String, role: Role)] {
+        let title = pane.displayTitle
+        var out: [(text: String, role: Role)] = []
+        if let host = pane.target, title.caseInsensitiveCompare(host) == .orderedSame {
+            out.append((host, .host))
+        } else {
+            if !title.isEmpty {
+                out.append((title, .title))
+            }
+            if let host = pane.target {
+                out.append((host, .host))
+            }
+        }
+        if let dir = (pane.pwd as NSString?)?.lastPathComponent, !dir.isEmpty,
+           !out.contains(where: { $0.text.caseInsensitiveCompare(dir) == .orderedSame })
+        {
+            out.append((dir, .dir))
+        }
+        return out
+    }
+}
+
 /// A small tag at a pane's top-right while the prefix is armed: what
-/// runs here and where (title · host · directory). A quiet panel
+/// runs here and where (the PaneLabelParts grammar). A quiet panel
 /// background floats it above any cell content; no border - the box is
 /// the chrome, the text is the information.
 final class PaneLabelView: NSView {
@@ -68,29 +103,23 @@ final class PaneLabelView: NSView {
         let palette = ThemeManager.shared.palette
         layer?.backgroundColor = palette.panelBg.withAlphaComponent(0.94).cgColor
 
-        // The host is the label's whole reason to exist: it reads in
-        // pink (the active-item color), never in gray.
-        var parts: [(text: String, color: NSColor, font: NSFont)] = [
-            (pane.displayTitle, palette.text, Chrome.metaBoldFont),
-        ]
-        if let target = pane.target {
-            parts.append((target, palette.pink, Chrome.metaBoldFont))
-        }
-        if let tail = (pane.pwd as NSString?)?.lastPathComponent, !tail.isEmpty {
-            parts.append((tail, palette.dim, Chrome.metaFont))
-        }
-
+        // Hosts read in pink (the active-item color), never in gray.
         let line = NSMutableAttributedString()
-        for part in parts where !part.text.isEmpty {
+        for part in PaneLabelParts.parts(for: pane) {
             if line.length > 0 {
                 line.append(NSAttributedString(string: " · ", attributes: [
                     .font: Chrome.metaFont,
                     .foregroundColor: palette.dim.withAlphaComponent(0.7),
                 ]))
             }
+            let style: (font: NSFont, color: NSColor) = switch part.role {
+            case .title: (Chrome.metaBoldFont, palette.text)
+            case .host: (Chrome.metaBoldFont, palette.pink)
+            case .dir: (Chrome.metaFont, palette.dim)
+            }
             line.append(NSAttributedString(string: part.text, attributes: [
-                .font: part.font,
-                .foregroundColor: part.color,
+                .font: style.font,
+                .foregroundColor: style.color,
             ]))
         }
         label.attributedStringValue = line

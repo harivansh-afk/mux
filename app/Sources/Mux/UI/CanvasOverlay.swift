@@ -384,26 +384,31 @@ final class CanvasOverlayView: NSView {
         }
 
         guard let entry = selection, let pane = entry.pane else { return }
+        // One label grammar (PaneLabelParts): the first part is the big
+        // title - pink when it is the host - and the rest follow the
+        // session number in the meta line. Never the same word twice.
+        let parts = PaneLabelParts.parts(for: pane)
+        let first = parts.first
         stageTitle.attributedStringValue = NSAttributedString(
-            string: pane.displayTitle,
-            attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
+            string: first?.text ?? "shell",
+            attributes: [
+                .font: Chrome.uiTitleFont,
+                .foregroundColor: first?.role == .host ? palette.pink : palette.text,
+            ]
         )
-        // Hosts read in pink - the active-item color - so where a pane
-        // lives is the first thing the meta line answers.
-        let meta = NSMutableAttributedString()
-        meta.append(NSAttributedString(
-            string: "session \(entry.sessionIndex + 1) · ",
+        let meta = NSMutableAttributedString(
+            string: "session \(entry.sessionIndex + 1)",
             attributes: [.font: Chrome.metaFont, .foregroundColor: palette.dim]
-        ))
-        meta.append(NSAttributedString(
-            string: pane.target ?? "local",
-            attributes: [.font: Chrome.metaBoldFont, .foregroundColor: palette.pink]
-        ))
-        if let tail = (pane.pwd as NSString?)?.lastPathComponent, !tail.isEmpty {
+        )
+        for part in parts.dropFirst() {
             meta.append(NSAttributedString(
-                string: " · \(tail)",
+                string: " · ",
                 attributes: [.font: Chrome.metaFont, .foregroundColor: palette.dim]
             ))
+            meta.append(NSAttributedString(string: part.text, attributes: [
+                .font: part.role == .host ? Chrome.metaBoldFont : Chrome.metaFont,
+                .foregroundColor: part.role == .host ? palette.pink : palette.dim,
+            ]))
         }
         stageMeta.attributedStringValue = meta
         needsLayout = true
@@ -494,19 +499,22 @@ private final class WheelItemView: NSView {
                 attributes: [.font: Chrome.metaFont, .foregroundColor: palette.accent]
             ))
         }
-        line.append(NSAttributedString(
-            string: entry.pane?.displayTitle ?? "",
-            attributes: [
-                .font: Chrome.uiFont,
-                .foregroundColor: selected ? palette.text : palette.dim,
-            ]
-        ))
-        // A remote card wears its host in pink, right on the wheel.
-        if let target = entry.pane?.target {
-            line.append(NSAttributedString(
-                string: "  \(target)",
-                attributes: [.font: Chrome.metaFont, .foregroundColor: palette.pink]
-            ))
+        // The shared grammar, directories left to the stage: title in
+        // the product voice, the host in pink - once, never repeated.
+        if let pane = entry.pane {
+            for (i, part) in PaneLabelParts.parts(for: pane).enumerated()
+                where part.role != .dir
+            {
+                if i > 0, line.length > 0 {
+                    line.append(NSAttributedString(string: "  "))
+                }
+                line.append(NSAttributedString(string: part.text, attributes: [
+                    .font: part.role == .host ? Chrome.metaFont : Chrome.uiFont,
+                    .foregroundColor: part.role == .host
+                        ? palette.pink
+                        : (selected ? palette.text : palette.dim),
+                ]))
+            }
         }
         titleLabel.attributedStringValue = line
         thumb.layer?.backgroundColor = palette.panelBg.cgColor
