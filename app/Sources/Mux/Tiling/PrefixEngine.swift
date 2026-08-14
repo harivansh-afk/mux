@@ -16,7 +16,10 @@ import AppKit
 ///   prefix esc    cancel
 /// Held-ctrl aliasing: ctrl+<key> in prefix mode means <key> (the nvim-mux
 /// papercut fix: you rarely release ctrl between prefix and key).
-/// Resize mode: h/j/k/l nudge the enclosing split ratio, esc/enter/q exit.
+/// Resize mode: h/j/k/l nudge the enclosing split ratio, H/J/K/L move the
+/// pane through the layout, c breaks it into a new session, 1..9 moves it
+/// to that session, esc/enter/q exit. The pane being acted on wears the
+/// canvas selection stroke.
 /// Canvas mode: h/j/k/l walk every pane's live card grouped by session,
 /// enter or a click jumps to it.
 /// Hosts mode: j/k walk local, the hosts with their live probe status and
@@ -53,6 +56,7 @@ final class PrefixEngine {
     private static let resizeSegments: [ModeBarSegment] = [
         .badge("RESIZE"),
         .key("h/j/k/l"), .dim(" resize  "),
+        .key("H/J/K/L"), .dim(" move  "),
         .key("esc"), .dim(" done  "),
         .key("?"), .dim(" keybinds"),
     ]
@@ -111,6 +115,7 @@ final class PrefixEngine {
         indicatorController?.hideCanvasOverlay()
         indicatorController?.hideHostsWindow()
         indicatorController?.hidePaneLabels()
+        indicatorController?.hideResizeOutline()
         indicatorController = nil
         switch newMode {
         case .normal:
@@ -124,6 +129,7 @@ final class PrefixEngine {
         case .resize:
             indicatorController = controller
             indicatorController?.setModeIndicator(Self.resizeSegments)
+            indicatorController?.showResizeOutline()
         case .help:
             indicatorController = controller
             indicatorController?.setModeIndicator(Self.helpSegments)
@@ -168,6 +174,21 @@ final class PrefixEngine {
             case "j": controller?.resizeFocused(.down); return nil
             case "k": controller?.resizeFocused(.up); return nil
             case "l": controller?.resizeFocused(.right); return nil
+            // Capitals move the pane itself through the layout.
+            case "H": controller?.moveFocusedPane(.left); return nil
+            case "J": controller?.moveFocusedPane(.down); return nil
+            case "K": controller?.moveFocusedPane(.up); return nil
+            case "L": controller?.moveFocusedPane(.right); return nil
+            // Session moves commit and leave the mode, like hosts does:
+            // the pane lands somewhere resize no longer describes.
+            case "c":
+                controller?.movePaneToNewSession()
+                setMode(.normal)
+                return nil
+            case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+                controller?.movePane(toSession: Int(key)! - 1)
+                setMode(.normal)
+                return nil
             case "?": setMode(.help); return nil
             case "\u{1b}", "\r", "q":
                 setMode(.normal)

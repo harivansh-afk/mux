@@ -63,6 +63,11 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// MuxWindowController+Overlays.swift).
     var paneLabels: [PaneLabelView] = []
 
+    /// The scroll host wearing the resize-mode outline (managed by
+    /// MuxWindowController+Overlays.swift). Non-nil only while resize
+    /// mode is up.
+    weak var resizeOutlineHost: PaneScrollView?
+
     var activeSession: Session? {
         sessions.indices.contains(activeSessionIndex) ? sessions[activeSessionIndex] : nil
     }
@@ -200,6 +205,38 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         saveState()
     }
 
+    /// resize c: break the focused pane out into its own new session.
+    /// A sole pane already is one; no-op.
+    func movePaneToNewSession() {
+        guard let source = activeSession, let pane = source.focusedPane,
+              source.panes.count > 1 else { return }
+        source.detach(pane)
+        let session = Session(runtime: runtime, controller: self)
+        sessions.append(session)
+        activeSessionIndex = sessions.count - 1
+        session.adopt(pane)
+        layoutPanes()
+        updateSessionIndicator()
+        saveState()
+    }
+
+    /// resize 1..9: move the focused pane into that session, following
+    /// it. The pane splits at the target's focused pane; a source session
+    /// this empties closes (which is why the target is found again by
+    /// identity after the detach).
+    func movePane(toSession index: Int) {
+        guard sessions.indices.contains(index), index != activeSessionIndex,
+              let source = activeSession, let pane = source.focusedPane else { return }
+        let target = sessions[index]
+        source.detach(pane)
+        guard let targetIndex = sessions.firstIndex(where: { $0 === target }) else { return }
+        activeSessionIndex = targetIndex
+        target.adopt(pane)
+        layoutPanes()
+        updateSessionIndicator()
+        saveState()
+    }
+
     /// prefix 1..9: select a session by position (0-based here).
     func selectSession(_ index: Int) {
         guard sessions.indices.contains(index), index != activeSessionIndex else { return }
@@ -308,6 +345,10 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         activeSession?.resizeFocused(direction, step: step)
     }
 
+    func moveFocusedPane(_ direction: FocusDirection) {
+        activeSession?.moveFocused(direction)
+    }
+
     // MARK: - Focus
 
     func focus(_ pane: PaneView) {
@@ -317,6 +358,10 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// Called by the pane when it actually becomes first responder.
     func noteFocused(_ pane: PaneView) {
         session(owning: pane)?.noteFocused(pane)
+        // A click can refocus mid-resize-mode; the outline follows.
+        if resizeOutlineHost != nil, resizeOutlineHost !== pane.scrollHost {
+            showResizeOutline()
+        }
     }
 
     // MARK: - Layout
@@ -374,6 +419,9 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         let palette = ThemeManager.shared.palette
         container.layer?.backgroundColor = palette.divider.cgColor
         window.backgroundColor = palette.divider
+        if resizeOutlineHost != nil {
+            showResizeOutline()
+        }
     }
 
     // MARK: - Window delegate

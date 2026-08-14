@@ -147,6 +147,34 @@ extension SplitNode {
         return best?.0
     }
 
+    /// Move a leaf one step in a direction: it re-enters the tree beside
+    /// its spatial neighbor on that side (splitting the neighbor along the
+    /// move axis); with no neighbor it wraps the whole tree instead, so the
+    /// pane spans that edge. Returns nil when the move is a no-op (sole
+    /// pane, or already spanning that edge).
+    func moving(_ id: UUID, direction: FocusDirection, in bounds: CGRect) -> SplitNode? {
+        guard contains(id), let rest = removing(id) else { return nil }
+        let axis: SplitDirection = (direction == .left || direction == .right)
+            ? .horizontal : .vertical
+        let toFirst = (direction == .left || direction == .up)
+        if let neighbor = Self.neighbor(of: id, direction: direction, rects: layout(in: bounds)) {
+            return rest.inserting(id, at: neighbor, direction: axis, newFirst: toFirst)
+        }
+        // At the edge: the pane becomes one side of a new root split -
+        // unless it already is, when the move would only reset the ratio.
+        if case let .split(b) = self, b.direction == axis,
+           case let .leaf(edge) = toFirst ? b.first : b.second, edge == id {
+            return nil
+        }
+        let pane = SplitNode.leaf(id)
+        return .split(SplitBranch(
+            direction: axis,
+            ratio: 0.5,
+            first: toFirst ? pane : rest,
+            second: toFirst ? rest : pane
+        ))
+    }
+
     /// Adjust the ratio of the deepest ancestor split of `id` whose
     /// direction matches `axis`. `delta` is signed toward first-child growth.
     /// Returns the adjusted tree and whether a split was found.

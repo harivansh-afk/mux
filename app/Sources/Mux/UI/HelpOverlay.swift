@@ -32,6 +32,9 @@ final class HelpOverlayView: NSView {
         ]),
         Section(title: "resize  prefix r", rows: [
             ("h / j / k / l", "adjust split ratio"),
+            ("H / J / K / L", "move pane in layout"),
+            ("c", "break out into new session"),
+            ("1 .. 9", "move pane to session"),
             ("esc / enter / q", "done"),
         ]),
         Section(title: "hosts  prefix t", rows: [

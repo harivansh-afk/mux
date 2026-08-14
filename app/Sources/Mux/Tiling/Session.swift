@@ -185,6 +185,57 @@ final class Session {
         controller?.saveState()
     }
 
+    // MARK: - Moving panes
+
+    /// Move the focused pane one step through the layout (resize mode
+    /// H/J/K/L). Unzooms first: a move under a zoom is invisible.
+    func moveFocused(_ direction: FocusDirection) {
+        guard let tree, let focusedID, let bounds = controller?.paneBounds else { return }
+        zoomedID = nil
+        guard let moved = tree.moving(focusedID, direction: direction, in: bounds) else {
+            controller?.layoutPanes()
+            return
+        }
+        self.tree = moved
+        controller?.layoutPanes()
+        controller?.saveState()
+    }
+
+    /// Release a pane to another session: it leaves the tree with its
+    /// surface and views untouched (the workspace hosts panes regardless
+    /// of session). An emptied session closes like any other.
+    func detach(_ pane: PaneView) {
+        guard panes[pane.id] != nil else { return }
+        panes.removeValue(forKey: pane.id)
+        if zoomedID == pane.id {
+            zoomedID = nil
+        }
+        tree = tree?.removing(pane.id)
+        if focusedID == pane.id {
+            focusedID = tree?.leaves.first
+        }
+        guard tree != nil else {
+            controller?.sessionDidEmpty(self)
+            return
+        }
+        controller?.saveState()
+    }
+
+    /// Take in a detached pane: split at the focused pane, or become the
+    /// whole tree when the session is new.
+    func adopt(_ pane: PaneView) {
+        panes[pane.id] = pane
+        if let tree, let at = focusedID ?? tree.leaves.first {
+            zoomedID = nil
+            self.tree = tree.inserting(pane.id, at: at, direction: .horizontal)
+        } else {
+            tree = .leaf(pane.id)
+        }
+        controller?.layoutPanes()
+        focus(pane)
+        controller?.saveState()
+    }
+
     func destroyAllSurfaces() {
         for (_, pane) in panes {
             pane.destroySurface()

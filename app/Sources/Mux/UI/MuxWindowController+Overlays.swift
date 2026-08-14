@@ -365,6 +365,26 @@ extension MuxWindowController {
         }
     }
 
+    // MARK: - Resize outline
+
+    /// Resize mode marks the pane being acted on with the same one-
+    /// device-pixel accent stroke the canvas gives its selection. The
+    /// stroke lives on the scroll host's layer, so it rides every
+    /// layout the mode causes for free.
+    func showResizeOutline() {
+        hideResizeOutline()
+        guard let host = focusedPane?.scrollHost else { return }
+        host.wantsLayer = true
+        host.layer?.borderColor = ThemeManager.shared.palette.accent.cgColor
+        host.layer?.borderWidth = 1 / window.backingScaleFactor
+        resizeOutlineHost = host
+    }
+
+    func hideResizeOutline() {
+        resizeOutlineHost?.layer?.borderWidth = 0
+        resizeOutlineHost = nil
+    }
+
     // MARK: - Pane labels (prefix)
 
     /// Bare per-pane labels while the prefix is armed: every visible
