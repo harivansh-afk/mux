@@ -105,13 +105,6 @@ final class CanvasOverlayView: NSView {
             guard let self, let selection else { return }
             onJump?(selection)
         }
-        // Wheel events over the stage scroll the previewed pane's real
-        // scrollback: PaneView.scrollWheel forwards deltas straight to
-        // the surface (no position), and the live mirror shows the moved
-        // viewport - nothing is copied, the pane is the scroll state.
-        stage.onScroll = { [weak self] event in
-            self?.selection?.pane?.scrollWheel(with: event)
-        }
         addSubview(stage)
         stageTitle.lineBreakMode = .byTruncatingTail
         stageMeta.lineBreakMode = .byTruncatingTail
@@ -198,19 +191,47 @@ final class CanvasOverlayView: NSView {
     // MARK: - Live mirrors
 
     private var mirrorTimer: Timer?
+    private var scrollMonitor: Any?
     private var tick = 0
 
-    /// Mirrors run exactly while the overlay is on screen.
+    /// Mirrors and the scroll monitor run exactly while the overlay is
+    /// on screen.
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
         mirrorTimer?.invalidate()
         mirrorTimer = nil
+        if let scrollMonitor {
+            NSEvent.removeMonitor(scrollMonitor)
+            self.scrollMonitor = nil
+        }
         guard superview != nil else { return }
         let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             self?.refreshMirrors()
         }
         RunLoop.main.add(timer, forMode: .common)
         mirrorTimer = timer
+
+        // Wheel events over the stage scroll the previewed pane's real
+        // scrollback: PaneView.scrollWheel forwards deltas straight to
+        // the surface (no position), and the live mirror shows the
+        // moved viewport - nothing is copied, the pane is the scroll
+        // state. This is a local monitor, not a view override, because
+        // every pane sits in an NSScrollView and responsive scrolling
+        // latches wheel gestures onto the scroll view under the cursor
+        // at the window level - the overlay is never hit-tested for
+        // them. The monitor claims the event first; anything not over
+        // the stage is swallowed, so the workspace under the scrim
+        // never moves.
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: .scrollWheel
+        ) { [weak self] event in
+            guard let self, event.window === window else { return event }
+            if !stage.isHidden,
+               stage.frame.contains(convert(event.locationInWindow, from: nil)) {
+                selection?.pane?.scrollWheel(with: event)
+            }
+            return nil
+        }
         refreshMirrors()
     }
 
@@ -556,19 +577,15 @@ private final class ScrimView: NSView {
     }
 }
 
-/// The stage box; a click on it jumps to the previewed pane, and wheel
-/// events scroll the previewed pane's real scrollback (the mirror shows
-/// the moved viewport live).
+/// The stage box; a click on it jumps to the previewed pane. Wheel
+/// events over it scroll the previewed pane's real scrollback, but that
+/// routing lives in the overlay's scroll monitor, not here: responsive
+/// scrolling would never deliver the event to this view.
 private final class StageView: NSView {
     var onClick: (() -> Void)?
-    var onScroll: ((NSEvent) -> Void)?
 
     override func mouseDown(with _: NSEvent) {
         onClick?()
-    }
-
-    override func scrollWheel(with event: NSEvent) {
-        onScroll?(event)
     }
 }
 
