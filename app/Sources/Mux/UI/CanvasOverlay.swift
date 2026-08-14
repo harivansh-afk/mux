@@ -88,8 +88,9 @@ final class CanvasOverlayView: NSView {
         stage.wantsLayer = true
         // Square hairline, like every other piece of mux chrome: the
         // border sits exactly on the rectangular terminal content, no
-        // rounded corners clipping cells or fuzzing the edge.
-        stage.layer?.borderWidth = 1
+        // rounded corners clipping cells or fuzzing the edge. Width is
+        // one device pixel, set in render() where the backing scale is
+        // known.
         // Depth is what separates the stage from the wall behind it:
         // one wide soft shadow, path-backed so it costs a blit, not a
         // mask pass.
@@ -355,6 +356,7 @@ final class CanvasOverlayView: NSView {
             .withAlphaComponent(dark ? 0.95 : 0.72).cgColor
         stage.layer?.backgroundColor = palette.panelBg.cgColor
         stage.layer?.borderColor = palette.accent.cgColor
+        stage.layer?.borderWidth = 1 / (window?.backingScaleFactor ?? 2)
         renderSelection()
         needsLayout = true
     }
@@ -525,12 +527,12 @@ private final class WheelItemView: NSView {
         }
         titleLabel.attributedStringValue = line
         thumb.layer?.backgroundColor = palette.panelBg.cgColor
-        // One hairline weight for every card: the selection is loudest
-        // through the accent color, not a thicker stroke.
+        // One device-pixel hairline for every card: the selection is
+        // loudest through the accent color, not a thicker stroke.
         thumb.layer?.borderColor = selected
             ? palette.accent.cgColor
             : palette.dim.withAlphaComponent(0.35).cgColor
-        thumb.layer?.borderWidth = 1
+        thumb.layer?.borderWidth = 1 / (window?.backingScaleFactor ?? 2)
         needsLayout = true
     }
 }
