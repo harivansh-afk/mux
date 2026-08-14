@@ -38,7 +38,7 @@ final class CanvasOverlayView: NSView {
     // One spacing scale, derived from the chrome size knob.
     private static let margin: CGFloat = Chrome.fontSize * 2
     private static let gap: CGFloat = Chrome.fontSize * 1.6
-    private static let wheelWidth: CGFloat = Chrome.fontSize * 9
+    private static let wheelWidth: CGFloat = Chrome.fontSize * 12
     private static let itemGap: CGFloat = 10
     private static let sectionGap: CGFloat = 22
     /// The floating badges keep their bottom strip.
@@ -86,8 +86,10 @@ final class CanvasOverlayView: NSView {
         addSubview(scrim)
 
         stage.wantsLayer = true
+        // Square hairline, like every other piece of mux chrome: the
+        // border sits exactly on the rectangular terminal content, no
+        // rounded corners clipping cells or fuzzing the edge.
         stage.layer?.borderWidth = 1
-        stage.layer?.cornerRadius = 8
         // Depth is what separates the stage from the wall behind it:
         // one wide soft shadow, path-backed so it costs a blit, not a
         // mask pass.
@@ -96,7 +98,6 @@ final class CanvasOverlayView: NSView {
         stage.layer?.shadowRadius = 28
         stage.layer?.shadowOffset = CGSize(width: 0, height: 14)
         stageMirror.contentsGravity = .resizeAspect
-        stageMirror.cornerRadius = 7
         stageMirror.masksToBounds = true
         stage.layer?.addSublayer(stageMirror)
         stage.onClick = { [weak self] in
@@ -311,9 +312,7 @@ final class CanvasOverlayView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         stageMirror.frame = stage.bounds
-        stage.layer?.shadowPath = CGPath(
-            roundedRect: stage.bounds, cornerWidth: 8, cornerHeight: 8, transform: nil
-        )
+        stage.layer?.shadowPath = CGPath(rect: stage.bounds, transform: nil)
         CATransaction.commit()
 
         stageTitle.sizeToFit()
@@ -346,7 +345,7 @@ final class CanvasOverlayView: NSView {
         // brightness in the room.
         let dark = !palette.panelBg.isLightColor
         scrim.layer?.backgroundColor = NSColor.black
-            .withAlphaComponent(dark ? 0.9 : 0.62).cgColor
+            .withAlphaComponent(dark ? 0.95 : 0.72).cgColor
         stage.layer?.backgroundColor = palette.panelBg.cgColor
         stage.layer?.borderColor = palette.accent.cgColor
         renderSelection()
@@ -446,13 +445,11 @@ private final class WheelItemView: NSView {
         self.entry = entry
         super.init(frame: .zero)
         thumb.wantsLayer = true
-        thumb.layer?.cornerRadius = 5
         thumb.layer?.shadowColor = NSColor.black.cgColor
         thumb.layer?.shadowOpacity = 0.4
         thumb.layer?.shadowRadius = 10
         thumb.layer?.shadowOffset = CGSize(width: 0, height: 5)
         mirror.contentsGravity = .resizeAspect
-        mirror.cornerRadius = 4.5
         mirror.masksToBounds = true
         thumb.layer?.addSublayer(mirror)
         addSubview(thumb)
@@ -493,9 +490,7 @@ private final class WheelItemView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         mirror.frame = thumb.bounds
-        thumb.layer?.shadowPath = CGPath(
-            roundedRect: thumb.bounds, cornerWidth: 5, cornerHeight: 5, transform: nil
-        )
+        thumb.layer?.shadowPath = CGPath(rect: thumb.bounds, transform: nil)
         CATransaction.commit()
     }
 
@@ -523,10 +518,12 @@ private final class WheelItemView: NSView {
         }
         titleLabel.attributedStringValue = line
         thumb.layer?.backgroundColor = palette.panelBg.cgColor
+        // One hairline weight for every card: the selection is loudest
+        // through the accent color, not a thicker stroke.
         thumb.layer?.borderColor = selected
             ? palette.accent.cgColor
             : palette.dim.withAlphaComponent(0.35).cgColor
-        thumb.layer?.borderWidth = selected ? 2 : 1
+        thumb.layer?.borderWidth = 1
         needsLayout = true
     }
 }
