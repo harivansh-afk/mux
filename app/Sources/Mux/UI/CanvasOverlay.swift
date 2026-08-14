@@ -104,6 +104,13 @@ final class CanvasOverlayView: NSView {
             guard let self, let selection else { return }
             onJump?(selection)
         }
+        // Wheel events over the stage scroll the previewed pane's real
+        // scrollback: PaneView.scrollWheel forwards deltas straight to
+        // the surface (no position), and the live mirror shows the moved
+        // viewport - nothing is copied, the pane is the scroll state.
+        stage.onScroll = { [weak self] event in
+            self?.selection?.pane?.scrollWheel(with: event)
+        }
         addSubview(stage)
         stageTitle.lineBreakMode = .byTruncatingTail
         stageMeta.lineBreakMode = .byTruncatingTail
@@ -547,12 +554,19 @@ private final class ScrimView: NSView {
     }
 }
 
-/// The stage box; a click on it jumps to the previewed pane.
+/// The stage box; a click on it jumps to the previewed pane, and wheel
+/// events scroll the previewed pane's real scrollback (the mirror shows
+/// the moved viewport live).
 private final class StageView: NSView {
     var onClick: (() -> Void)?
+    var onScroll: ((NSEvent) -> Void)?
 
     override func mouseDown(with _: NSEvent) {
         onClick?()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        onScroll?(event)
     }
 }
 
