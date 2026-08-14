@@ -764,6 +764,25 @@ extension PaneView {
         )
     }
 
+    /// Report a hover position that did not come from AppKit hit-testing:
+    /// the canvas stage maps points on the preview onto the pane it
+    /// mirrors. libghostty's scroll handling is only meaningful at a
+    /// mouse position - a mouse-reporting program receives the wheel AT
+    /// the surface's stored position, which starts (and parks, on
+    /// mouseExited) at -1/-1 = outside the viewport - so the stage must
+    /// place the mouse before it scrolls. Top-left origin, pane points.
+    func reportMousePos(topLeft point: NSPoint, flags: NSEvent.ModifierFlags) {
+        guard let surface else { return }
+        ghostty_surface_mouse_pos(surface, point.x, point.y, Self.ghosttyMods(flags))
+    }
+
+    /// The synthetic counterpart of mouseExited: the stage preview moved
+    /// off this pane, so its phantom hover leaves the viewport.
+    func clearMousePos() {
+        guard let surface else { return }
+        ghostty_surface_mouse_pos(surface, -1, -1, Self.ghosttyMods([]))
+    }
+
     override func mouseMoved(with event: NSEvent) {
         reportMousePos(event)
     }

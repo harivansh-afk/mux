@@ -172,6 +172,7 @@ final class CanvasOverlayView: NSView {
         let next = min(max(index + delta, 0), items.count - 1)
         guard next != index else { return }
         index = next
+        clearHover()
         positionTrack(animated: true)
         layoutStage()
         renderSelection()
@@ -204,6 +205,7 @@ final class CanvasOverlayView: NSView {
             NSEvent.removeMonitor(scrollMonitor)
             self.scrollMonitor = nil
         }
+        clearHover()
         guard superview != nil else { return }
         let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             self?.refreshMirrors()
@@ -211,11 +213,8 @@ final class CanvasOverlayView: NSView {
         RunLoop.main.add(timer, forMode: .common)
         mirrorTimer = timer
 
-        // Wheel events over the stage scroll the previewed pane's real
-        // scrollback: PaneView.scrollWheel forwards deltas straight to
-        // the surface (no position), and the live mirror shows the
-        // moved viewport - nothing is copied, the pane is the scroll
-        // state. This is a local monitor, not a view override, because
+        // Wheel events over the stage scroll the previewed pane for
+        // real. This is a local monitor, not a view override, because
         // every pane sits in an NSScrollView and responsive scrolling
         // latches wheel gestures onto the scroll view under the cursor
         // at the window level - the overlay is never hit-tested for
@@ -226,13 +225,45 @@ final class CanvasOverlayView: NSView {
             matching: .scrollWheel
         ) { [weak self] event in
             guard let self, event.window === window else { return event }
-            if !stage.isHidden,
+            if let pane = selection?.pane, !stage.isHidden,
                stage.frame.contains(convert(event.locationInWindow, from: nil)) {
-                selection?.pane?.scrollWheel(with: event)
+                // Hovering the stage IS hovering the pane. libghostty
+                // gives a wheel event meaning only at the surface's
+                // stored mouse position (mouse-reporting programs
+                // receive the scroll AT it; it parks at -1/-1 =
+                // outside), so place the mouse first - the same
+                // mouseMoved-then-scrollWheel pair a real hover
+                // produces. The stage box is the pane's exact aspect,
+                // so the point maps by pure proportion; repeated
+                // identical positions are deduped surface-side.
+                if hoverPane !== pane {
+                    hoverPane?.clearMousePos()
+                    hoverPane = pane
+                }
+                let p = stage.convert(event.locationInWindow, from: nil)
+                pane.reportMousePos(
+                    topLeft: NSPoint(
+                        x: p.x / max(stage.bounds.width, 1) * pane.bounds.width,
+                        y: (1 - p.y / max(stage.bounds.height, 1)) * pane.bounds.height
+                    ),
+                    flags: event.modifierFlags
+                )
+                pane.scrollWheel(with: event)
             }
             return nil
         }
         refreshMirrors()
+    }
+
+    /// The pane last given a synthetic hover by the stage. When the
+    /// preview moves off it (selection change, canvas close), it gets
+    /// the same -1/-1 "left the viewport" report mouseExited sends, so
+    /// no pane keeps a phantom mouse.
+    private weak var hoverPane: PaneView?
+
+    private func clearHover() {
+        hoverPane?.clearMousePos()
+        hoverPane = nil
     }
 
     /// One pointer read and one assignment per mirror: the pane's layer
