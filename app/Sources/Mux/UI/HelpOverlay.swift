@@ -1,10 +1,10 @@
 import AppKit
 
 /// The keybinds overlay (prefix ?): a bordered box centered over the panes.
-/// No title - the mode bar already names the mode - just an "esc close"
-/// badge top-right, then the section blocks laid out in columns side by
-/// side so everything fits at once - no scrolling. Section headings are
-/// bare words; the key that enters a mode is that section's first row.
+/// Title row ("keybinds" left in plain text, an "esc close" badge right),
+/// then the section blocks laid out in columns side by side so everything
+/// fits at once - no scrolling, no footer. Section headings are bare
+/// words; the key that enters a mode is that section's first row.
 /// PrefixEngine drives dismissal; the overlay never takes focus.
 final class HelpOverlayView: NSView {
     private struct Section {
@@ -72,6 +72,7 @@ final class HelpOverlayView: NSView {
     /// Key column width in characters; descriptions start after it.
     private static let keyColumn = 17
 
+    private let titleLabel = NSTextField(labelWithString: "keybinds")
     private let closeBadge = NSTextField(labelWithString: " esc close ")
     /// One multiline label per column of sections.
     private let columnLabels: [NSTextField]
@@ -92,6 +93,7 @@ final class HelpOverlayView: NSView {
         wantsLayer = true
         layer?.borderWidth = 1
 
+        addSubview(titleLabel)
         addSubview(closeBadge)
         columnLabels.forEach(addSubview)
 
@@ -159,13 +161,17 @@ final class HelpOverlayView: NSView {
         super.layout()
         let inset = Self.inset
         let row = Self.rowHeight
+        titleLabel.sizeToFit()
         closeBadge.sizeToFit()
+        titleLabel.frame.origin = NSPoint(
+            x: inset, y: bounds.height - inset - (row + titleLabel.frame.height) / 2
+        )
         closeBadge.frame.origin = NSPoint(
             x: bounds.width - inset - closeBadge.frame.width,
             y: bounds.height - inset - (row + closeBadge.frame.height) / 2
         )
 
-        // Columns fill the band below the badge row, top-aligned.
+        // Columns fill the band below the title row, top-aligned.
         let bandTop = bounds.height - inset - row
         var x = inset
         for label in columnLabels {
@@ -180,6 +186,10 @@ final class HelpOverlayView: NSView {
         layer?.backgroundColor = palette.panelBg.cgColor
         layer?.borderColor = palette.dim.cgColor
 
+        titleLabel.attributedStringValue = NSAttributedString(
+            string: "keybinds",
+            attributes: [.font: Self.boldFont, .foregroundColor: palette.text]
+        )
         closeBadge.attributedStringValue = NSAttributedString(
             string: " esc close ",
             attributes: [
