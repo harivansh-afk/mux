@@ -1,9 +1,11 @@
 import AppKit
 
 /// The keybinds overlay (prefix ?): a bordered box centered over the panes.
-/// Title row ("keybinds" left, an "esc close" badge right), then the section
-/// blocks laid out in columns side by side so everything fits at once - no
-/// scrolling. PrefixEngine drives dismissal; the overlay never takes focus.
+/// No title - the mode bar already names the mode - just an "esc close"
+/// badge top-right, then the section blocks laid out in columns side by
+/// side so everything fits at once - no scrolling. Section headings are
+/// bare words; the key that enters a mode is that section's first row.
+/// PrefixEngine drives dismissal; the overlay never takes focus.
 final class HelpOverlayView: NSView {
     private struct Section {
         let title: String
@@ -11,8 +13,9 @@ final class HelpOverlayView: NSView {
     }
 
     private static let sections: [Section] = [
-        Section(title: "prefix  ctrl+b", rows: [
-            ("ctrl+b", "send prefix to terminal"),
+        Section(title: "prefix", rows: [
+            ("ctrl+b", "arm the prefix"),
+            ("ctrl+b ctrl+b", "send ctrl+b through"),
             ("'", "split right"),
             ("-", "split down"),
             ("arrows", "move focus"),
@@ -30,14 +33,16 @@ final class HelpOverlayView: NSView {
             ("1 .. 9", "select session"),
             ("n / p", "next / previous"),
         ]),
-        Section(title: "resize  prefix r", rows: [
+        Section(title: "resize", rows: [
+            ("prefix r", "enter resize mode"),
             ("h / j / k / l", "adjust split ratio"),
             ("H / J / K / L", "move pane in layout"),
             ("c", "break out into new session"),
             ("1 .. 9", "move pane to session"),
             ("esc / enter / q", "done"),
         ]),
-        Section(title: "hosts  prefix t", rows: [
+        Section(title: "hosts", rows: [
+            ("prefix t", "open hosts"),
             ("j / k", "choose host or vm"),
             ("enter", "split right into it"),
             ("H / J / K / L", "split left/down/up/right"),
@@ -47,7 +52,8 @@ final class HelpOverlayView: NSView {
             ("y", "copy client digest"),
             ("esc / q", "close"),
         ]),
-        Section(title: "canvas  prefix space", rows: [
+        Section(title: "canvas", rows: [
+            ("prefix space / f", "open canvas"),
             ("j / k", "choose pane"),
             ("enter / click", "jump to it"),
             ("esc / q", "cancel"),
@@ -66,9 +72,7 @@ final class HelpOverlayView: NSView {
     /// Key column width in characters; descriptions start after it.
     private static let keyColumn = 17
 
-    private let titleLabel = NSTextField(labelWithString: "keybinds")
     private let closeBadge = NSTextField(labelWithString: " esc close ")
-    private let footerLabel = NSTextField(labelWithString: "")
     /// One multiline label per column of sections.
     private let columnLabels: [NSTextField]
 
@@ -88,9 +92,7 @@ final class HelpOverlayView: NSView {
         wantsLayer = true
         layer?.borderWidth = 1
 
-        addSubview(titleLabel)
         addSubview(closeBadge)
-        addSubview(footerLabel)
         columnLabels.forEach(addSubview)
 
         render()
@@ -140,7 +142,7 @@ final class HelpOverlayView: NSView {
         return groups
     }
 
-    /// Fixed content size: title row + tallest column + footer row + insets.
+    /// Fixed content size: badge row + tallest column + insets.
     func desiredSize(in _: NSRect) -> NSSize {
         let widths = columnLabels.map(\.fittingSize.width)
         let heights = columnLabels.map(\.fittingSize.height)
@@ -149,7 +151,7 @@ final class HelpOverlayView: NSView {
         let bodyHeight = heights.max() ?? 0
         return NSSize(
             width: Self.inset * 2 + bodyWidth,
-            height: Self.inset * 2 + Self.rowHeight * 2 + bodyHeight
+            height: Self.inset * 2 + Self.rowHeight + bodyHeight
         )
     }
 
@@ -157,19 +159,13 @@ final class HelpOverlayView: NSView {
         super.layout()
         let inset = Self.inset
         let row = Self.rowHeight
-        titleLabel.sizeToFit()
         closeBadge.sizeToFit()
-        titleLabel.frame.origin = NSPoint(
-            x: inset, y: bounds.height - inset - (row + titleLabel.frame.height) / 2
-        )
         closeBadge.frame.origin = NSPoint(
             x: bounds.width - inset - closeBadge.frame.width,
             y: bounds.height - inset - (row + closeBadge.frame.height) / 2
         )
-        footerLabel.sizeToFit()
-        footerLabel.frame.origin = NSPoint(x: inset, y: inset)
 
-        // Columns fill the band between the title and footer rows, top-aligned.
+        // Columns fill the band below the badge row, top-aligned.
         let bandTop = bounds.height - inset - row
         var x = inset
         for label in columnLabels {
@@ -184,10 +180,6 @@ final class HelpOverlayView: NSView {
         layer?.backgroundColor = palette.panelBg.cgColor
         layer?.borderColor = palette.dim.cgColor
 
-        titleLabel.attributedStringValue = NSAttributedString(
-            string: "keybinds",
-            attributes: [.font: Self.boldFont, .foregroundColor: palette.text]
-        )
         closeBadge.attributedStringValue = NSAttributedString(
             string: " esc close ",
             attributes: [
@@ -195,10 +187,6 @@ final class HelpOverlayView: NSView {
                 .foregroundColor: palette.accentContrast,
                 .backgroundColor: palette.accent,
             ]
-        )
-        footerLabel.attributedStringValue = NSAttributedString(
-            string: "esc close",
-            attributes: [.font: Self.font, .foregroundColor: palette.dim]
         )
 
         for (label, group) in zip(columnLabels, groups) {

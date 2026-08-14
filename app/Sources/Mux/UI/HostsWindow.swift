@@ -182,8 +182,8 @@ final class HostsWindowView: NSView {
         templateIndex = 0
 
         let hosts = HostsConfig.entries()
+        // No leading "hosts" heading row: the title band already says it.
         hostRows = [
-            Row(kind: .heading, text: "hosts", detail: ""),
             Row(kind: .host(nil), text: "local", detail: "this mac"),
         ]
         if hosts.isEmpty {
@@ -242,8 +242,8 @@ final class HostsWindowView: NSView {
     func showTemplates() {
         let current = IXConfig.template()
         pickingTemplate = true
+        // Same as the machines: the title band names the list.
         templateRows = [
-            Row(kind: .heading, text: "template", detail: ""),
             Row(
                 kind: .template(IX.defaultTemplate), text: IX.defaultTemplate,
                 detail: "platform base", current: current == IX.defaultTemplate
