@@ -189,6 +189,20 @@ final class PrefixEngine {
             }
 
         case .canvas:
+            // The zoom keys keep working inside the canvas, but the
+            // single-pane variants act on the PREVIEWED pane, not the
+            // focused one hiding under the scrim - the stage mirror
+            // shows the reflow live. Shift variants stay global, as
+            // everywhere.
+            if let zoom = PaneView.fontZoomStep(event) {
+                if zoom.allPanes {
+                    PaneView.adjustAllFontSizes(zoom.step)
+                } else {
+                    controller?.canvasOverlay.selection?.pane?
+                        .adjustFontSize(zoom.step)
+                }
+                return nil
+            }
             switch key {
             case "j", "l", "\u{F701}", "\u{F703}":
                 controller?.moveCanvasOverlay(by: 1)

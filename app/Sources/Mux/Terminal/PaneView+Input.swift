@@ -179,8 +179,10 @@ extension PaneView {
 
     /// cmd+= / cmd+- / cmd+0 as +1 / -1 / 0 (reset) for the focused
     /// pane; the same keys with shift held step every pane in the app.
-    /// nil for everything else.
-    private static func fontZoomStep(_ event: NSEvent) -> (step: Int, allPanes: Bool)? {
+    /// nil for everything else. Internal (not private): PrefixEngine
+    /// parses the same keys in canvas mode, where they act on the
+    /// previewed pane instead of the focused one.
+    static func fontZoomStep(_ event: NSEvent) -> (step: Int, allPanes: Bool)? {
         let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
         guard mods == .command || mods == [.command, .shift] else { return nil }
         // Shift changes the character (= becomes +, - becomes _), so
