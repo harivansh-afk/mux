@@ -1,15 +1,15 @@
-# mux
+# Mux
 
 <video src="https://git.harivan.sh/harivansh-afk/mux/releases/download/demo/demo.mp4" controls width="100%"></video>
 
 A macOS-native terminal multiplexer
 
-Every pane is a GhosttyKit Metal surface. 
+A pane is a machine-agnostic concept
+Raw bytestreams sent over QUIC transport when remote and unix socket when local
 
-Any pane can transparently be running on a remote host over a custom RPC built on QUIC (rip ssh)
+Two parts:
 
-This has two parts:
-1. The macos client ui
+1. The macos client ui -> stateless
 2. muxd daemon
 
 ## Layout
@@ -31,5 +31,3 @@ Reattach replays the exact screen.
 muxd server sends raw PTY byte streams over UDP that are interpreted by the macos client
 
 There are panes and sessions (1 2 3 4 5)
-
-A host is a pane level abstraction
