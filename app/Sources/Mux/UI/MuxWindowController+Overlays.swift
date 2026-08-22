@@ -159,7 +159,7 @@ extension MuxWindowController {
     /// hence NewPaneTarget rather than a bare string).
     func commitHostsWindow(direction: SplitDirection, before: Bool = false) {
         guard let target = hostsWindow.selectedHost else { return }
-        split(direction: direction, before: before, target: target)
+        activeSession?.split(direction: direction, before: before, target: target)
     }
 
     /// c: a whole new session on the highlighted machine, rather than a
@@ -175,7 +175,7 @@ extension MuxWindowController {
     /// `ix shell <name>` from that target - by which time the VM exists.
     func createIXVM() {
         let name = IX.newVMName()
-        split(
+        activeSession?.split(
             direction: .horizontal,
             target: .explicit(IX.prefix + name),
             ptyCommand: [IX.binary, "new", "-n", name, IXConfig.template()]
@@ -232,7 +232,9 @@ extension MuxWindowController {
             self?.canvasSessionHighlight = entry?.sessionIndex
             self?.updateSessionIndicator()
         }
-        canvasOverlay.reload(groups: canvasGroups(), selected: focusedPane?.id)
+        canvasOverlay.reload(
+            groups: canvasGroups(), selected: activeSession?.focusedPane?.id
+        )
         canvasOverlay.onJump = { [weak self] entry in
             self?.commitCanvas(entry)
             (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
@@ -373,7 +375,7 @@ extension MuxWindowController {
     /// layout the mode causes for free.
     func showResizeOutline() {
         hideResizeOutline()
-        guard let host = focusedPane?.scrollHost else { return }
+        guard let host = activeSession?.focusedPane?.scrollHost else { return }
         host.wantsLayer = true
         host.layer?.borderColor = ThemeManager.shared.palette.accent.cgColor
         host.layer?.borderWidth = 1 / window.backingScaleFactor

@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             restore(snapshot)
         } else {
             AppLog.log("no restorable snapshot; starting fresh")
-            makeWindow()?.addInitialPane()
+            makeWindow()?.activeSession?.addInitialPane()
         }
 
         // The snapshot is a claim, not the truth: the daemons know which
@@ -274,7 +274,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func bindingAction(_ action: String) {
-        guard let surface = controller?.focusedPane?.surface else { return }
+        guard let surface = controller?.activeSession?.focusedPane?.surface else { return }
         _ = action.withCString { ptr in
             ghostty_surface_binding_action(surface, ptr, UInt(action.utf8.count))
         }

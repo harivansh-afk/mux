@@ -169,16 +169,17 @@ final class PrefixEngine {
             return runPrefixAction(key: key, event: event)
 
         case .resize:
+            let session = controller?.activeSession
             switch key {
-            case "h": controller?.resizeFocused(.left); return nil
-            case "j": controller?.resizeFocused(.down); return nil
-            case "k": controller?.resizeFocused(.up); return nil
-            case "l": controller?.resizeFocused(.right); return nil
+            case "h": session?.resizeFocused(.left); return nil
+            case "j": session?.resizeFocused(.down); return nil
+            case "k": session?.resizeFocused(.up); return nil
+            case "l": session?.resizeFocused(.right); return nil
             // Capitals move the pane itself through the layout.
-            case "H": controller?.moveFocusedPane(.left); return nil
-            case "J": controller?.moveFocusedPane(.down); return nil
-            case "K": controller?.moveFocusedPane(.up); return nil
-            case "L": controller?.moveFocusedPane(.right); return nil
+            case "H": session?.moveFocused(.left); return nil
+            case "J": session?.moveFocused(.down); return nil
+            case "K": session?.moveFocused(.up); return nil
+            case "L": session?.moveFocused(.right); return nil
             // Session moves commit and leave the mode, like hosts does:
             // the pane lands somewhere resize no longer describes.
             case "c":
@@ -316,17 +317,18 @@ final class PrefixEngine {
     }
 
     private func runPrefixAction(key: String, event _: NSEvent) -> NSEvent? {
+        let session = controller?.activeSession
         switch key {
         // Splits: ' right, - down.
-        case "'": controller?.split(direction: .horizontal)
-        case "-": controller?.split(direction: .vertical)
+        case "'": session?.split(direction: .horizontal)
+        case "-": session?.split(direction: .vertical)
         // Focus movement: arrows and h/j/k/l both cover all four directions.
-        case "h", "\u{F702}": controller?.focusDirection(.left)
-        case "j", "\u{F701}": controller?.focusDirection(.down)
-        case "k", "\u{F700}": controller?.focusDirection(.up)
-        case "l", "\u{F703}": controller?.focusDirection(.right)
-        case "z": controller?.toggleZoom()
-        case "x": controller?.closeFocusedPane()
+        case "h", "\u{F702}": session?.focusDirection(.left)
+        case "j", "\u{F701}": session?.focusDirection(.down)
+        case "k", "\u{F700}": session?.focusDirection(.up)
+        case "l", "\u{F703}": session?.focusDirection(.right)
+        case "z": session?.toggleZoom()
+        case "x": session?.closeFocusedPane()
         case "r": setMode(.resize)
         case "t": setMode(.hosts)
         // Space: the canvas is the navigation surface, it gets the
