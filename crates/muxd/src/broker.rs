@@ -565,27 +565,16 @@ fn append_pin(known_hosts: &Path, alias: &str, fingerprint: &str) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use tempfile::TempDir;
 
     use super::*;
-
-    fn scratch(tag: &str) -> PathBuf {
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "muxd-broker-{tag}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
 
     fn cert() -> rcgen::CertifiedKey {
         rcgen::generate_simple_self_signed(vec!["muxd".to_string()]).unwrap()
     }
 
-    fn broker(dir: &Path) -> Broker {
+    fn broker(dir: &TempDir) -> Broker {
+        let dir = dir.path();
         Broker {
             hosts: dir.join("hosts.json"),
             known_hosts: dir.join("known_hosts"),
@@ -612,9 +601,9 @@ mod tests {
     /// digest is what the host enrolled.
     #[test]
     fn client_token_is_the_default_and_an_override_wins() {
-        let dir = scratch("token");
-        let client_token = dir.join("token");
-        let tokens = dir.join("tokens");
+        let dir = TempDir::new().unwrap();
+        let client_token = dir.path().join("token");
+        let tokens = dir.path().join("tokens");
 
         let generated = host_token(&tokens, &client_token, "spark").unwrap();
         assert_eq!(generated.len(), 64, "32 random bytes, hex encoded");
@@ -646,14 +635,12 @@ mod tests {
             host_token(&tokens, &client_token, "box").unwrap_err()
         );
         assert!(empty.contains("is empty"), "{empty}");
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn first_use_pins_then_matches() {
-        let dir = scratch("tofu");
-        let known_hosts = dir.join("state/known_hosts");
+        let dir = TempDir::new().unwrap();
+        let known_hosts = dir.path().join("state/known_hosts");
         let key = cert();
 
         // A pin for another host must not answer for this one.
@@ -671,14 +658,12 @@ mod tests {
             check_pin("spark", &known_hosts, key.cert.der()).unwrap(),
             None
         );
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn changed_host_key_is_rejected() {
-        let dir = scratch("changed");
-        let known_hosts = dir.join("known_hosts");
+        let dir = TempDir::new().unwrap();
+        let known_hosts = dir.path().join("known_hosts");
         check_pin("spark", &known_hosts, cert().cert.der()).unwrap();
 
         let e = check_pin("spark", &known_hosts, cert().cert.der()).unwrap_err();
@@ -692,14 +677,12 @@ mod tests {
                 .count(),
             1
         );
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn hosts_json_lookup() {
-        let dir = scratch("hosts");
-        let hosts = dir.join("hosts.json");
+        let dir = TempDir::new().unwrap();
+        let hosts = dir.path().join("hosts.json");
         std::fs::write(
             &hosts,
             r#"{"spark": {"addr": "100.64.0.7:4433"}, "box": {"addr": "box.local"}}"#,
@@ -716,7 +699,7 @@ mod tests {
 
         let missing = format!(
             "{:#}",
-            host_addr(&dir.join("absent.json"), "spark").unwrap_err()
+            host_addr(&dir.path().join("absent.json"), "spark").unwrap_err()
         );
         assert!(missing.contains("known: none"), "{missing}");
 
@@ -735,8 +718,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(host_addr(&hosts, "spark").unwrap(), "spark.lan");
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -772,9 +753,9 @@ mod tests {
     /// dropped socket.
     #[tokio::test]
     async fn relay_reports_an_unknown_host() {
-        let dir = scratch("relay-unknown");
+        let dir = TempDir::new().unwrap();
         std::fs::write(
-            dir.join("hosts.json"),
+            dir.path().join("hosts.json"),
             r#"{"spark": {"addr": "127.0.0.1:4433"}}"#,
         )
         .unwrap();
@@ -790,7 +771,6 @@ mod tests {
         assert!(error.detail.contains("ghost"), "{error}");
         assert!(error.detail.contains("known: spark"), "{error}");
 
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A host that cannot be reached comes back as `Unreachable`.
@@ -798,9 +778,9 @@ mod tests {
     /// network step.
     #[tokio::test]
     async fn relay_reports_an_unreachable_host() {
-        let dir = scratch("relay-unreachable");
+        let dir = TempDir::new().unwrap();
         std::fs::write(
-            dir.join("hosts.json"),
+            dir.path().join("hosts.json"),
             r#"{"spark": {"addr": "spark.invalid"}}"#,
         )
         .unwrap();
@@ -815,46 +795,41 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Unreachable);
         assert!(error.detail.contains("cannot reach spark"), "{error}");
 
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A minimal QUIC listener: enough of a peer to prove the dial, the
-    /// pin, the rewritten handshake and the byte pump. The real daemon
-    /// listener is the other half of M3.
+    /// A minimal QUIC listener presenting `key`: enough of a peer to prove
+    /// the dial, the pin, the rewritten handshake and the byte pump. Built
+    /// through `quic::endpoint` so the two halves cannot drift apart.
     fn listener(key: &rcgen::CertifiedKey) -> quinn::Endpoint {
-        let mut crypto = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![key.cert.der().clone()],
-            rustls::pki_types::PrivatePkcs8KeyDer::from(key.key_pair.serialize_der()).into(),
+        let identity = tls::Identity {
+            cert: key.cert.der().clone(),
+            key: rustls::pki_types::PrivatePkcs8KeyDer::from(key.key_pair.serialize_der()).into(),
+        };
+        crate::quic::endpoint(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), &identity).unwrap()
+    }
+
+    /// A listener on loopback, plus the `hosts.json` and token file a
+    /// broker over `dir` needs to reach it.
+    fn quic_fixture(dir: &TempDir, key: &rcgen::CertifiedKey) -> quinn::Endpoint {
+        let endpoint = listener(key);
+        let addr = endpoint.local_addr().unwrap();
+        std::fs::write(
+            dir.path().join("hosts.json"),
+            format!(r#"{{"spark": {{"addr": "{addr}"}}}}"#),
         )
         .unwrap();
-        crypto.alpn_protocols = vec![peer::ALPN.to_vec()];
-        let config = quinn::ServerConfig::with_crypto(Arc::new(
-            quinn::crypto::rustls::QuicServerConfig::try_from(crypto).unwrap(),
-        ));
-        quinn::Endpoint::server(config, SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap()
+        std::fs::create_dir_all(dir.path().join("tokens")).unwrap();
+        std::fs::write(dir.path().join("tokens/spark"), "s3cret\n").unwrap();
+        endpoint
     }
 
     /// The pin failure has to survive the TLS stack, which turns it into an
     /// opaque alert, and come out as the message the user needs.
     #[tokio::test]
     async fn relay_reports_a_changed_host_key() {
-        let dir = scratch("relay-pin");
-        let endpoint = listener(&cert());
-        let addr = endpoint.local_addr().unwrap();
-        std::fs::write(
-            dir.join("hosts.json"),
-            format!(r#"{{"spark": {{"addr": "{addr}"}}}}"#),
-        )
-        .unwrap();
-        std::fs::create_dir_all(dir.join("tokens")).unwrap();
-        std::fs::write(dir.join("tokens/spark"), "s3cret").unwrap();
-        append_pin(&dir.join("known_hosts"), "spark", "sha256:stale").unwrap();
+        let dir = TempDir::new().unwrap();
+        let endpoint = quic_fixture(&dir, &cert());
+        append_pin(&dir.path().join("known_hosts"), "spark", "sha256:stale").unwrap();
 
         let remote = tokio::spawn(async move {
             if let Some(incoming) = endpoint.accept().await {
@@ -880,7 +855,6 @@ mod tests {
         );
         assert!(error.detail.contains("sha256:stale"), "{error}");
 
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// One relayed connection: send `up`, collect what comes back. The
@@ -902,17 +876,10 @@ mod tests {
 
     #[tokio::test]
     async fn relays_the_rewritten_handshake_and_bytes() {
-        let dir = scratch("relay-quic");
+
+        let dir = TempDir::new().unwrap();
         let key = cert();
-        let endpoint = listener(&key);
-        let addr = endpoint.local_addr().unwrap();
-        std::fs::write(
-            dir.join("hosts.json"),
-            format!(r#"{{"spark": {{"addr": "{addr}"}}}}"#),
-        )
-        .unwrap();
-        std::fs::create_dir_all(dir.join("tokens")).unwrap();
-        std::fs::write(dir.join("tokens/spark"), "s3cret\n").unwrap();
+        let endpoint = quic_fixture(&dir, &key);
 
         // One connection, one stream per relayed pane: the listener accepts
         // a single connection and serves both panes on it.
@@ -952,9 +919,7 @@ mod tests {
         }
 
         // First contact pinned the host key.
-        let pinned = read_pin(&dir.join("known_hosts"), "spark").unwrap();
+        let pinned = read_pin(&dir.path().join("known_hosts"), "spark").unwrap();
         assert_eq!(pinned, Some(tls::fingerprint(key.cert.der())));
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
