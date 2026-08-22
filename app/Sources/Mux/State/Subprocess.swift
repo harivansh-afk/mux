@@ -4,10 +4,6 @@ import Foundation
 /// and the ix CLI for live status, and none of those answers may block the
 /// main thread: every caller gets its result back asynchronously.
 enum Subprocess {
-    /// How long a helper gets to answer. A probe dials a host that may be
-    /// off, asleep, or holding the connection open with nothing to say,
-    /// and every one of those has to end in a result the overlay can
-    /// draw.
     static let defaultTimeout: TimeInterval = 10
 
     /// Run `path arguments...` off the main thread and deliver its stdout on
@@ -29,19 +25,11 @@ enum Subprocess {
             var output: String?
             do {
                 try process.run()
-                // A helper that never exits would otherwise hold this
-                // worker and its caller's overlay forever. Killing it
-                // closes its end of the pipe, which is what releases the
-                // read below.
                 let watchdog = watchdog(process, after: timeout)
-                // Read before waiting: a helper that outgrows the pipe
-                // buffer would block forever on the other order.
+                // Read before waiting: the pipe buffer would block forever the other way.
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
                 watchdog.cancel()
-                // Whatever a killed helper managed to print is a truncated
-                // answer, which every caller here would have to reject
-                // anyway: report it as no answer.
                 let killed = process.terminationReason == .uncaughtSignal
                     && process.terminationStatus == SIGKILL
                 output = killed ? nil : String(data: data, encoding: .utf8)
@@ -52,15 +40,10 @@ enum Subprocess {
         }
     }
 
-    /// Kill `process` if it is still running `after` seconds from now.
-    /// The caller cancels the returned item once the helper has exited on
-    /// its own.
     private static func watchdog(_ process: Process, after: TimeInterval) -> DispatchWorkItem {
         let item = DispatchWorkItem { [weak process] in
             guard let process, process.isRunning else { return }
-            // SIGKILL, not terminate(): a helper wedged on a socket may
-            // be ignoring SIGTERM, and there is nothing here worth
-            // shutting down cleanly.
+            // SIGKILL, not terminate(): the helper may be ignoring SIGTERM.
             kill(process.processIdentifier, SIGKILL)
         }
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + after, execute: item)

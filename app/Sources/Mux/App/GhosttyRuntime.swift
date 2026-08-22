@@ -154,7 +154,6 @@ final class GhosttyRuntime {
         return Unmanaged<GhosttyRuntime>.fromOpaque(userdata).takeUnretainedValue()
     }
 
-    /// Surface callbacks carry the surface's userdata: our PaneView.
     private static func paneView(_ userdata: UnsafeMutableRawPointer?) -> PaneView? {
         guard let userdata else { return nil }
         return Unmanaged<PaneView>.fromOpaque(userdata).takeUnretainedValue()
@@ -167,17 +166,12 @@ final class GhosttyRuntime {
 
     private static func wakeup(_ userdata: UnsafeMutableRawPointer?) {
         guard let rt = runtime(userdata) else { return }
-        // Wakeup can arrive from any thread; tick on main.
         DispatchQueue.main.async { rt.tick() }
     }
 
     private static func closeSurface(_ userdata: UnsafeMutableRawPointer?, processAlive alive: Bool) {
         guard let view = paneView(userdata) else { return }
         DispatchQueue.main.async {
-            // processAlive distinguishes "the pane's process ended" from
-            // the core requesting a close over a live process; the log
-            // line is what tells a user-typed exit apart from a pane
-            // being torn down by something else.
             AppLog.log("closeSurface pane=\(view.id.uuidString) processAlive=\(alive)")
             view.controller?.removePane(view)
         }
@@ -250,7 +244,6 @@ final class GhosttyRuntime {
             return
         }
 
-        // For confirmation, use the text/plain content if it exists.
         guard let textPlain = items.first(where: { $0.mime == "text/plain" }) else { return }
         guard let view = paneView(userdata) else { return }
         DispatchQueue.main.async {
@@ -307,7 +300,6 @@ final class GhosttyRuntime {
         }
         alert.alertStyle = .warning
 
-        // Content preview, scrollable like ghostty's confirmation window.
         let scroll = NSTextView.scrollableTextView()
         scroll.frame = NSRect(x: 0, y: 0, width: 400, height: 120)
         if let textView = scroll.documentView as? NSTextView {
@@ -364,7 +356,6 @@ final class GhosttyRuntime {
             DispatchQueue.main.async { NSApp.terminate(nil) }
             return true
 
-        // mux is single-window: a new-window request means a new session.
         case GHOSTTY_ACTION_NEW_WINDOW:
             DispatchQueue.main.async {
                 (NSApp.delegate as? AppDelegate)?.controller?.newSession()
@@ -531,10 +522,6 @@ final class GhosttyRuntime {
 
     // MARK: - URL opening
 
-    /// Open a URL from the core (cmd+click on links, OSC 8 hyperlinks).
-    /// OSC 8 targets are producer-controlled terminal output: anything
-    /// that isn't a plain web or mail link prompts before reaching Launch
-    /// Services (a reduced form of ghostty's untrusted URL policy).
     private static func openURL(_ value: String, kind: ghostty_action_open_url_kind_e) {
         // If the URL doesn't have a valid scheme we assume it's a file
         // path (cmd+click on a path in terminal output).
