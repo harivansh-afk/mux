@@ -452,7 +452,7 @@ final class CanvasOverlayView: FlippedView {
         stageTitle.attributedStringValue = title
 
         let meta = NSMutableAttributedString()
-        if let dir = PaneLabelParts.promptDir(for: pane) {
+        if let dir = pane.promptDir {
             meta.append(NSAttributedString(
                 string: dir + " ",
                 attributes: [.font: Chrome.metaFont, .foregroundColor: palette.dim]

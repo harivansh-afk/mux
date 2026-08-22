@@ -114,7 +114,7 @@ final class PrefixEngine {
         indicatorController?.hideHelp()
         indicatorController?.hideCanvasOverlay()
         indicatorController?.hideHostsWindow()
-        indicatorController?.hidePaneLabels()
+        indicatorController?.hidePaneTags()
         indicatorController?.hideResizeOutline()
         indicatorController = nil
         switch newMode {
@@ -125,7 +125,7 @@ final class PrefixEngine {
             indicatorController?.setModeIndicator(Self.prefixSegments)
             // While the prefix is armed every pane names itself: bare
             // text at its corner, gone the instant the mode ends.
-            indicatorController?.showPaneLabels()
+            indicatorController?.showPaneTags()
         case .resize:
             indicatorController = controller
             indicatorController?.setModeIndicator(Self.resizeSegments)

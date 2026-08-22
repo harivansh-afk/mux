@@ -10,14 +10,14 @@ import AppKit
 /// panel_bg flush with a bottom corner of the terminal area (mode bar
 /// left, session indicator right); everything outside the box stays
 /// transparent.
-final class ModeBarView: NSView {
+class ModeBarView: NSView {
     /// One terminal-ish row.
     static let height = Chrome.barHeight
 
     /// The badge is the visual edge of the bar. Horizontal inset is half
     /// the vertical slack: the full slack read wider than the gap under
     /// the badge, so the sides sit at half to match it optically.
-    private var textInset: CGFloat {
+    fileprivate var textInset: CGFloat {
         (max(0, (Self.height - label.fittingSize.height) / 2) / 2).rounded()
     }
 
@@ -26,11 +26,13 @@ final class ModeBarView: NSView {
         label.fittingSize.width + textInset * 2
     }
 
-    private let label = NSTextField(labelWithString: "")
-    private var segments: [ModeBarSegment] = []
+    /// Content-sized box at bar height.
+    var desiredSize: NSSize {
+        NSSize(width: desiredWidth, height: Self.height)
+    }
 
-    private static let font = Chrome.font
-    private static let boldFont = Chrome.boldFont
+    fileprivate let label = NSTextField(labelWithString: "")
+    private var segments: [ModeBarSegment] = []
 
     init() {
         super.init(frame: .zero)
@@ -59,7 +61,7 @@ final class ModeBarView: NSView {
                 line.append(NSAttributedString(
                     string: " \(text) ",
                     attributes: [
-                        .font: Self.boldFont,
+                        .font: Chrome.boldFont,
                         .foregroundColor: palette.accentContrast,
                         .backgroundColor: palette.accent,
                     ]
@@ -69,7 +71,7 @@ final class ModeBarView: NSView {
                 line.append(NSAttributedString(
                     string: text,
                     attributes: [
-                        .font: Self.boldFont,
+                        .font: Chrome.boldFont,
                         .foregroundColor: palette.accent,
                     ]
                 ))
@@ -77,7 +79,7 @@ final class ModeBarView: NSView {
                 line.append(NSAttributedString(
                     string: text,
                     attributes: [
-                        .font: Self.font,
+                        .font: Chrome.font,
                         .foregroundColor: palette.dim,
                     ]
                 ))
@@ -85,7 +87,7 @@ final class ModeBarView: NSView {
                 line.append(NSAttributedString(
                     string: text,
                     attributes: [
-                        .font: Self.boldFont,
+                        .font: Chrome.boldFont,
                         .foregroundColor: palette.pink,
                     ]
                 ))
@@ -115,5 +117,44 @@ final class ModeBarView: NSView {
             width: min(size.width, bounds.width - insetX * 2),
             height: size.height
         )
+    }
+}
+
+/// The tag flush with a pane's top-right corner while the prefix is
+/// armed: the pane's host, in pink, and nothing else - titles and
+/// directories belong to the canvas. The bars' voice exactly, with one
+/// difference: the text inset is applied on all four sides, so the tag
+/// hugs its text instead of standing at bar height, which against a
+/// matching terminal background reads as a gap.
+final class PaneTagView: ModeBarView {
+    private weak var pane: PaneView?
+
+    init(pane: PaneView) {
+        self.pane = pane
+        super.init()
+        render([.highlight(pane.target ?? "local")])
+    }
+
+    /// The frame of the pane this tag sits on, in container coordinates
+    /// (the workspace sits at the origin). nil hides the tag (the pane
+    /// went away or is covered).
+    var paneFrame: CGRect? {
+        guard let host = pane?.scrollHost, !host.isHidden else { return nil }
+        return host.frame
+    }
+
+    /// Display only: clicks fall through to the pane below.
+    override func hitTest(_: NSPoint) -> NSView? {
+        nil
+    }
+
+    /// Size the tag to its text plus the inset on every side; the
+    /// positioner may then clamp the width, and layout keeps the text
+    /// inset either way.
+    func fit() {
+        setFrameSize(NSSize(
+            width: desiredSize.width,
+            height: label.fittingSize.height + textInset * 2
+        ))
     }
 }

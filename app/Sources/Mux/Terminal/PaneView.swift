@@ -58,6 +58,23 @@ final class PaneView: NSView {
     var title: String = ""
     var pwd: String?
 
+    /// The pane's directory the way its prompt would print it: the full
+    /// path with the home prefix folded to `~`. Remote paths fold their
+    /// own home (/home/x or /Users/x) - the pane's pwd names the pane's
+    /// host, so the abbreviation reads exactly like a prompt there.
+    var promptDir: String? {
+        guard var dir = pwd, !dir.isEmpty else { return nil }
+        let home = NSHomeDirectory()
+        if dir == home || dir.hasPrefix(home + "/") {
+            dir = "~" + dir.dropFirst(home.count)
+        } else if let match = dir.range(
+            of: "^/(home|Users)/[^/]+", options: .regularExpression
+        ) {
+            dir = "~" + dir[match.upperBound...]
+        }
+        return dir
+    }
+
     /// The title as chrome shows it (canvas cards, the stage): the state
     /// glyph coding agents prefix their titles with is dropped (claude:
     /// U+2733 idle, a braille spinner <= 2.1.227 and the half-circle
