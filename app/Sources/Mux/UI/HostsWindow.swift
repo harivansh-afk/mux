@@ -286,6 +286,9 @@ final class HostsWindowView: PanelView {
         let position = selectable.firstIndex(of: index) ?? 0
         index = selectable[(position + delta + selectable.count) % selectable.count]
         render()
+        // The highlighted row renders bold, so the box can need a wider
+        // line than the one it is currently sized for.
+        onContentChange?()
     }
 
     /// y: the full digest onto the clipboard. The truncation on screen is

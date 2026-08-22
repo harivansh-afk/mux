@@ -10,7 +10,7 @@ import AppKit
 /// panel_bg flush with a bottom corner of the terminal area (mode bar
 /// left, session indicator right); everything outside the box stays
 /// transparent.
-class ModeBarView: NSView {
+class ModeBarView: NSView, ChromeOverlay {
     /// One terminal-ish row.
     static let height = Chrome.barHeight
 
@@ -21,14 +21,21 @@ class ModeBarView: NSView {
         (max(0, (Self.height - label.fittingSize.height) / 2) / 2).rounded()
     }
 
-    /// Content-sized width for the current segments.
-    var desiredWidth: CGFloat {
-        label.fittingSize.width + textInset * 2
+    /// Content-sized: exactly as wide as the segments, capped to the
+    /// pane area, one terminal-ish row tall.
+    func desiredSize(in bounds: NSRect) -> NSSize {
+        NSSize(
+            width: min(
+                label.fittingSize.width + textInset * 2,
+                bounds.width
+            ),
+            height: Self.height
+        )
     }
 
     /// Content-sized box at bar height.
     var desiredSize: NSSize {
-        NSSize(width: desiredWidth, height: Self.height)
+        NSSize(width: label.fittingSize.width + textInset * 2, height: Self.height)
     }
 
     fileprivate let label = NSTextField(labelWithString: "")
