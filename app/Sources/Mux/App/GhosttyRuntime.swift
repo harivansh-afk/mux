@@ -372,24 +372,28 @@ final class GhosttyRuntime {
             return true
 
         case GHOSTTY_ACTION_NEW_SPLIT:
-            guard let view else { return false }
-            let dir = action.action.new_split
+            guard let view, let axis = SplitDirection(action.action.new_split) else {
+                return false
+            }
+            let before = SplitDirection.before(action.action.new_split)
             DispatchQueue.main.async {
-                view.controller?.split(from: view, ghosttyDirection: dir)
+                view.controller?.session(owning: view)?
+                    .split(from: view, direction: axis, before: before)
             }
             return true
 
         case GHOSTTY_ACTION_GOTO_SPLIT:
-            guard let view else { return false }
-            let dir = action.action.goto_split
+            guard let view, let direction = FocusDirection(action.action.goto_split) else {
+                return false
+            }
             DispatchQueue.main.async {
-                view.controller?.focus(from: view, ghosttyGoto: dir)
+                view.controller?.activeSession?.focusDirection(direction)
             }
             return true
 
         case GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM:
             guard let view else { return false }
-            DispatchQueue.main.async { view.controller?.toggleZoom() }
+            DispatchQueue.main.async { view.controller?.activeSession?.toggleZoom() }
             return true
 
         case GHOSTTY_ACTION_CLOSE_WINDOW:

@@ -1,8 +1,8 @@
 import AppKit
 import GhosttyKit
 
-/// NSEvent to libghostty key event mapping. Ported from ghostty's
-/// NSEvent+Extension.swift (MIT).
+/// libghostty to mux: key events, split directions, focus directions.
+/// The NSEvent half is ported from ghostty's NSEvent+Extension.swift (MIT).
 extension NSEvent {
     /// Create a Ghostty key event for a given keyboard action.
     ///
@@ -79,5 +79,37 @@ extension NSEvent {
         }
 
         return characters
+    }
+}
+
+/// libghostty names the edge the new pane appears on; mux names an axis
+/// plus a side, so LEFT and UP are the same axis with `before` set.
+extension SplitDirection {
+    init?(_ direction: ghostty_action_split_direction_e) {
+        switch direction {
+        case GHOSTTY_SPLIT_DIRECTION_RIGHT, GHOSTTY_SPLIT_DIRECTION_LEFT:
+            self = .horizontal
+        case GHOSTTY_SPLIT_DIRECTION_DOWN, GHOSTTY_SPLIT_DIRECTION_UP:
+            self = .vertical
+        default:
+            return nil
+        }
+    }
+
+    static func before(_ direction: ghostty_action_split_direction_e) -> Bool {
+        direction == GHOSTTY_SPLIT_DIRECTION_LEFT
+            || direction == GHOSTTY_SPLIT_DIRECTION_UP
+    }
+}
+
+extension FocusDirection {
+    init?(_ direction: ghostty_action_goto_split_e) {
+        switch direction {
+        case GHOSTTY_GOTO_SPLIT_LEFT: self = .left
+        case GHOSTTY_GOTO_SPLIT_RIGHT: self = .right
+        case GHOSTTY_GOTO_SPLIT_UP: self = .up
+        case GHOSTTY_GOTO_SPLIT_DOWN: self = .down
+        default: return nil
+        }
     }
 }
