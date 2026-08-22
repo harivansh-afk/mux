@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mux-proto", "crates/mux-attach", "crates/muxd", "crates/ghostty-vt"]
+members = ["crates/mux-proto", "crates/mux-attach", "crates/muxd", "crates/ghostty-vt", "crates/agents"]
 
 [workspace.package]
 edition = "2021"
@@ -29,6 +29,7 @@ missing_panics_doc = "allow"
 # members inherit with `name.workspace = true`.
 mux-proto = { path = "crates/mux-proto" }
 ghostty-vt = { path = "crates/ghostty-vt" }
+agents = { path = "crates/agents" }
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
@@ -37,6 +38,8 @@ serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
 nix = { version = "0.29", features = ["term", "process", "fs", "socket", "poll", "signal", "user"] }
 parking_lot = "0.12"
+regex = "1"
+toml = "0.8"
 libc = "0.2"
 # M3 remote transport (QUIC) + auth material. Pre-pinned here so parallel
 # branches don't conflict on dependency additions.
