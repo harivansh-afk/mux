@@ -1,22 +1,20 @@
 import AppKit
 
 /// The hosts window (prefix t): the one surface for "where can a pane live".
-/// A content-sized bordered box listing `local`, the aliases from hosts.json
-/// with the address the daemon dials and a live probe status (a machine that
-/// is off reads differently from one that rejected our key), and the ix VMs
-/// the CLI reports. Enter splits right into the highlighted machine, H/J/K/L
-/// split in a direction, c opens a new session there, n creates a VM, y
-/// copies this client's identity digest - the thing the user pastes into a
-/// host's authorized list.
+/// A bordered box listing `local`, the aliases from hosts.json with the
+/// address the daemon dials and a live probe status (a machine that is off
+/// reads differently from one that rejected our key), and the ix VMs the CLI
+/// reports. Enter splits right into the highlighted machine, H/J/K/L split in
+/// a direction, c opens a new session there, n creates a VM, y copies this
+/// client's identity digest - the thing the user pastes into a host's
+/// authorized list.
 ///
 /// `t` swaps the list for the ix templates a new VM is built from; enter
 /// there persists the default and comes back. All queries fire on open and
-/// fill in as they answer, so the box is usable immediately. Sizing is
-/// sticky so late answers don't walk the edges around: pending statuses
-/// reserve the width of a typical resolved one, the box only grows within
-/// one open, and each open starts from the last open's final size (a
-/// shrunken fleet corrects itself on the next open). PrefixEngine owns the
-/// keys; the window never takes focus.
+/// fill in as they answer, so the box is usable immediately: the width is
+/// a fixed column count and the height is the row count, so nothing an
+/// answer says can move an edge. PrefixEngine owns the keys; the window
+/// never takes focus.
 final class HostsWindowView: NSView {
     /// A host's live state as it reads on screen.
     private enum Status {
@@ -71,25 +69,29 @@ final class HostsWindowView: NSView {
     private static let columns = 58
     /// Minimum blank columns between a row's name and its status.
     private static let gap = 2
-    /// Every row is one line of `rowHeight`, so the selection bar lands on
-    /// the highlighted one; the glyphs ride at the middle of their band.
+    /// One column of the chrome face, and the box `columns` of them make.
+    private static let boxWidth = (" " as NSString)
+        .size(withAttributes: [.font: font]).width * CGFloat(columns) + inset * 2
+
+    /// Every line of the list is exactly one row high, so the selection bar
+    /// lands on the highlighted one, with the glyphs lifted from the foot of
+    /// that band to the middle of it.
     private static let paragraph: NSParagraphStyle = {
         let style = NSMutableParagraphStyle()
         style.minimumLineHeight = rowHeight
         style.maximumLineHeight = rowHeight
         return style
     }()
-    private static let baselineLift = (rowHeight - (font.ascender - font.descender)) / 2
 
-    private static func attributes(
-        _ color: NSColor, bold: Bool = false
-    ) -> [NSAttributedString.Key: Any] {
-        [
+    private static func run(
+        _ text: String, _ color: NSColor, bold: Bool = false
+    ) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
             .font: bold ? boldFont : font,
             .foregroundColor: color,
             .paragraphStyle: paragraph,
-            .baselineOffset: baselineLift,
-        ]
+            .baselineOffset: (rowHeight - (font.ascender - font.descender)) / 2,
+        ])
     }
 
     private let titleLabel = NSTextField(labelWithString: "hosts")
@@ -129,13 +131,6 @@ final class HostsWindowView: NSView {
     /// Called when late rows change the content size, so the controller can
     /// re-center the box.
     var onContentChange: (() -> Void)?
-
-    /// The largest size this open has needed: the box never shrinks while
-    /// it is up.
-    private var grownSize = NSSize.zero
-    /// The previous open's final size, used as this open's floor: the fleet
-    /// is stable, so the box usually appears at full size and stays put.
-    private var carriedSize = NSSize.zero
 
     /// The machine list wherever it currently lives: on screen, or in the
     /// stash under the template list. Probe and ix answers land in it
@@ -196,8 +191,6 @@ final class HostsWindowView: NSView {
     func reload() {
         generation += 1
         let generation = generation
-        carriedSize = grownSize
-        grownSize = .zero
         copied = false
         digest = nil
         pickingTemplate = false
@@ -268,7 +261,6 @@ final class HostsWindowView: NSView {
         )
         stashedHosts = (rows, index)
         pickingTemplate = true
-        // Same as the machines: the title band names the list.
         rows = [base]
         index = 0
         rowsChanged()
@@ -335,23 +327,17 @@ final class HostsWindowView: NSView {
 
     // MARK: - Layout
 
-    /// Content-fitting size, capped to the container. Monotonic within one
-    /// open and floored by the previous open's final size, so late answers
-    /// re-render in place instead of walking the edges around.
+    /// Fixed width, height from the row count: the title row, the rows, the
+    /// footer row. Nothing here is measured from a label, so an answer
+    /// landing cannot walk an edge; only a row appearing changes the box,
+    /// and only downwards.
     func desiredSize(in bounds: NSRect) -> NSSize {
-        let title = titleLabel.fittingSize.width + cancelBadge.fittingSize.width
-        let width = max(
-            bodyLabel.fittingSize.width, title, footerLabel.fittingSize.width
-        ) + Self.inset * 2
-        // Title row, the rows themselves, then the footer row.
-        let height = Self.rowHeight * CGFloat(rows.count + 2) + Self.inset * 2
-        grownSize = NSSize(
-            width: max(grownSize.width, width),
-            height: max(grownSize.height, height)
-        )
-        return NSSize(
-            width: min(max(grownSize.width, carriedSize.width), bounds.width - 48),
-            height: min(max(grownSize.height, carriedSize.height), bounds.height * 0.9)
+        NSSize(
+            width: min(Self.boxWidth, bounds.width - 48),
+            height: min(
+                Self.rowHeight * CGFloat(rows.count + 2) + Self.inset * 2,
+                bounds.height * 0.9
+            )
         )
     }
 
@@ -399,9 +385,9 @@ final class HostsWindowView: NSView {
     }
 
     /// The highlight lands on the first selectable row, so enter always
-    /// does something. Already-valid highlights are left alone: rows are
-    /// only ever appended, and moving the highlight under the user would be
-    /// worse than a stale-looking one.
+    /// does something. A highlight that is still valid is left where it is:
+    /// moving it under the user as rows arrive would be worse than one that
+    /// looks stale.
     private func resetHighlight() {
         guard !rows.indices.contains(index) || !rows[index].selectable else { return }
         index = rows.firstIndex(where: \.selectable) ?? 0
@@ -461,19 +447,14 @@ final class HostsWindowView: NSView {
         needsLayout = true
     }
 
-    /// The list as one string. Each row is the name, its dim detail, then
-    /// blanks out to the status in the last columns; a name too long for
-    /// what is left of the line ends in an ellipsis. On the highlight bar
-    /// every colour switches to the contrast one: ok-green on accent would
-    /// be unreadable.
+    /// The list as one string. Each row is its name, its dim detail, then
+    /// blanks out to a status sitting in the last columns; a name with no
+    /// room left on the line ends in an ellipsis. On the highlight bar every
+    /// colour switches to the contrast one: ok-green on accent would be
+    /// unreadable.
     private func body(_ palette: Palette) -> NSAttributedString {
         let out = NSMutableAttributedString()
         for (i, row) in rows.enumerated() {
-            if i > 0 {
-                out.append(NSAttributedString(
-                    string: "\n", attributes: Self.attributes(palette.dim)
-                ))
-            }
             let selected = i == index && row.selectable
             let front: NSColor? = selected ? palette.accentContrast : nil
             // A marker gutter only in the list that has something to mark,
@@ -481,47 +462,31 @@ final class HostsWindowView: NSView {
             let marker = pickingTemplate && row.selectable
                 ? (row.current ? "\u{25C6} " : "  ") : ""
             let detail = row.detail.isEmpty ? "" : "  " + row.detail
-            let (status, statusColor) = Self.statusText(row.status, palette: palette)
-            let taken = marker.count + detail.count + status.count
-            var name = row.text
-            if name.count > Self.columns - taken - Self.gap {
-                let room = Self.columns - taken - Self.gap - 1
-                name = room > 0 ? String(name.prefix(room)) + "\u{2026}" : ""
+            let (status, statusColor): (String, NSColor) = switch row.status {
+            case .none: ("", palette.dim)
+            case .pending: ("...", palette.dim)
+            case let .ok(value): (value, palette.ok)
+            case let .bad(value): (value, palette.bad)
+            case let .plain(value): (value, palette.dim)
             }
+            let room = Self.columns - marker.count - detail.count
+                - status.count - Self.gap
+            let name = row.text.count > room
+                ? String(row.text.prefix(max(0, room - 1))) + "\u{2026}"
+                : row.text
             let bold: Bool = switch row.kind {
             case .heading: true
             case .inert: false
             case .host, .template: selected || row.current
             }
-            out.append(NSAttributedString(
-                string: marker, attributes: Self.attributes(front ?? palette.accent)
-            ))
-            out.append(NSAttributedString(
-                string: name,
-                attributes: Self.attributes(
-                    front ?? Self.color(of: row.kind, palette: palette), bold: bold
-                )
-            ))
-            let pad = max(Self.gap, Self.columns - taken - name.count)
-            out.append(NSAttributedString(
-                string: detail + String(repeating: " ", count: pad),
-                attributes: Self.attributes(front ?? palette.dim)
-            ))
-            out.append(NSAttributedString(
-                string: status, attributes: Self.attributes(front ?? statusColor)
-            ))
+            let pad = String(repeating: " ", count: max(Self.gap, room + Self.gap - name.count))
+            out.append(Self.run(i == 0 ? "" : "\n", palette.dim))
+            out.append(Self.run(marker, front ?? palette.accent))
+            out.append(Self.run(name, front ?? Self.color(of: row.kind, palette: palette), bold: bold))
+            out.append(Self.run(detail + pad, front ?? palette.dim))
+            out.append(Self.run(status, front ?? statusColor))
         }
         return out
-    }
-
-    private static func statusText(_ status: Status, palette: Palette) -> (String, NSColor) {
-        switch status {
-        case .none: ("", palette.dim)
-        case .pending: ("...", palette.dim)
-        case let .ok(value): (value, palette.ok)
-        case let .bad(value): (value, palette.bad)
-        case let .plain(value): (value, palette.dim)
-        }
     }
 
     private static func color(of kind: Kind, palette: Palette) -> NSColor {
