@@ -11,3 +11,9 @@ func systemLabel() -> NSTextField {
     field.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
     return field
 }
+
+func inferredLabel() -> NSTextField {
+    let field = NSTextField()
+    field.font = .systemFont(ofSize: 12)
+    return field
+}
