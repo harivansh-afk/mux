@@ -373,18 +373,16 @@ fn host_addr(hosts: &Path, alias: &str) -> Result<String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
         Err(e) => return Err(e).with_context(|| format!("read {}", hosts.display())),
     };
-    match table.get(alias) {
-        Some(host) => Ok(host.addr.clone()),
-        None => {
-            let known: Vec<&str> = table.keys().map(String::as_str).collect();
-            let known = if known.is_empty() {
-                "none".to_string()
-            } else {
-                known.join(", ")
-            };
-            bail!("unknown host {alias:?} in {}; known: {known}", hosts.display())
-        }
+    if let Some(host) = table.get(alias) {
+        return Ok(host.addr.clone());
     }
+    let known: Vec<&str> = table.keys().map(String::as_str).collect();
+    let known = if known.is_empty() {
+        "none".to_string()
+    } else {
+        known.join(", ")
+    };
+    bail!("unknown host {alias:?} in {}; known: {known}", hosts.display())
 }
 
 /// The bearer token to present to `alias`, injected into the relayed

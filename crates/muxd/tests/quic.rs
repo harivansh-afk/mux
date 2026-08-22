@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mux_proto::frame::{self, IN_LANE_INPUT, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
-use mux_proto::peer::{self, ErrorKind, OpenMode, OpenReply, OpenRequest, Opened};
+use mux_proto::peer::{self, ErrorKind, OpenError, OpenMode, OpenReply, OpenRequest, Opened};
 use quinn::{Endpoint, RecvStream, SendStream};
 
 /// Long enough to be immune to a loaded CI box, short enough that a hang
@@ -81,13 +81,8 @@ async fn quic_listener_serves_authenticated_clients() {
         &request(Some("wrong-token"), None, OpenMode::List),
     )
     .await;
-    match read_reply(&mut recv).await {
-        Err(error) => {
-            assert_eq!(error.kind, ErrorKind::TokenRejected);
-            assert_eq!(error.detail, "authentication failed");
-        }
-        other => panic!("a wrong token must be refused, got {other:?}"),
-    }
+    let refused = OpenError::new(ErrorKind::TokenRejected, "authentication failed");
+    assert_eq!(read_reply(&mut recv).await, Err(refused));
 
     // (b) An enrolled client's token is admitted the same as the
     // daemon's own, with no file ever copied between the two machines.
