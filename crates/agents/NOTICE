@@ -1,0 +1,4 @@
+The manifest schema, rule engine and the manifests under src/manifests/
+are derived from an upstream terminal agent detector, copyright its
+authors, used under the Apache License 2.0 (LICENSE-upstream). They are
+redistributed here under the same terms alongside this crate's MIT code.

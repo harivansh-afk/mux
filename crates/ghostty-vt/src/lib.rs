@@ -38,6 +38,7 @@ mod ffi {
             terminal: *mut core::ffi::c_void,
             row: u16,
         ) -> Bytes;
+        pub fn ghostty_vt_terminal_title(terminal: *mut core::ffi::c_void) -> Bytes;
         pub fn ghostty_vt_bytes_free(bytes: Bytes);
     }
 }
@@ -134,6 +135,23 @@ impl Terminal {
             row_texts.push(text);
         }
         row_texts
+    }
+
+    /// The title the program last set (OSC 0/2), `None` when unset.
+    pub fn title(&self) -> Option<String> {
+        // SAFETY: handle is valid.
+        let bytes = unsafe { ffi::ghostty_vt_terminal_title(self.handle.as_ptr()) };
+        if bytes.ptr.is_null() || bytes.len == 0 {
+            return None;
+        }
+        // SAFETY: ghostty returns a valid buffer.
+        let slice = unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len) };
+        let title = String::from_utf8_lossy(slice).into_owned();
+        // SAFETY: freeing the ghostty-allocated buffer.
+        unsafe {
+            ffi::ghostty_vt_bytes_free(bytes);
+        }
+        Some(title)
     }
 
     /// Render complete terminal state as VT escape sequences for reattach.
@@ -251,6 +269,25 @@ mod tests {
             !bytes.windows(b"\x1b]0;".len()).any(|w| w == b"\x1b]0;"),
             "replay must not clear a client title the pty never set"
         );
+    }
+
+    #[test]
+    fn title_is_none_until_set() {
+        let mut term = Terminal::new(4, 10).expect("terminal creation");
+        assert_eq!(term.title(), None);
+
+        term.feed(b"no title here");
+        assert_eq!(term.title(), None);
+    }
+
+    #[test]
+    fn title_follows_the_latest_osc() {
+        let mut term = Terminal::new(4, 10).expect("terminal creation");
+        term.feed(b"\x1b]0;hello\x07");
+        assert_eq!(term.title().as_deref(), Some("hello"));
+
+        term.feed(b"\x1b]2;second\x07");
+        assert_eq!(term.title().as_deref(), Some("second"));
     }
 
     #[test]

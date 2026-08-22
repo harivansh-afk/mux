@@ -1,0 +1,16 @@
+[package]
+name = "agents"
+version = "0.2.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "which coding agent runs in a pty and what it is doing"
+
+[dependencies]
+regex.workspace = true
+serde.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true

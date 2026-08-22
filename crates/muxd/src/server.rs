@@ -17,7 +17,7 @@ use mux_proto::peer::{
     self, ClientControl, ErrorKind, OpenError, OpenMode, OpenReply, OpenRequest, Opened,
     ServerEvent,
 };
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::manager::{self, ClientMsg, Manager, PtySession};
@@ -198,9 +198,42 @@ where
             let existed = manager.kill(name);
             return reply(&mut writer, &Ok(Opened::Killed { existed })).await;
         }
+        OpenMode::Watch => {
+            reply(&mut writer, &Ok(Opened::Watching)).await?;
+            return watch(manager, reader, writer).await;
+        }
         OpenMode::Open { .. } => {}
     }
     handle_open(manager, request, reader, writer).await
+}
+
+/// Stream pty events on the events lane until the client hangs up. A subscriber
+/// that fell behind the backlog gets every pty again rather than a gap.
+async fn watch<R, W>(manager: Manager, mut reader: R, mut writer: BufWriter<W>) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    use tokio::sync::broadcast::error::RecvError;
+
+    let (mut snapshot, mut rx) = manager.watch();
+    let mut sink = [0u8; 64];
+    loop {
+        for event in snapshot.drain(..) {
+            frame::aio::write_lane(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event)).await?;
+        }
+        writer.flush().await?;
+        tokio::select! {
+            received = rx.recv() => match received {
+                Ok(event) => snapshot.push(event),
+                Err(RecvError::Lagged(_)) => snapshot = manager.watch().0,
+                Err(RecvError::Closed) => return Ok(()),
+            },
+            // The client writes nothing on a watch; any read result is
+            // its departure.
+            _ = reader.read(&mut sink) => return Ok(()),
+        }
+    }
 }
 
 /// The directory a new pty starts in: the explicit `cwd`, else the live

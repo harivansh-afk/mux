@@ -50,12 +50,18 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// mode is up.
     weak var resizeOutlineHost: PaneScrollView?
 
+    /// One `muxd watch` per daemon this window has panes on, keyed by
+    /// host alias (nil = local). Started for local at launch and for a
+    /// host the first time a pane lands there; stopped at termination.
+    private var watches: [String?: Muxd.Watch] = [:]
+
     var activeSession: Session? {
         sessions.indices.contains(activeSessionIndex) ? sessions[activeSessionIndex] : nil
     }
 
     override init() {
         super.init()
+        watch(nil)
 
         // Borderless: no titlebar, no traffic lights, square corners.
         // Edge-resizing works via .resizable; dragging via background.
@@ -113,6 +119,35 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         let host = PaneScrollView(pane: pane)
         pane.scrollHost = host
         workspace.addSubview(host)
+        watch(pane.daemon)
+    }
+
+    /// Follow one daemon's ptys: every agent and directory change it
+    /// reports lands on the pane it names. Idempotent per daemon.
+    func watch(_ host: String?) {
+        guard watches[host] == nil else { return }
+        watches[host] = Muxd.Watch(host: host) { [weak self] event in
+            guard let self, let id = UUID(uuidString: event.name),
+                  let pane = pane(id, on: host)
+            else { return }
+            pane.apply(agent: event.agent, cwd: event.cwd)
+        }
+    }
+
+    func stopWatches() {
+        watches.values.forEach { $0.stop() }
+        watches.removeAll()
+    }
+
+    /// The pane whose pty `host`'s daemon calls `id`, if this window has
+    /// it. Pty names are pane UUIDs, so the name is the match.
+    func pane(_ id: UUID, on host: String?) -> PaneView? {
+        for session in sessions {
+            if let pane = session.panes[id], pane.daemon == host {
+                return pane
+            }
+        }
+        return nil
     }
 
     var paneBounds: CGRect {

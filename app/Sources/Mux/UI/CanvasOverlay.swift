@@ -331,9 +331,10 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
 
     @objc private func render() {
         let palette = ThemeManager.shared.palette
-        let dark = !palette.panelBg.isLightColor
-        scrim.layer?.backgroundColor = NSColor.black
-            .withAlphaComponent(dark ? 0.95 : 0.72).cgColor
+        // The scrim is the panel background, not black: the stage text is
+        // palette.text, which on the light palette is dark and vanished on
+        // a black scrim. Same alpha both ways.
+        scrim.layer?.backgroundColor = palette.panelBg.withAlphaComponent(0.95).cgColor
         stage.layer?.backgroundColor = palette.panelBg.cgColor
         // Square hairline, like every other piece of mux chrome: the
         // border sits exactly on the rectangular terminal content, no
@@ -357,16 +358,18 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         }
 
         guard let entry = selection, let pane = entry.pane else { return }
+        // Line one is the agent: its state glyph, its topic, either alone
+        // when that is all there is, and nothing at all when the pane has
+        // neither (the directory line moves up).
         let title = NSMutableAttributedString()
         if let glyph = Self.stateGlyph(for: pane, palette: palette, font: Chrome.uiTitleFont) {
             title.append(glyph)
-            let topic = pane.displayTitle
-            if !topic.isEmpty {
-                title.append(NSAttributedString(
-                    string: topic,
-                    attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
-                ))
-            }
+        }
+        if let topic = pane.agent?.topic, !topic.isEmpty {
+            title.append(NSAttributedString(
+                string: topic,
+                attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
+            ))
         }
         stageTitle.attributedStringValue = title
 
@@ -388,14 +391,14 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
     static func stateGlyph(
         for pane: PaneView, palette: Palette, font: NSFont
     ) -> NSAttributedString? {
-        guard let state = pane.agentState else { return nil }
-        let working = state == .working
+        guard let state = pane.agent?.state else { return nil }
+        let (glyph, color): (String, NSColor) = switch state {
+        case .working: ("\u{25D0}", palette.busy)
+        case .idle: ("\u{2713}", palette.ok)
+        case .blocked: ("\u{00D7}", palette.bad)
+        }
         return NSAttributedString(
-            string: (working ? "\u{25D0}" : "\u{2713}") + " ",
-            attributes: [
-                .font: font,
-                .foregroundColor: working ? palette.busy : palette.ok,
-            ]
+            string: glyph + " ", attributes: [.font: font, .foregroundColor: color]
         )
     }
 }

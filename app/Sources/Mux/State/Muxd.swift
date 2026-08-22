@@ -12,7 +12,8 @@ enum Muxd {
 
     /// The daemon, which is also how the app asks about daemons: `probe`,
     /// `ls`, `kill` and `client-digest` are one-shot queries on the local
-    /// socket. The serving daemon is started by the relay.
+    /// socket, `watch` a long-running one. The serving daemon is started
+    /// by the relay.
     static let daemonBinary: String? = bundled("muxd")
 
     /// Everything about one pane's pty that the relay needs to be told.
@@ -187,6 +188,106 @@ enum Muxd {
         let attached: Bool
         let exited: Bool
         let cwd: String?
+        @Lenient var agent: AgentInfo?
+    }
+
+    /// The coding agent the daemon sees in a pty, from the foreground
+    /// process and the terminal it tracks. The app renders this and never
+    /// reads titles itself.
+    struct AgentInfo: Decodable, Equatable {
+        let agent: Agent
+        let state: AgentState
+        /// What the agent says it is doing; may be empty.
+        let topic: String
+    }
+
+    enum Agent: String, Decodable {
+        case claude
+        case codex
+    }
+
+    enum AgentState: String, Decodable {
+        case working
+        case idle
+        case blocked
+    }
+
+    /// A field that is allowed to be absent, null, or something this build
+    /// does not know (a new agent or state name): any of those reads as
+    /// nil instead of failing the whole line. The synthesized decode of a
+    /// `@Lenient` property lands on the container overload below, which
+    /// is what makes absent and null nil rather than errors.
+    @propertyWrapper
+    struct Lenient<Value: Decodable>: Decodable {
+        var wrappedValue: Value?
+
+        init(wrappedValue: Value?) {
+            self.wrappedValue = wrappedValue
+        }
+
+        init(from decoder: Decoder) {
+            wrappedValue = try? Value(from: decoder)
+        }
+    }
+
+    /// One line of `muxd watch --json`: the pty it is about and what the
+    /// daemon now sees there.
+    struct WatchEvent: Decodable {
+        let name: String
+        @Lenient var agent: AgentInfo?
+        let cwd: String?
+        let exited: Bool
+    }
+
+    /// `muxd watch --json [alias]`: one line per pty when it starts, then
+    /// one per change, for as long as the daemon lives. The watch restarts
+    /// itself when the stream ends - the daemon may be mid-upgrade - after
+    /// a second, then five, until stopped.
+    final class Watch {
+        private let alias: String?
+        private let onEvent: (WatchEvent) -> Void
+        private var stream: Subprocess.Stream?
+        private var restart: DispatchWorkItem?
+        private var backoff: TimeInterval = 1
+
+        init(host alias: String?, onEvent: @escaping (WatchEvent) -> Void) {
+            self.alias = alias
+            self.onEvent = onEvent
+            start()
+        }
+
+        deinit {
+            stop()
+        }
+
+        func stop() {
+            restart?.cancel()
+            restart = nil
+            stream?.terminate()
+            stream = nil
+        }
+
+        private func start() {
+            guard let daemon = daemonBinary else { return }
+            var args = ["watch", "--json"]
+            if let alias {
+                args.append(alias)
+            }
+            stream = Subprocess.Stream(daemon, args, onLine: { [weak self] line in
+                guard let self, let event: WatchEvent = decode(line) else { return }
+                // A line means the daemon is there: the next outage gets
+                // the short retry again.
+                backoff = 1
+                onEvent(event)
+            }, onExit: { [weak self] in
+                guard let self, stream != nil else { return }
+                stream = nil
+                let item = DispatchWorkItem { [weak self] in self?.start() }
+                restart = item
+                DispatchQueue.main.asyncAfter(deadline: .now() + backoff, execute: item)
+                backoff = 5
+            })
+        }
     }
 
     /// List the ptys a daemon serves for us: the local one, or `alias`
@@ -217,15 +318,25 @@ enum Muxd {
     /// the helper logged ahead of them is skipped rather than fatal.
     private static func jsonLines<T: Decodable>(_ output: String?) -> [T] {
         guard let output else { return [] }
-        return output.split(separator: "\n").compactMap { line in
-            guard line.hasPrefix("{") else { return nil }
-            return try? JSONDecoder().decode(T.self, from: Data(line.utf8))
-        }
+        return output.split(separator: "\n").compactMap(decode)
+    }
+
+    /// One line of a daemon's output, if it is a JSON object of the shape
+    /// asked for.
+    static func decode<T: Decodable>(_ line: Substring) -> T? {
+        guard line.hasPrefix("{") else { return nil }
+        return try? JSONDecoder().decode(T.self, from: Data(line.utf8))
     }
 
     private static func bundled(_ name: String) -> String? {
         guard let dir = Bundle.main.executableURL?.deletingLastPathComponent() else { return nil }
         let path = dir.appendingPathComponent(name).path
         return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }
+}
+
+extension KeyedDecodingContainer {
+    func decode<T>(_: Muxd.Lenient<T>.Type, forKey key: Key) -> Muxd.Lenient<T> {
+        Muxd.Lenient(wrappedValue: try? decodeIfPresent(T.self, forKey: key))
     }
 }

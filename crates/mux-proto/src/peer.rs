@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 /// The daemon replies with a readable error on mismatch instead of
 /// dropping the connection, so skew between a running daemon and a newer
 /// client is diagnosable (v1: M2; v2: token+target; v3: this field;
-/// v4: `cwd_from`; v5: `PtyInfo::cwd`; v6: typed `OpenError`).
-pub const PROTOCOL_VERSION: u32 = 6;
+/// v4: `cwd_from`; v5: `PtyInfo::cwd`; v6: typed `OpenError`; v7:
+/// `PtyInfo::agent`, `OpenMode::Watch`).
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// ALPN for muxd's QUIC listener. Each bidirectional stream carries
 /// exactly one protocol run: the same handshake + lane frames as a unix
@@ -71,6 +72,9 @@ pub enum OpenMode {
     List,
     /// Kill the pty named `name` (SIGKILL to its process group).
     Kill { name: String },
+    /// Stream [`PtyEvent`]s: one per pty now, then one per change, on
+    /// the events lane after the reply, until the client hangs up.
+    Watch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,6 +82,29 @@ pub enum Opened {
     Attached { name: String, created: bool },
     Listed { ptys: Vec<PtyInfo> },
     Killed { existed: bool },
+    Watching,
+}
+
+/// Which coding agent a pty's foreground process is and what it is
+/// doing, as the daemon read it. Strings on the wire so the JSON side is
+/// the same shape: `agent` is the detector's label (`claude`, `codex`),
+/// `state` is `working`, `idle` or `blocked`, `topic` is what the agent
+/// says it is on (claude's title text, codex's project), possibly empty.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentInfo {
+    pub agent: String,
+    pub state: String,
+    pub topic: String,
+}
+
+/// One line of a watch: the pty's current agent and directory. Sent for
+/// every pty when the watch opens, then whenever any of it changes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PtyEvent {
+    pub name: String,
+    pub agent: Option<AgentInfo>,
+    pub cwd: Option<String>,
+    pub exited: bool,
 }
 
 /// Why an open failed, decided where the failure is raised. Clients
@@ -160,6 +187,8 @@ pub struct PtyInfo {
     /// Working directory of the pty's foreground process, when readable.
     /// What a client needs to adopt a pty it has no record of.
     pub cwd: Option<String>,
+    /// The coding agent in the foreground, when there is one.
+    pub agent: Option<AgentInfo>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -267,7 +296,7 @@ mod tests {
         assert_eq!(
             encode(&req),
             [
-                0x06, // version = PROTOCOL_VERSION (varint)
+                0x07, // version = PROTOCOL_VERSION (varint)
                 0x78, // cols = 120 (varint)
                 0x28, // rows = 40
                 0x01, 0x0d, // term: Some, len 13
