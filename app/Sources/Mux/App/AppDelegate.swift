@@ -2,7 +2,6 @@ import AppKit
 import GhosttyKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private(set) var runtime: GhosttyRuntime?
     /// The one window. mux is deliberately single-window: sessions are
     /// the unit of grouping (prefix c / 1..9 / canvas), and a second
     /// window would only add a second copy of every window-scoped
@@ -29,7 +28,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         GhosttyRuntime.shared = runtime
-        self.runtime = runtime
 
         ThemeManager.shared.start()
         prefixEngine.install()
@@ -112,11 +110,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_: Notification) {
-        runtime?.setFocus(true)
+        GhosttyRuntime.shared?.setFocus(true)
     }
 
     func applicationDidResignActive(_: Notification) {
-        runtime?.setFocus(false)
+        GhosttyRuntime.shared?.setFocus(false)
     }
 
     /// True once quit begins: window teardown during termination is a
@@ -156,12 +154,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - The window
 
-    /// Create the single window. Returns nil if it already exists (or
-    /// the runtime is gone); there is never a second one.
+    /// Create the single window. Returns nil if it already exists;
+    /// there is never a second one.
     @discardableResult
     private func makeWindow() -> MuxWindowController? {
-        guard controller == nil, let runtime else { return nil }
-        let controller = MuxWindowController(runtime: runtime)
+        guard controller == nil else { return nil }
+        let controller = MuxWindowController()
         self.controller = controller
         controller.window.makeKeyAndOrderFront(nil)
         return controller

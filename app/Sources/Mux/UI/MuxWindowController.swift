@@ -31,7 +31,6 @@ final class WorkspaceView: NSView {
 ///
 /// The chrome itself lives in MuxWindowController+Overlays.swift.
 final class MuxWindowController: NSObject, NSWindowDelegate {
-    let runtime: GhosttyRuntime
     private(set) var window: NSWindow!
 
     /// Internal (not private): the overlay chrome is managed by
@@ -72,8 +71,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         sessions.indices.contains(activeSessionIndex) ? sessions[activeSessionIndex] : nil
     }
 
-    init(runtime: GhosttyRuntime) {
-        self.runtime = runtime
+    override init() {
         super.init()
 
         // Borderless: no titlebar, no traffic lights, square corners.
@@ -100,7 +98,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         container.addSubview(sessionIndicator)
         self.window = window
 
-        sessions = [Session(runtime: runtime, controller: self)]
+        sessions = [Session(controller: self)]
         updateSessionIndicator()
 
         applyTheme()
@@ -162,7 +160,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// there is no directory to inherit.
     func newSession(target: NewPaneTarget = .inherit) {
         let seed = target.seed(from: activeSession?.focusedPane)
-        let session = Session(runtime: runtime, controller: self)
+        let session = Session(controller: self)
         sessions.append(session)
         activeSessionIndex = sessions.count - 1
         session.addInitialPane(
@@ -188,7 +186,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             tree = tree.inserting(id, at: previous, direction: .horizontal)
             previous = id
         }
-        let session = Session(runtime: runtime, controller: self)
+        let session = Session(controller: self)
         sessions.append(session)
         session.restore(SessionSnapshot(
             tree: tree, panes: panes, focused: first, zoomed: nil
@@ -209,7 +207,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         guard let source = activeSession, let pane = source.focusedPane,
               source.panes.count > 1 else { return }
         source.detach(pane)
-        let session = Session(runtime: runtime, controller: self)
+        let session = Session(controller: self)
         sessions.append(session)
         activeSessionIndex = sessions.count - 1
         session.adopt(pane)
@@ -277,7 +275,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// restored last so its focused pane ends up first responder.
     func restoreSessions(_ snapshots: [SessionSnapshot], active: Int) {
         guard !snapshots.isEmpty else { return }
-        sessions = snapshots.map { _ in Session(runtime: runtime, controller: self) }
+        sessions = snapshots.map { _ in Session(controller: self) }
         activeSessionIndex = min(max(0, active), sessions.count - 1)
         for (index, snapshot) in snapshots.enumerated() {
             sessions[index].restore(snapshot)

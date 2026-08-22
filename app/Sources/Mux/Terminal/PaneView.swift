@@ -183,7 +183,6 @@ final class PaneView: NSView {
 
     init(
         id: UUID = UUID(),
-        runtime: GhosttyRuntime,
         workingDirectory: String? = nil,
         cwdFrom: UUID? = nil,
         target: String? = nil,
@@ -217,7 +216,7 @@ final class PaneView: NSView {
         // The UTTypes that can be dragged onto this view.
         registerForDraggedTypes(Array(Self.dropTypes))
 
-        guard let app = runtime.app else { return }
+        guard let app = GhosttyRuntime.shared?.app else { return }
 
         // M2: every pane is a daemon pty named by the pane id. Attach
         // reconnects and replays; a missing pty is created at the saved
