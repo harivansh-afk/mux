@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end check of muxd's zero-downtime self-upgrade.
 Isolated: HOME, MUXD_SOCKET and MUXD_MIGRATE_SOCKET all point into a
-private tempdir, so this never touches a developer's daemon or pidfile.
+private tempdir, so this never touches a developer's daemon.
 The SCM_RIGHTS handoff itself is pinned in process (muxd/tests/manager.rs);
 what needs the real binaries is the part outside the daemon: a real
 client on a real pty, reconnecting on its own once daemon B (started with
