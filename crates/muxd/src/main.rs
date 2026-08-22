@@ -501,12 +501,9 @@ async fn main() -> Result<()> {
         let migrate = paths::migrate_socket();
         check_upgrade_sockets(&args.socket, &migrate, nix::unistd::getuid().as_raw())?;
         systemd::notify(&format!("MAINPID={}", std::process::id()));
-        migrate::adopt_from_predecessor(&manager).await;
+        migrate::adopt_from_predecessor(&manager, &args.socket).await;
     }
     let listener = server::bind(&args.socket).await?;
-    // Only the daemon that owns the socket publishes itself as the one a
-    // successor should ask for a handoff.
-    migrate::write_pidfile()?;
     migrate::spawn_handoff_task(manager.clone());
     systemd::notify("READY=1");
 

@@ -71,10 +71,9 @@ impl Policy {
     }
 }
 
-/// Take the control socket. Separate from [`serve`] so a daemon only
-/// publishes itself (the pidfile a successor signals, see `migrate.rs`)
-/// once it actually owns the socket. Fails when another daemon already
-/// owns it.
+/// Take the control socket. Owning it is what makes this daemon the one
+/// a successor asks for a handoff (see `migrate.rs`). Fails when another
+/// daemon already owns it.
 pub async fn bind(socket: &std::path::Path) -> Result<UnixListener> {
     // A live daemon on the socket wins; a stale file is replaced.
     if UnixStream::connect(socket).await.is_ok() {

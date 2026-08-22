@@ -11,7 +11,7 @@
 //! Sequence:
 //!
 //! 1. successor (`muxd --upgrade`) binds the migration socket (0600),
-//!    reads the pidfile, sends `SIGUSR1` to the predecessor;
+//!    asks the control socket who owns it, sends `SIGUSR1` to that pid;
 //! 2. predecessor snapshots every pty under its VT lock, connects, and
 //!    sends payload + fds - still holding those locks, so no read loop
 //!    can consume a byte that is not in the snapshot;
@@ -29,9 +29,12 @@
 //! Clients see the predecessor's EOF and reconnect (mux-attach), which
 //! reattaches by name and repaints from the migrated VT.
 //!
-//! The migration socket (`paths::migrate_socket`) takes an environment
-//! override and the pidfile (`paths::daemon_pid`) follows `HOME`, so a
-//! test daemon can never signal, or steal the ptys of, the user's.
+//! The predecessor is whoever holds the control socket, read from a
+//! connection's peer credentials: never a pidfile, which anything that
+//! ran a daemon under the same HOME could leave pointing at a dead or
+//! foreign pid. The migration socket (`paths::migrate_socket`) takes an
+//! environment override, so a test daemon can never steal the user's
+//! ptys.
 
 use std::io::{Read as _, Write as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
@@ -92,21 +95,37 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Payload cap on receive; a screen snapshot per pty is well under this.
 const MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
-/// Publish our pid so a successor knows who to ask for a handoff.
-pub fn write_pidfile() -> Result<()> {
-    let path = paths::daemon_pid();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    }
-    std::fs::write(&path, format!("{}\n", std::process::id()))
-        .with_context(|| format!("write {}", path.display()))?;
-    Ok(())
+/// The pid holding `control`: connect and read the peer's credentials.
+/// None when nothing answers, or when the owner is this process.
+pub fn socket_owner(control: &Path) -> Option<Pid> {
+    let stream = std::os::unix::net::UnixStream::connect(control).ok()?;
+    let pid = peer_pid(&stream)?;
+    (pid > 1 && pid != std::process::id().cast_signed()).then(|| Pid::from_raw(pid))
 }
 
-fn read_pidfile() -> Option<Pid> {
-    let text = std::fs::read_to_string(paths::daemon_pid()).ok()?;
-    let pid = text.trim().parse::<i32>().ok()?;
-    (pid > 1 && pid != std::process::id().cast_signed()).then(|| Pid::from_raw(pid))
+#[cfg(target_os = "macos")]
+fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<i32> {
+    const LOCAL_PEERPID: libc::c_int = 2;
+    let mut pid: libc::pid_t = 0;
+    let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::pid_t>()).ok()?;
+    // SAFETY: getsockopt writes at most `len` bytes into `pid`.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            LOCAL_PEERPID,
+            (&raw mut pid).cast(),
+            &raw mut len,
+        )
+    };
+    (rc == 0).then_some(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<i32> {
+    nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials)
+        .ok()
+        .map(|creds| creds.pid())
 }
 
 /// `kill(pid, 0)`: EPERM still means alive, ESRCH means gone. darwin has
@@ -117,46 +136,6 @@ pub fn alive(pid: Pid) -> bool {
         nix::sys::signal::kill(pid, None),
         Err(nix::errno::Errno::ESRCH)
     )
-}
-
-/// Is `pid` actually a daemon? A pidfile left by a crashed daemon can
-/// name a pid the OS has since recycled, and `SIGUSR1`'s default action
-/// is to kill: the handoff request must never reach a stranger.
-fn is_muxd(pid: Pid) -> bool {
-    let Some(path) = executable_of(pid) else {
-        return false;
-    };
-    let name = std::path::Path::new(&path)
-        .file_name()
-        .map(std::ffi::OsStr::to_os_string);
-    let ours = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(std::ffi::OsStr::to_os_string));
-    name.as_ref().is_some_and(|name| name == "muxd") || (name.is_some() && name == ours)
-}
-
-#[cfg(target_os = "macos")]
-fn executable_of(pid: Pid) -> Option<String> {
-    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
-    // SAFETY: buf is PROC_PIDPATHINFO_MAXSIZE bytes, as the call requires.
-    let len = unsafe {
-        libc::proc_pidpath(
-            pid.as_raw(),
-            buf.as_mut_ptr().cast(),
-            u32::try_from(buf.len()).ok()?,
-        )
-    };
-    if len <= 0 {
-        return None;
-    }
-    buf.truncate(usize::try_from(len).ok()?);
-    String::from_utf8(buf).ok()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn executable_of(pid: Pid) -> Option<String> {
-    let comm = std::fs::read_to_string(format!("/proc/{}/comm", pid.as_raw())).ok()?;
-    Some(comm.trim().to_string())
 }
 
 /// One pty as it arrives from the predecessor.
@@ -171,7 +150,7 @@ struct Adopted {
 ///
 /// No predecessor, or a predecessor that never answers, is not fatal: the
 /// new daemon simply starts with no ptys.
-pub async fn adopt_from_predecessor(manager: &Manager) {
+pub async fn adopt_from_predecessor(manager: &Manager, control: &Path) {
     let path = paths::migrate_socket();
     let listener = match bind_listener(&path) {
         Ok(listener) => listener,
@@ -181,8 +160,8 @@ pub async fn adopt_from_predecessor(manager: &Manager) {
         }
     };
 
-    let Some(pid) = read_pidfile().filter(|pid| alive(*pid) && is_muxd(*pid)) else {
-        tracing::info!("no live predecessor; starting empty");
+    let Some(pid) = socket_owner(control) else {
+        tracing::info!("no predecessor on the control socket; starting empty");
         let _ = std::fs::remove_file(&path);
         return;
     };
@@ -474,4 +453,27 @@ fn send_with_fds(
         .context("write payload")?;
     writer.flush().context("flush payload")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_owner_of_a_socket_is_who_bound_it() {
+        let path = std::env::temp_dir().join(format!("muxd-owner-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        let stream = std::os::unix::net::UnixStream::connect(&path).expect("connect");
+        let (_accepted, _) = listener.accept().expect("accept");
+        assert_eq!(peer_pid(&stream), Some(std::process::id().cast_signed()));
+        // Our own socket is not a predecessor.
+        assert_eq!(socket_owner(&path), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn nothing_listening_is_no_owner() {
+        assert_eq!(socket_owner(Path::new("/nonexistent/muxd.sock")), None);
+    }
 }
