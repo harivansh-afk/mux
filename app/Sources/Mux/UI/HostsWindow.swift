@@ -1,22 +1,8 @@
 import AppKit
 
-/// The hosts window (prefix t): the one surface for "where can a pane live".
-/// A content-sized bordered box listing `local`, the aliases from hosts.json
-/// with the address the daemon dials and a live probe status (a machine that
-/// is off reads differently from one that rejected our key), and the ix VMs
-/// the CLI reports. Enter splits right into the highlighted machine, H/J/K/L
-/// split in a direction, c opens a new session there, n creates a VM, y
-/// copies this client's identity digest - the thing the user pastes into a
-/// host's authorized list.
-///
-/// `t` swaps the list for the ix templates a new VM is built from; enter
-/// there persists the default and comes back. All queries fire on open and
-/// fill in as they answer, so the box is usable immediately. Sizing is
-/// sticky so late answers don't walk the edges around: pending statuses
-/// reserve the width of a typical resolved one, the box only grows within
-/// one open, and each open starts from the last open's final size (a
-/// shrunken fleet corrects itself on the next open). PrefixEngine owns the
-/// keys; the window never takes focus.
+/// The hosts window (prefix t): lists `local`, the hosts.json aliases with
+/// their live probe status, and the ix VMs. `t` swaps the list for the ix
+/// templates a new VM is built from. PrefixEngine owns the keys.
 final class HostsWindowView: NSView {
     /// A host's live state as it reads on screen.
     private enum Status {
@@ -93,25 +79,12 @@ final class HostsWindowView: NSView {
     private var digest: String?
     private var copied = false
 
-    /// Bumped on every open, so answers to a previous open cannot land in
-    /// the current lists.
     private var generation = 0
-
-    /// Bumped on every entry into the template list, so a slow listing
-    /// cannot append to a list that has since been rebuilt. Separate from
-    /// `generation` because entering the submode must not discard the host
-    /// probes still in flight behind it.
     private var templateGeneration = 0
 
-    /// Called when late rows or a resolved status change the content size,
-    /// so the controller can re-center the box.
     var onContentChange: (() -> Void)?
 
-    /// The largest size this open has needed: the box never shrinks while
-    /// it is up.
     private var grownSize = NSSize.zero
-    /// The previous open's final size, used as this open's floor: the fleet
-    /// is stable, so the box usually appears at full size and stays put.
     private var carriedSize = NSSize.zero
 
     private var rows: [Row] {
@@ -278,8 +251,6 @@ final class HostsWindowView: NSView {
     /// Enter in the template list: persist the highlighted target as the
     /// default for new VMs and return to the machines.
     func commitTemplate() {
-        // Always return to the machines, even with nothing highlighted: the
-        // caller has already put the machine list's mode bar back up.
         if let value = selectedTemplate {
             IXConfig.setTemplate(value)
         }
@@ -398,8 +369,6 @@ final class HostsWindowView: NSView {
         index = current.firstIndex(where: \.selectable) ?? 0
     }
 
-    /// One path for every mutation: rebuild the row labels, recolor, and
-    /// let the controller re-center what may have changed size.
     private func refresh() {
         let current = rows
         for label in mainLabels + metaLabels {
