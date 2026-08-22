@@ -48,6 +48,55 @@ enum Subprocess {
         return killed ? nil : String(data: data, encoding: .utf8)
     }
 
+    /// A helper that keeps talking: `muxd watch` prints one JSON object
+    /// per change for as long as the daemon lives. Every complete stdout
+    /// line reaches `onLine` on the main thread; `onExit` follows the last
+    /// one, at end of stream, and `terminate` ends it early. nil when the
+    /// process could not be launched.
+    final class Stream {
+        // astlog-ignore: no-raw-process
+        private let process = Process()
+        private var pending = Data()
+
+        init?(
+            _ path: String, _ arguments: [String],
+            onLine: @escaping (Substring) -> Void, onExit: @escaping () -> Void
+        ) {
+            process.executableURL = URL(fileURLWithPath: path)
+            process.arguments = arguments
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            // The handler runs on the pipe's own queue; `pending` is only
+            // ever touched there. EOF is the end: it comes after every
+            // line, which a termination handler would not promise.
+            pipe.fileHandleForReading.readabilityHandler = { [self] handle in
+                let data = handle.availableData
+                guard !data.isEmpty else {
+                    handle.readabilityHandler = nil
+                    DispatchQueue.main.async(execute: onExit)
+                    return
+                }
+                pending.append(data)
+                while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
+                    let line = String(bytes: pending[..<newline], encoding: .utf8) ?? ""
+                    pending.removeSubrange(...newline)
+                    DispatchQueue.main.async { onLine(line[...]) }
+                }
+            }
+            guard (try? process.run()) != nil else {
+                pipe.fileHandleForReading.readabilityHandler = nil
+                return nil
+            }
+        }
+
+        func terminate() {
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+    }
+
     private static func watchdog(_ process: Process, after: TimeInterval) -> DispatchWorkItem {
         let item = DispatchWorkItem { [weak process] in
             guard let process, process.isRunning else { return }

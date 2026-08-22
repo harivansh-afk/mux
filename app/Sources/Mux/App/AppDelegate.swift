@@ -130,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppLog.log("terminating (\(reason))")
         saveSnapshot()
         isTerminating = true
+        controller?.stopWatches()
         CrashMarker.disarm()
         AppLog.drain()
     }

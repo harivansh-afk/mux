@@ -26,6 +26,13 @@ final class PaneView: NSView {
         attach.target
     }
 
+    /// The daemon the pane's pty is on, as the watch and the listings key
+    /// it: a host alias, or nil for local - which an ix pane is too, its
+    /// pty runs `ix shell` here.
+    var daemon: String? {
+        IX.vm(of: target) == nil ? target : nil
+    }
+
     /// The scroll view wrapping this pane (owned by the window's pane
     /// container; created in attach). Session lays out the host, and the
     /// host keeps the pane filling its visible rect.
@@ -44,6 +51,11 @@ final class PaneView: NSView {
     /// default word that reads like data.
     var title: String = ""
     var pwd: String?
+
+    /// The coding agent the daemon sees in this pty, or nil. Seeded from
+    /// `muxd ls` and kept live by the daemon watch; the app never reads
+    /// it out of the title itself.
+    var agent: Muxd.AgentInfo?
 
     /// The pane's directory the way its prompt would print it: the full
     /// path with the home prefix folded to `~`. Remote paths fold their
