@@ -140,6 +140,51 @@ impl Manager {
         infos
     }
 
+    /// The single insertion path. One guard across lookup, capacity
+    /// check and insert: two racing installs of the same name must not
+    /// both land (the loser would be evicted from the map and leak a
+    /// process that kill can no longer reach), nor push the map past the
+    /// cap.
+    ///
+    /// # Errors
+    ///
+    /// The name is taken or the pty limit is reached.
+    fn install(
+        &self,
+        name: &str,
+        command: Vec<String>,
+        terminal: ghostty_vt::Terminal,
+        master: tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>,
+        child: nix::unistd::Pid,
+        adopted: bool,
+    ) -> Result<Arc<PtySession>> {
+        let mut ptys = self.ptys.lock();
+        if ptys.contains_key(name) {
+            bail!("pty {name} already exists");
+        }
+        if ptys.len() >= MAX_PTYS {
+            bail!("pty limit reached ({MAX_PTYS})");
+        }
+        let session = Arc::new(PtySession {
+            name: name.to_string(),
+            command,
+            terminal: Mutex::new(terminal),
+            client: Mutex::new(None),
+            master,
+            child,
+            adopted,
+            exited: AtomicBool::new(false),
+            exit_code: AtomicI32::new(0),
+        });
+        ptys.insert(name.to_string(), session.clone());
+        drop(ptys);
+
+        tokio::spawn(read_loop(self.clone(), session.clone()));
+
+        tracing::info!(name, adopted, command = ?session.command, "pty installed");
+        Ok(session)
+    }
+
     /// Attach-or-create: the pane id is the pty name, so restore is one
     /// round trip and needs no id handoff. Fails once `MAX_PTYS` ptys
     /// are already open.
@@ -152,18 +197,9 @@ impl Manager {
         cols: u16,
         rows: u16,
     ) -> Result<(Arc<PtySession>, bool)> {
-        // One guard across lookup, capacity check, and insert: two
-        // racing opens for the same name must not each spawn a shell
-        // (the loser would be evicted from the map and leak a process
-        // that kill can no longer reach), nor push the map past the cap.
-        let mut ptys = self.ptys.lock();
-        if let Some(existing) = ptys.get(name) {
-            return Ok((existing.clone(), false));
+        if let Some(existing) = self.get(name) {
+            return Ok((existing, false));
         }
-        if ptys.len() >= MAX_PTYS {
-            bail!("pty limit reached ({MAX_PTYS})");
-        }
-
         let pty = pty::spawn(&pty::Spawn {
             command,
             cwd,
@@ -173,23 +209,14 @@ impl Manager {
         })
         .context("spawn pty")?;
         let terminal = ghostty_vt::Terminal::new(rows, cols).context("terminal alloc")?;
-        let session = Arc::new(PtySession {
-            name: name.to_string(),
-            command: command.to_vec(),
-            terminal: Mutex::new(terminal),
-            client: Mutex::new(None),
-            master: pty.master,
-            child: pty.child,
-            adopted: false,
-            exited: AtomicBool::new(false),
-            exit_code: AtomicI32::new(0),
-        });
-        ptys.insert(name.to_string(), session.clone());
-        drop(ptys);
-
-        tokio::spawn(read_loop(self.clone(), session.clone()));
-
-        tracing::info!(name, ?command, "pty created");
+        let session = self.install(
+            name,
+            command.to_vec(),
+            terminal,
+            pty.master,
+            pty.child,
+            false,
+        )?;
         Ok((session, true))
     }
 
@@ -201,29 +228,18 @@ impl Manager {
         pty: crate::migrate::MigratePty,
         master: std::os::fd::OwnedFd,
     ) -> Result<()> {
-        if self.get(&pty.name).is_some() {
-            bail!("pty {} already exists", pty.name);
-        }
         crate::pty::set_nonblocking(&master).context("nonblocking master")?;
         let mut terminal =
             ghostty_vt::Terminal::new(pty.rows, pty.cols).context("terminal alloc")?;
         terminal.feed(&pty.screen);
-        let session = Arc::new(PtySession {
-            name: pty.name.clone(),
-            command: pty.command,
-            terminal: Mutex::new(terminal),
-            client: Mutex::new(None),
-            master: tokio::io::unix::AsyncFd::new(master).context("AsyncFd")?,
-            child: nix::unistd::Pid::from_raw(pty.child_pid),
-            adopted: true,
-            exited: AtomicBool::new(false),
-            exit_code: AtomicI32::new(0),
-        });
-        self.ptys.lock().insert(pty.name.clone(), session.clone());
-
-        tokio::spawn(read_loop(self.clone(), session));
-
-        tracing::info!(name = pty.name, pid = pty.child_pid, "pty adopted");
+        self.install(
+            &pty.name,
+            pty.command,
+            terminal,
+            tokio::io::unix::AsyncFd::new(master).context("AsyncFd")?,
+            nix::unistd::Pid::from_raw(pty.child_pid),
+            true,
+        )?;
         Ok(())
     }
 
@@ -252,17 +268,6 @@ impl Manager {
     }
 }
 
-/// Outcome of one readiness turn of the read loop.
-enum Step {
-    /// `n` bytes were fed to the VT, and who to forward them to: the
-    /// client's id travels with its sender so a disconnect decided on
-    /// this chunk cannot land on a client that attached meanwhile.
-    Fed(usize, Option<(ClientId, mpsc::Sender<ClientMsg>)>),
-    Retry,
-    Eof,
-    Failed(std::io::Error),
-}
-
 /// PTY -> terminal + attached client. One task per pty for its lifetime;
 /// when the PTY EOFs it reaps the child and propagates the exit, so the
 /// client always sees all output BEFORE the exit event.
@@ -277,44 +282,41 @@ async fn read_loop(manager: Manager, session: Arc<PtySession>) {
         // including the read is what makes a self-upgrade lossless: the
         // handoff snapshots every VT while holding these locks, so no
         // byte can leave the pty for a VT that is about to be discarded.
-        let step = {
+        // The client's id travels with its sender, so a disconnect
+        // decided on this chunk cannot land on a client that attached
+        // meanwhile.
+        let fed = {
             let mut term = session.terminal.lock();
             let read = guard.try_io(|fd| {
                 nix::unistd::read(std::os::fd::AsRawFd::as_raw_fd(fd.get_ref()), &mut buf)
                     .map_err(|e| std::io::Error::from_raw_os_error(e as i32))
             });
             match read {
-                Ok(Ok(0)) => Step::Eof, // child side gone
+                Ok(Ok(0)) => break, // child side gone
                 Ok(Ok(n)) => {
                     term.feed(&buf[..n]);
                     let client = session.client.lock();
-                    Step::Fed(n, client.as_ref().map(|c| (c.id, c.tx.clone())))
+                    client.as_ref().map(|c| (n, c.id, c.tx.clone()))
                 }
                 // EIO on darwin/linux when the child exits: treat as EOF.
-                Ok(Err(e)) if e.raw_os_error() == Some(libc::EIO) => Step::Eof,
-                Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => Step::Retry,
-                Ok(Err(e)) => Step::Failed(e),
-                Err(_would_block) => Step::Retry,
+                Ok(Err(e)) if e.raw_os_error() == Some(libc::EIO) => break,
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => None,
+                Ok(Err(e)) => {
+                    tracing::warn!(name = %session.name, error = %e, "pty read failed");
+                    break;
+                }
+                Err(_would_block) => None,
             }
         };
-        match step {
-            Step::Fed(n, Some((id, tx))) => {
-                let send =
-                    tx.send_timeout(ClientMsg::Output(buf[..n].to_vec()), CLIENT_SEND_TIMEOUT);
-                if send.await.is_err() {
-                    // Slow or gone: disconnect, never drop bytes silently.
-                    // By id: the timeout took 100ms, which is long enough
-                    // for another client to have stolen the slot.
-                    tracing::warn!(name = %session.name, "client too slow; detaching");
-                    session.detach(id);
-                }
-            }
-            Step::Fed(_, None) | Step::Retry => {}
-            Step::Eof => break,
-            Step::Failed(e) => {
-                tracing::warn!(name = %session.name, error = %e, "pty read failed");
-                break;
-            }
+        let Some((n, id, tx)) = fed else { continue };
+
+        let send = tx.send_timeout(ClientMsg::Output(buf[..n].to_vec()), CLIENT_SEND_TIMEOUT);
+        if send.await.is_err() {
+            // Slow or gone: disconnect, never drop bytes silently.
+            // By id: the timeout took 100ms, which is long enough for
+            // another client to have stolen the slot.
+            tracing::warn!(name = %session.name, "client too slow; detaching");
+            session.detach(id);
         }
     }
     reap(manager, session).await;

@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use mux_proto::frame::{self, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
 use mux_proto::peer::{self, OpenMode, OpenReply, OpenRequest, Opened};
+use muxd::migrate::MigratePty;
 use muxd::manager::{ClientMsg, Manager, PtySession};
 use tokio::io::AsyncReadExt as _;
 use tokio::net::UnixStream;
@@ -105,6 +106,49 @@ async fn a_wedged_client_cannot_hold_the_pty_name_hostage() {
     )
     .await;
     drop(attached);
+}
+
+/// The contract `Manager::install` enforces under one guard, and the
+/// reason it exists: `adopt` used to check the name with `get` and then
+/// insert under a separate lock, so a concurrent open of the same name
+/// replaced the map entry instead of being refused. The orphaned session
+/// keeps its read loop and its client, and nothing can reach it to kill
+/// it. `adopt` also skipped `MAX_PTYS` entirely.
+#[tokio::test]
+async fn adopting_a_taken_name_is_refused_and_the_original_keeps_its_client() {
+    let manager = Manager::default();
+    let session = open_cat(&manager, "taken");
+    let mut attached = muxd::manager::attach(&session, 80, 24);
+
+    // Stands in for a predecessor's inherited master: adopt must reject
+    // it on the name alone, before the fd matters.
+    let spare = nix::pty::openpty(None, None).expect("spare pty");
+    let _slave = spare.slave;
+    let inherited = MigratePty {
+        name: "taken".to_string(),
+        command: vec!["/bin/cat".to_string()],
+        child_pid: nix::unistd::getpid().as_raw(),
+        cols: 80,
+        rows: 24,
+        screen: Vec::new(),
+    };
+    assert!(
+        manager.adopt(inherited, spare.master).is_err(),
+        "a taken name is refused, not overwritten"
+    );
+
+    let still_here = manager.get("taken").expect("the original is still listed");
+    assert!(Arc::ptr_eq(&still_here, &session), "and it is the same pty");
+    assert!(
+        still_here.client.lock().is_some(),
+        "the original keeps its client"
+    );
+
+    // Still the live one: bytes go through the pty the client is on.
+    write_pty(&session, b"survivor\n").await;
+    recv_output_until(&mut attached.rx, b"survivor").await;
+
+    assert!(manager.kill("taken"));
 }
 
 // ----------------------------------------------------------------- server
