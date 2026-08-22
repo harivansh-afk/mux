@@ -1,3 +1,4 @@
+import Agents
 import AppKit
 import GhosttyKit
 import UserNotifications
@@ -42,7 +43,10 @@ final class PaneView: NSView {
     /// replays screen contents, not title escapes, so a restored pane
     /// starts empty and chrome falls back to host/directory - never a
     /// default word that reads like data.
-    var title: String = ""
+    var title: String = "" {
+        didSet { agent = agentTracker.observe(title) }
+    }
+
     var pwd: String?
 
     /// The pane's directory the way its prompt would print it: the full
@@ -62,48 +66,20 @@ final class PaneView: NSView {
         return dir
     }
 
-    /// What a coding agent in the pane says it is doing, read from the
-    /// leading glyph exactly as the title rules define it: a spinner
-    /// (braille or half-circle) followed by a space is working, U+2733
-    /// followed by a space is idle. Anything else announces nothing.
-    enum AgentState {
-        case working
-        case idle
-
-        /// The glyph ranges, written once: a braille spinner (claude
-        /// <= 2.1.227) or a half-circle spinner is working, U+2733 is idle.
-        init?(glyph: Unicode.Scalar) {
-            switch glyph.value {
-            case 0x2800 ... 0x28FF, 0x25D0 ... 0x25D3: self = .working
-            case 0x2733: self = .idle
-            default: return nil
-            }
-        }
-    }
-
-    /// The one place the leading glyph is read: what it announces, and the
-    /// title with it taken off.
-    private var parsedTitle: (state: AgentState?, rest: String) {
-        let trimmed = title.trimmingCharacters(in: .whitespaces)
-        let scalars = trimmed.unicodeScalars
-        guard let first = scalars.first, let state = AgentState(glyph: first) else {
-            return (nil, trimmed)
-        }
-        let rest = String(scalars.dropFirst()).trimmingCharacters(in: .whitespaces)
-        // Only a glyph followed by a space announces state. The space is
-        // looked for in the raw title, which is where the agent wrote it.
-        let announced = title.unicodeScalars.dropFirst().first == " "
-        return (announced ? state : nil, rest)
-    }
+    /// The agent reading of the current title, kept by one tracker per
+    /// pane so codex's bare idle title still names codex. Parsed here,
+    /// rendered only by CanvasOverlayView.stateGlyph.
+    private var agentTracker = AgentTracker()
+    private(set) var agent = AgentReading.none
 
     var agentState: AgentState? {
-        parsedTitle.state
+        agent.state
     }
 
-    /// The title as chrome shows it (canvas cards, the stage), with the
-    /// state glyph dropped.
+    /// The title as chrome shows it (the stage): the agent's topic, with
+    /// the state glyph dropped. Empty for anything that is not an agent.
     var displayTitle: String {
-        parsedTitle.rest
+        agent.topic
     }
 
     /// Points added to the config font size via cmd+= / cmd+- (font
