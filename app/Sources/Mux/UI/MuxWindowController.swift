@@ -52,7 +52,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     /// Bare per-pane labels while the prefix is armed (managed by
     /// MuxWindowController+Overlays.swift).
-    var paneLabels: [PaneLabelView] = []
+    var paneTags: [PaneTagView] = []
 
     /// The scroll host wearing the resize-mode outline (managed by
     /// MuxWindowController+Overlays.swift). Non-nil only while resize
@@ -374,8 +374,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         if hostsWindow.superview != nil {
             positionHostsWindow()
         }
-        if !paneLabels.isEmpty {
-            positionPaneLabels()
+        if !paneTags.isEmpty {
+            positionPaneTags()
         }
 
         // The workspace never moves for the canvas: the picker floats

@@ -388,51 +388,49 @@ extension MuxWindowController {
         resizeOutlineHost = nil
     }
 
-    // MARK: - Pane labels (prefix)
+    // MARK: - Pane tags (prefix)
 
-    /// Bare per-pane labels while the prefix is armed: every visible
-    /// pane of the active session names itself (title · host · dir).
-    /// Text only - no boxes, no borders, nothing persistent grows on
-    /// the panes.
-    func showPaneLabels() {
-        hidePaneLabels()
+    /// While the prefix is armed, every visible pane of the active
+    /// session wears its host in a corner tag.
+    func showPaneTags() {
+        hidePaneTags()
         guard let session = activeSession else { return }
         for id in session.tree?.leaves ?? [] {
             guard let pane = session.panes[id] else { continue }
             if let zoomed = session.zoomedID, zoomed != id {
                 continue
             }
-            let label = PaneLabelView(pane: pane)
-            container.addSubview(label)
-            paneLabels.append(label)
+            let tag = PaneTagView(pane: pane)
+            container.addSubview(tag)
+            paneTags.append(tag)
         }
-        positionPaneLabels()
+        positionPaneTags()
     }
 
-    func hidePaneLabels() {
-        for label in paneLabels {
-            label.removeFromSuperview()
+    func hidePaneTags() {
+        for tag in paneTags {
+            tag.removeFromSuperview()
         }
-        paneLabels.removeAll()
+        paneTags.removeAll()
     }
 
     /// Flush with each pane's top-right corner, mirroring the bottom
-    /// bars on their window corners; wide labels truncate rather than
+    /// bars on their window corners; wide tags truncate rather than
     /// cross a divider.
-    func positionPaneLabels() {
-        for label in paneLabels {
-            guard let frame = label.paneFrame else {
-                label.isHidden = true
+    func positionPaneTags() {
+        for tag in paneTags {
+            guard let frame = tag.paneFrame else {
+                tag.isHidden = true
                 continue
             }
-            label.isHidden = false
-            label.fit()
-            let width = min(label.frame.width, frame.width)
-            label.frame = NSRect(
+            tag.isHidden = false
+            tag.fit()
+            let width = min(tag.frame.width, frame.width)
+            tag.frame = NSRect(
                 x: frame.maxX - width,
                 y: frame.minY,
                 width: width,
-                height: label.frame.height
+                height: tag.frame.height
             )
         }
     }
