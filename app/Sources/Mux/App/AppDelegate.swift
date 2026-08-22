@@ -6,6 +6,7 @@ import UserNotifications
 /// the only place the cast belongs.
 enum App {
     static var delegate: AppDelegate {
+        // astlog-ignore: no-delegate-cast
         NSApp.delegate as! AppDelegate
     }
 }
