@@ -107,21 +107,41 @@ in {
       after = ["network-online.target"];
       wants = ["network-online.target"];
 
-      serviceConfig = {
-        # muxd reads and writes cert.pem, key.pem, and token under
-        # $HOME/.local/state/muxd. A client pins SHA-256 of cert.pem's DER
-        # on first contact, so nothing here has to publish it.
-        # HOME is the user's real home: pane shells load their dotfiles,
-        # and the token sits where the user can read it without sudo.
-        ExecStart = lib.concatStringsSep " " ([
-            (lib.getExe cfg.package)
+      # A new package or a changed flag reloads the unit instead of
+      # restarting it: ExecReload starts the new binary as a successor,
+      # which adopts every pty over the handoff (migrate.rs), and the old
+      # daemon exits once it has handed over. No shell on the host
+      # notices. A restart would SIGTERM the daemon and hang up every
+      # pane; `systemctl restart muxd` still does exactly that, on purpose.
+      reloadIfChanged = true;
+
+      serviceConfig = let
+        flags =
+          [
             "--listen-quic"
             cfg.listen
           ]
           ++ lib.optionals (cfg.authorizedTokenDigests != []) [
             "--authorized-tokens"
             "${authorizedTokens}"
-          ]);
+          ];
+      in {
+        # muxd reads and writes cert.pem, key.pem, and token under
+        # $HOME/.local/state/muxd. A client pins SHA-256 of cert.pem's DER
+        # on first contact, so nothing here has to publish it.
+        # HOME is the user's real home: pane shells load their dotfiles,
+        # and the token sits where the user can read it without sudo.
+        ExecStart = lib.concatStringsSep " " ([(lib.getExe cfg.package)] ++ flags);
+        # The successor runs with the same flags; `muxd upgrade` passes
+        # everything after `--` through to it and waits for it to answer.
+        ExecReload = lib.concatStringsSep " " ([(lib.getExe cfg.package) "upgrade" "--"] ++ flags);
+        # muxd sends READY=1 once its socket is bound, and a successor
+        # sends MAINPID= before it asks for the handoff, so the
+        # predecessor's exit is a main process replaced, not a service
+        # stopped. NotifyAccess=all lets the successor (a grandchild of
+        # ExecReload) be the one to say it.
+        Type = "notify";
+        NotifyAccess = "all";
         User = cfg.user;
         Environment = "HOME=${cfg.home}";
         # A pty master plus a client connection per pane, against a
