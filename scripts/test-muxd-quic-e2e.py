@@ -5,9 +5,11 @@ uncommon port, never the default per-uid socket. The listener's
 authentication and TOFU pinning are pinned in process (muxd/tests/quic.rs,
 broker.rs's own tests); what needs a real process pair is the end-to-end
 broker dial through a second daemon: a pane reaches a pty on a genuinely
-separate remote daemon by digest alone, a stale pin is refused
-(`pin-mismatch`), and a wrong bearer token is refused (`token-rejected`) -
-both classified by `muxd probe`.
+separate remote daemon by digest alone, the pty is the remote daemon's
+and not the local one's, a killed client reattaches through the broker
+and gets its screen replayed over QUIC, `muxd probe` reports the host
+healthy in one line, a stale pin is refused (`pin-mismatch`), and a wrong
+bearer token is refused (`token-rejected`) - both classified by probe.
 """
 import json
 import os
@@ -15,13 +17,17 @@ import shutil
 import sys
 import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from muxd_harness import Daemon, Pty, fail, find_binaries, log, run, sandbox_env
+from muxd_harness import Daemon, Pty, fail, find_binaries, list_ptys, log, run, sandbox_env
 TAG = "quic"
 QUIC_ADDR = "127.0.0.1:14433"
 MARKER = b"RMARKER-42"
 
 def probe(muxd_bin, env, alias):
-    return json.loads(run([muxd_bin, "probe", alias], env, check=False).stdout)
+    """One JSON line, the health check Mux.app runs per host."""
+    done = run([muxd_bin, "probe", alias], env, check=False)
+    if len(done.stdout.splitlines()) != 1:
+        fail(f"probe printed {done.stdout!r}, expected one line")
+    return done.returncode, json.loads(done.stdout)
 
 def main():
     binaries = find_binaries()
@@ -62,7 +68,7 @@ def main():
             client.expect(b"host key changed for testbox", 20, "the pin-mismatch rejection")
             client.kill()
             client.close()
-            if probe(muxd_bin, env_local, "testbox").get("class") != "pin-mismatch":
+            if probe(muxd_bin, env_local, "testbox")[1].get("class") != "pin-mismatch":
                 fail("probe did not classify the stale pin as pin-mismatch")
             log(TAG, "stale pin rejected, and probe classifies it pin-mismatch")
             os.remove(known_hosts)
@@ -71,9 +77,29 @@ def main():
             client.drain(2.0)
             client.send(b"echo RMARKER-$((40+2))\n")
             client.expect(MARKER, 20, "the marker via the broker")
+            log(TAG, "enrolled by digest alone, pane reached the remote daemon on first contact")
+            names_remote = [p["name"] for p in list_ptys(muxd_bin, env_remote)]
+            names_local = [p["name"] for p in list_ptys(muxd_bin, env_local)]
+            if "remote-pane-1" not in names_remote or "remote-pane-1" in names_local:
+                fail(f"pty not owned by the remote daemon alone: remote={names_remote} local={names_local}")
+            log(TAG, "pty owned by the remote daemon, absent from the local one")
             client.kill()
             client.close()
-            log(TAG, "enrolled by digest alone, pane reached the remote daemon on first contact")
+            client = Pty([mux_attach_bin, "testbox:remote-pane-1"], env_local)
+            client.expect(MARKER, 20, "the replay through the broker")
+            client.kill()
+            client.close()
+            log(TAG, "killed client reattached through the broker; screen replayed over QUIC")
+            code, ok = probe(muxd_bin, env_local, "testbox")
+            # Loopback answers in well under a second.
+            if code != 0 or ok.get("alias") != "testbox" or ok.get("ok") is not True:
+                fail(f"probe did not report the host ok: {ok}")
+            if ok.get("ptys", 0) < 1 or not 0 <= ok.get("rtt_ms", -1) < 1000:
+                fail(f"probe shape off: {ok}")
+            code, missing = probe(muxd_bin, env_local, "ghost")
+            if code != 1 or missing.get("class") != "no-host":
+                fail(f"probe did not classify an unknown alias as no-host: {missing}")
+            log(TAG, f"probe reports ok in {ok['rtt_ms']}ms, and no-host for an unknown alias")
             log(TAG, "a wrong bearer token is rejected")
             tok_dir = os.path.join(local_home, ".local/state/mux/tokens")
             os.makedirs(tok_dir, exist_ok=True)
@@ -83,7 +109,7 @@ def main():
             client.expect(b"authentication failed", 20, "the rejection to reach the pane")
             client.kill()
             client.close()
-            if probe(muxd_bin, env_local, "testbox").get("class") != "token-rejected":
+            if probe(muxd_bin, env_local, "testbox")[1].get("class") != "token-rejected":
                 fail("probe did not classify the wrong token as token-rejected")
             log(TAG, "wrong token rejected, and probe classifies it token-rejected")
     except AssertionError as error:
