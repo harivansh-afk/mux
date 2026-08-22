@@ -217,6 +217,23 @@ extension MuxWindowController {
         }
     }
 
+    /// The canvas takes clicks (a card, the stage, the scrim), and each
+    /// of them ends the mode through the engine that owns the keys.
+    /// Wired once, at init: the overlay outlives every open.
+    func wireCanvasCallbacks() {
+        canvasOverlay.onSelectionChange = { [weak self] entry in
+            self?.canvasSessionHighlight = entry?.sessionIndex
+            self?.updateSessionIndicator()
+        }
+        canvasOverlay.onJump = { [weak self] entry in
+            self?.commitCanvas(entry)
+            (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
+        }
+        canvasOverlay.onCancel = {
+            (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
+        }
+    }
+
     /// prefix f: the pane picker floating over the dimmed workspace -
     /// the wheel of pane cards on the right, the selected pane
     /// previewed live at its true aspect on the left. Rebuilt from the
@@ -226,25 +243,10 @@ extension MuxWindowController {
     /// hide restores the normal rule.
     func showCanvasOverlay() {
         refreshPaneDirectories()
-        // Wired before reload: reload fires the first selection, and the
-        // indicator should track it from the first frame.
-        canvasOverlay.onSelectionChange = { [weak self] entry in
-            self?.canvasSessionHighlight = entry?.sessionIndex
-            self?.updateSessionIndicator()
-        }
         canvasOverlay.reload(entries: canvasEntries(), selected: focusedPane?.id)
-        canvasOverlay.onJump = { [weak self] entry in
-            self?.commitCanvas(entry)
-            (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
-        }
-        canvasOverlay.onCancel = {
-            (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
-        }
         if canvasOverlay.superview == nil {
             canvasOverlay.layer?.opacity = 0
             container.addSubview(canvasOverlay)
-            positionCanvasOverlay()
-            canvasOverlay.layoutSubtreeIfNeeded()
         }
         // The floating badges stay above the overlay; layoutPanes
         // re-lifts the session indicator, the mode bar needs it here.
@@ -257,8 +259,11 @@ extension MuxWindowController {
         // stands down; the fade retargets from wherever it is.
         canvasClosing = false
         canvasOpen = true
-        applyCanvasOcclusion()
+        // One pass positions the overlay and un-occludes every pane.
         layoutPanes()
+        // The mirrors carry the first frame of the fade, so lay them out
+        // before it starts.
+        canvasOverlay.layoutSubtreeIfNeeded()
         fadeCanvas(to: 1)
     }
 
@@ -302,15 +307,9 @@ extension MuxWindowController {
         let session = sessions[entry.sessionIndex]
         guard let pane = session.panes[entry.paneID] else { return }
         guard canvasOverlay.superview != nil, !canvasClosing else { return }
-        canvasClosing = true
-        canvasOpen = false
-        canvasSessionHighlight = nil
         selectSession(entry.sessionIndex)
-        updateSessionIndicator()
         session.reveal(pane)
-        layoutPanes()
-        fadeCanvas(to: 0)
-        scheduleCanvasTeardown()
+        hideCanvasOverlay()
     }
 
     /// The overlay covers the whole container; its own layout puts the
