@@ -104,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return host
         }
         if command.count == 3, command[1] == "shell",
-           command[0] == IX.binary || command[0].hasSuffix("/ix") || command[0] == "ix"
+           command[0].hasSuffix("/ix") || command[0] == "ix"
         {
             return "ix:\(command[2])"
         }
@@ -238,7 +238,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About mux", action: nil, keyEquivalent: "")
+        appMenu.addItem(
+            withTitle: "About mux",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            keyEquivalent: ""
+        )
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide mux", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
