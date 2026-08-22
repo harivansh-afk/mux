@@ -6,6 +6,7 @@
 //! bidirectional stream run the identical protocol, and differ only in
 //! the [`Policy`] that decides who is let in.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -19,7 +20,7 @@ use mux_proto::peer::{
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::manager::{self, ClientMsg, Manager};
+use crate::manager::{self, ClientMsg, Manager, PtySession};
 use crate::{broker, pty, tls};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -202,6 +203,13 @@ where
     handle_open(manager, request, reader, writer).await
 }
 
+/// The directory a new pty starts in: the explicit `cwd`, else the live
+/// working directory of `cwd_from` (a split's source pane), resolved here
+/// where that process lives.
+fn inherited_cwd(manager: &Manager, cwd: Option<String>, cwd_from: Option<&str>) -> Option<String> {
+    cwd.or_else(|| manager.get(cwd_from?)?.current_cwd())
+}
+
 /// The attach-or-create arm: reply + replay, then pump both directions.
 async fn handle_open<R, W>(
     manager: Manager,
@@ -229,10 +237,7 @@ where
     else {
         bail!("handle_open on a request that is not an open");
     };
-    // Inherit the source pane's directory when no explicit cwd came
-    // along: resolved here, where the source process lives.
-    let cwd = cwd.or_else(|| manager.get(cwd_from.as_deref()?)?.current_cwd());
-
+    let cwd = inherited_cwd(&manager, cwd, cwd_from.as_deref());
     let opened = manager.open(&name, &command, cwd.as_deref(), term.as_deref(), cols, rows);
     let (session, created) = match opened {
         Ok(v) => v,
@@ -305,19 +310,7 @@ where
                 }
                 IN_LANE_CONTROL => match peer::decode::<ClientControl>(&payload) {
                     Ok(ClientControl::Resize { cols, rows }) => {
-                        let redump = {
-                            let mut term = session_in.terminal.lock();
-                            term.resize(rows, cols);
-                            (!live_output.load(std::sync::atomic::Ordering::Relaxed))
-                                .then(|| term.render_screen_bytes())
-                        };
-                        let _ = pty::resize(&session_in.master, cols, rows);
-                        if let Some(dump) = redump {
-                            let tx = session_in.client.lock().as_ref().map(|c| c.tx.clone());
-                            if let Some(tx) = tx {
-                                let _ = tx.send(ClientMsg::Output(dump)).await;
-                            }
-                        }
+                        resize(&session_in, cols, rows, live_output).await;
                     }
                     Err(e) => tracing::warn!(error = %e, "bad control frame"),
                 },
@@ -336,6 +329,31 @@ where
     session.detach(client_id);
     tracing::info!(name = %session.name, client = client_id.raw(), "detached");
     Ok(())
+}
+
+/// A client resize: the VT and the pty follow. Until the first byte of
+/// live output, the replay is re-rendered and re-sent at the new size
+/// (the handshake size can be provisional); after it, a re-dump would
+/// clear real screen state, so only the sizes change.
+async fn resize(
+    session: &Arc<PtySession>,
+    cols: u16,
+    rows: u16,
+    live_output: &std::sync::atomic::AtomicBool,
+) {
+    let redump = {
+        let mut term = session.terminal.lock();
+        term.resize(rows, cols);
+        (!live_output.load(std::sync::atomic::Ordering::Relaxed))
+            .then(|| term.render_screen_bytes())
+    };
+    let _ = pty::resize(&session.master, cols, rows);
+    if let Some(dump) = redump {
+        let tx = session.client.lock().as_ref().map(|c| c.tx.clone());
+        if let Some(tx) = tx {
+            let _ = tx.send(ClientMsg::Output(dump)).await;
+        }
+    }
 }
 
 /// The one-shot handshake answer on the opened lane.
