@@ -14,15 +14,6 @@ final class PaneContainerView: NSView {
     }
 }
 
-/// The slab every pane lives on. The canvas slides this one view, so
-/// the push is a single animated property instead of many pane frames
-/// racing each other.
-final class WorkspaceView: NSView {
-    override var isFlipped: Bool {
-        true
-    }
-}
-
 /// One window = window chrome (borderless NSWindow, mode bar, keybinds
 /// overlay, target picker, theming) plus an ordered list of sessions.
 /// Tiling state and pane lifecycle live in Session; the controller routes
@@ -37,7 +28,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// Internal (not private): the overlay chrome is managed by
     /// MuxWindowController+Overlays.swift.
     let container = PaneContainerView()
-    let workspace = WorkspaceView()
+    /// The slab every pane lives on.
+    let workspace = FlippedView()
     let modeBar = ModeBarView()
     let sessionIndicator = ModeBarView()
     let helpOverlay = HelpOverlayView()

@@ -21,7 +21,7 @@ import AppKit
 /// j/k (and arrows) move, click selects (click again jumps), enter
 /// jumps, esc or a click on the scrim cancels. PrefixEngine drives the
 /// keys; the overlay never takes focus.
-final class CanvasOverlayView: NSView {
+final class CanvasOverlayView: FlippedView {
     struct Entry {
         let sessionIndex: Int
         let paneID: UUID
@@ -55,8 +55,12 @@ final class CanvasOverlayView: NSView {
     /// which session you are scrolling through as you scroll.
     var onSelectionChange: ((Entry?) -> Void)?
 
-    private let scrim = ScrimView()
-    private let stage = StageView()
+    private let scrim = FlippedView()
+    /// The stage box; a click on it jumps to the previewed pane. Wheel
+    /// events over it scroll the previewed pane's real scrollback, but
+    /// that routing lives in the scroll monitor below, not in the view:
+    /// responsive scrolling would never deliver the event to it.
+    private let stage = FlippedView()
     private let stageMirror = CALayer()
     private let stageTitle = NSTextField(labelWithString: "")
     private let stageMeta = NSTextField(labelWithString: "")
@@ -74,14 +78,11 @@ final class CanvasOverlayView: NSView {
         return items[index].entry
     }
 
-    override var isFlipped: Bool {
-        true
-    }
-
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
 
+        scrim.wantsLayer = true
         scrim.onClick = { [weak self] in self?.onCancel?() }
         addSubview(scrim)
 
@@ -244,7 +245,7 @@ final class CanvasOverlayView: NSView {
                 pane.reportMousePos(
                     topLeft: NSPoint(
                         x: p.x / max(stage.bounds.width, 1) * pane.bounds.width,
-                        y: (1 - p.y / max(stage.bounds.height, 1)) * pane.bounds.height
+                        y: p.y / max(stage.bounds.height, 1) * pane.bounds.height
                     ),
                     flags: event.modifierFlags
                 )
@@ -485,10 +486,9 @@ final class CanvasOverlayView: NSView {
 
 /// One wheel card: the mirrored framebuffer at the pane's true aspect,
 /// its title underneath in the product voice.
-private final class WheelItemView: NSView {
+private final class WheelItemView: FlippedView {
     let entry: CanvasOverlayView.Entry
     let mirror = CALayer()
-    var onClick: (() -> Void)?
 
     private let thumb = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
@@ -523,10 +523,6 @@ private final class WheelItemView: NSView {
         fatalError("not supported")
     }
 
-    override var isFlipped: Bool {
-        true
-    }
-
     func height(for width: CGFloat) -> CGFloat {
         let thumbHeight = min(max((width / aspect).rounded(), 40), (width * 1.6).rounded())
         return thumbHeight + 4 + Self.labelHeight
@@ -535,10 +531,6 @@ private final class WheelItemView: NSView {
     /// The whole card is one click target; labels never swallow the hit.
     override func hitTest(_ point: NSPoint) -> NSView? {
         frame.contains(point) ? self : nil
-    }
-
-    override func mouseDown(with _: NSEvent) {
-        onClick?()
     }
 
     override func layout() {
@@ -586,42 +578,5 @@ private final class WheelItemView: NSView {
             : palette.dim.withAlphaComponent(0.35).cgColor
         thumb.layer?.borderWidth = 1 / (window?.backingScaleFactor ?? 2)
         needsLayout = true
-    }
-}
-
-/// The dimming layer under the picker; a click on it cancels, like esc.
-private final class ScrimView: NSView {
-    var onClick: (() -> Void)?
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-    }
-
-    @available(*, unavailable)
-    required init?(coder _: NSCoder) {
-        fatalError("not supported")
-    }
-
-    override func mouseDown(with _: NSEvent) {
-        onClick?()
-    }
-}
-
-/// The stage box; a click on it jumps to the previewed pane. Wheel
-/// events over it scroll the previewed pane's real scrollback, but that
-/// routing lives in the overlay's scroll monitor, not here: responsive
-/// scrolling would never deliver the event to this view.
-private final class StageView: NSView {
-    var onClick: (() -> Void)?
-
-    override func mouseDown(with _: NSEvent) {
-        onClick?()
-    }
-}
-
-private final class FlippedView: NSView {
-    override var isFlipped: Bool {
-        true
     }
 }
