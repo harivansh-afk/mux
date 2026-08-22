@@ -339,21 +339,36 @@ These are in task 01 because every later task assumes an answer.
    stroke on the stage and every card and uses the accent colour for the
    selection. Keep the code (update the doctrine) or keep the doctrine
    (delete the strokes, and say how selection reads without them).
+   Status (task 01, 2026-08-22): pending Hari. CLAUDE.md's doctrine now
+   matches the code (borders kept) as a placeholder; not a final call.
 2. Scrim. Doctrine says blur plus tint via `NSVisualEffectView` at
    0.85/0.6. Code is a flat black layer at 0.95/0.72. The blur costs a
    compositor pass per frame while the canvas is up.
+   Status (task 01, 2026-08-22): pending Hari. CLAUDE.md's doctrine now
+   matches the code (flat tint, no blur) as a placeholder; not a final
+   call.
 3. Docking and the 38% panel. Neither exists. Delete the clauses, or
    schedule the feature. The plan assumes delete.
+   Status (task 01, 2026-08-22): code wins. Both clauses are deleted from
+   CLAUDE.md; nothing scheduled.
 4. TOFU pin over the certificate DER instead of the SPKI. Same trust
    lifetime in this repo (cert and key are generated and regenerated
    together). Cost: spark's `known_hosts` line re-pins once. Task 09
    assumes yes.
+   Status (task 01, 2026-08-22): pending Hari. Recorded in CLAUDE.md as
+   the plan's assumed answer (yes, DER) for task 09 to build against;
+   not a final call.
 5. Flip the upgrade rendezvous so the predecessor listens. One release has
    to support both directions or accept losing sessions once during the
    switch. Task 11 assumes you will schedule it and is marked optional.
+   Status (task 01, 2026-08-22): pending Hari. Recorded in CLAUDE.md as
+   the plan's assumed answer (schedule it, optional, task 11); not a
+   final call.
 6. The `muxd pin` subcommand and the boot-time SPKI log. Nothing calls
    them. Task 09 deletes them; say so if you want the out-of-band check
    kept.
+   Status (task 01, 2026-08-22): pending Hari. Recorded in CLAUDE.md as
+   the plan's assumed answer (delete both, task 09); not a final call.
 
 ## Ship list
 
