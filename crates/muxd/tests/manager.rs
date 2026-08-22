@@ -12,8 +12,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mux_proto::frame::IN_LANE_INPUT;
-use mux_proto::peer::{OpenMode, OpenReply, Opened};
+use mux_proto::frame::{IN_LANE_INPUT, OUT_LANE_OPENED};
+use mux_proto::peer::{self, ErrorKind, OpenMode, OpenReply, Opened};
 use muxd::manager::{ClientMsg, Manager, PtySession};
 use muxd::migrate::MigratePty;
 use tokio::io::AsyncReadExt as _;
@@ -22,8 +22,8 @@ use tokio::sync::mpsc::Receiver;
 
 mod common;
 use common::{
-    contains, read_dump, read_output_until, read_reply, request, temp_socket, write_frame,
-    write_request, PATIENCE,
+    contains, read_dump, read_frame, read_output_until, read_reply, request, temp_socket,
+    write_frame, write_request, PATIENCE,
 };
 
 // ---------------------------------------------------------------- manager
@@ -188,6 +188,34 @@ async fn a_stolen_attach_leaves_the_new_client_wired() {
     );
 
     assert!(manager.kill("p1"));
+    let _ = std::fs::remove_file(&socket);
+}
+
+/// A client one protocol version behind gets a rejection it can read,
+/// not a dropped socket: typed for this version, and a bare string for
+/// the v5 shape (`Result<Opened, String>`), since `detail` is encoded
+/// first and postcard ignores what follows.
+#[tokio::test]
+async fn a_v5_client_is_told_to_upgrade_in_words_it_can_decode() {
+    let socket = temp_socket("skew");
+    let listener = muxd::server::bind(&socket).await.expect("bind");
+    tokio::spawn(muxd::server::serve(Manager::default(), listener));
+
+    let mut client = connect(&socket).await;
+    let mut stale = request(None, None, OpenMode::List);
+    stale.version = 5;
+    write_request(&mut client, &stale).await;
+    let (lane, payload) = read_frame(&mut client).await.expect("reply frame");
+    assert_eq!(lane, OUT_LANE_OPENED);
+
+    let reply: OpenReply = peer::decode(&payload).expect("decode as v6");
+    let error = reply.expect_err("a stale client is refused");
+    assert_eq!(error.kind, ErrorKind::VersionMismatch);
+    assert!(error.detail.contains("client v5"), "{}", error.detail);
+
+    let as_v5: Result<Opened, String> = peer::decode(&payload).expect("decode as v5");
+    assert_eq!(as_v5, Err(error.detail));
+
     let _ = std::fs::remove_file(&socket);
 }
 
