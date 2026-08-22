@@ -1,5 +1,4 @@
 import AppKit
-import GhosttyKit
 
 /// A container view with top-left origin so tree layout math is direct.
 final class PaneContainerView: NSView {
@@ -290,16 +289,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         )
     }
 
-    func split(from pane: PaneView, ghosttyDirection: ghostty_action_split_direction_e) {
-        let session = session(owning: pane) ?? activeSession
-        switch ghosttyDirection {
-        case GHOSTTY_SPLIT_DIRECTION_RIGHT, GHOSTTY_SPLIT_DIRECTION_LEFT:
-            session?.split(from: pane, direction: .horizontal)
-        default:
-            session?.split(from: pane, direction: .vertical)
-        }
-    }
-
     func closeFocusedPane() {
         activeSession?.closeFocusedPane()
     }
@@ -310,16 +299,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     func focusDirection(_ direction: FocusDirection) {
         activeSession?.focusDirection(direction)
-    }
-
-    func focus(from _: PaneView, ghosttyGoto dir: ghostty_action_goto_split_e) {
-        switch dir {
-        case GHOSTTY_GOTO_SPLIT_LEFT: focusDirection(.left)
-        case GHOSTTY_GOTO_SPLIT_RIGHT: focusDirection(.right)
-        case GHOSTTY_GOTO_SPLIT_UP: focusDirection(.up)
-        case GHOSTTY_GOTO_SPLIT_DOWN: focusDirection(.down)
-        default: break
-        }
     }
 
     func toggleZoom() {

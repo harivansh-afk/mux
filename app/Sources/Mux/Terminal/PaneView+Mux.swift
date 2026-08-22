@@ -119,11 +119,11 @@ extension PaneView {
     }
 
     @objc private func contextSplitRight(_: Any?) {
-        controller?.split(from: self, ghosttyDirection: GHOSTTY_SPLIT_DIRECTION_RIGHT)
+        controller?.session(owning: self)?.split(from: self, direction: .horizontal)
     }
 
     @objc private func contextSplitDown(_: Any?) {
-        controller?.split(from: self, ghosttyDirection: GHOSTTY_SPLIT_DIRECTION_DOWN)
+        controller?.session(owning: self)?.split(from: self, direction: .vertical)
     }
 
     @objc private func resetTerminal(_: Any?) {
