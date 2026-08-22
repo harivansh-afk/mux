@@ -122,19 +122,23 @@ impl std::fmt::Display for ErrorKind {
     }
 }
 
+/// Field order is wire order, and `detail` goes first on purpose: a v5
+/// client decodes `Err(String)`, so it reads the prose verbatim and
+/// postcard leaves the trailing kind unread. Put `kind` first and a
+/// skewed client reads its index as a string length.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenError {
-    pub kind: ErrorKind,
     /// What to show the user. Prose, and only prose: nothing parses it.
     pub detail: String,
+    pub kind: ErrorKind,
 }
 
 impl OpenError {
     #[must_use]
     pub fn new(kind: ErrorKind, detail: impl Into<String>) -> Self {
         Self {
-            kind,
             detail: detail.into(),
+            kind,
         }
     }
 }
@@ -262,6 +266,18 @@ mod tests {
         // Event frame payload: clean exit (i32 zigzag varint).
         let exit = ServerEvent::Exit { code: 0 };
         assert_eq!(encode(&exit), [0x00, 0x00]);
+
+        // Failed reply: Err, then the detail string, then the kind. A v5
+        // client stops after the string, which is exactly its error type.
+        let rejected: OpenReply = Err(OpenError::new(ErrorKind::VersionMismatch, "v6"));
+        assert_eq!(
+            encode(&rejected),
+            [
+                0x01, // Err
+                0x02, 0x76, 0x36, // detail: len 2, "v6"
+                0x03, // kind: VersionMismatch (variant 3)
+            ]
+        );
     }
 
     #[test]

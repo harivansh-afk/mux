@@ -208,10 +208,11 @@ Handshake: attach-or-create pty <code>"p1"</code> at 120x40, TERM=xterm-ghostty,
 00                                                 <span class="c">cwd_from = None</span>
 </pre>
 <p>The reply is <code>OpenReply = Result&lt;Opened, OpenError&gt;</code>, and
-<code>OpenError { kind, detail }</code> carries the reason as a value:
+<code>OpenError { detail, kind }</code> carries the reason as a value:
 <code>unreachable</code>, <code>pin-mismatch</code>, <code>token-rejected</code>,
 <code>version-mismatch</code>, <code>no-host</code> or <code>error</code>, set where the failure
-is raised. <code>detail</code> is prose for the user and nothing parses it.</p>
+is raised. <code>detail</code> is prose for the user and nothing parses it. It is encoded
+first: a v5 client, whose error is a bare string, reads it verbatim and never sees the kind.</p>
 <p>After the reply (on egress lane 0) and the screen replay (raw bytes on
 egress lane 1), everything is lane frames. A resize control frame and an exit event, complete:</p>
 <pre>
