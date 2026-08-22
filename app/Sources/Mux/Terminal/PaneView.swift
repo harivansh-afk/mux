@@ -382,11 +382,6 @@ final class PaneView: NSView {
         Muxd.kill(attach.address)
     }
 
-    var processExited: Bool {
-        guard let surface else { return true }
-        return ghostty_surface_process_exited(surface)
-    }
-
     // MARK: - Font zoom
 
     /// Adjust the font zoom by `step` points; 0 resets to the config
