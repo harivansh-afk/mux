@@ -12,7 +12,7 @@
 //!    never silently skipped.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -72,7 +72,6 @@ pub struct PtySession {
     /// instead of reaped. See [`wait_adopted`].
     pub adopted: bool,
     pub exited: AtomicBool,
-    pub exit_code: AtomicI32,
 }
 
 impl PtySession {
@@ -174,7 +173,6 @@ impl Manager {
             child,
             adopted,
             exited: AtomicBool::new(false),
-            exit_code: AtomicI32::new(0),
         });
         ptys.insert(name.to_string(), session.clone());
         Ok(session)
@@ -349,7 +347,6 @@ async fn reap(manager: Manager, session: Arc<PtySession>) {
     } else {
         wait_child(pid).await
     };
-    session.exit_code.store(code, Ordering::SeqCst);
     session.exited.store(true, Ordering::SeqCst);
 
     // Take (not clone) the client so the last sender drops after Exit:
