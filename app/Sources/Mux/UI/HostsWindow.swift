@@ -17,7 +17,7 @@ import AppKit
 /// one open, and each open starts from the last open's final size (a
 /// shrunken fleet corrects itself on the next open). PrefixEngine owns the
 /// keys; the window never takes focus.
-final class HostsWindowView: NSView {
+final class HostsWindowView: PanelView {
     /// A host's live state as it reads on screen.
     private enum Status {
         case none
@@ -59,21 +59,19 @@ final class HostsWindowView: NSView {
         }
     }
 
-    private static let font = Chrome.font
-    private static let boldFont = Chrome.boldFont
-    private static let inset: CGFloat = 14
-    private static let rowHeight = Chrome.rowHeight
     /// Minimum gap between a row's name and its right-aligned status.
     private static let gap: CGFloat = 24
     /// Width reserved for a pending status, sized to a typical resolved
     /// probe, so an answer landing does not widen the box.
     private static let statusReserve = ("ok 100ms  10 ptys" as NSString)
-        .size(withAttributes: [.font: font]).width
+        .size(withAttributes: [.font: Chrome.font]).width
 
-    private let titleLabel = NSTextField(labelWithString: "hosts")
-    private let cancelBadge = NSTextField(labelWithString: " esc close ")
     private let footerLabel = NSTextField(labelWithString: "")
-    private let selectionBar = NSView()
+    private let selectionBar: NSView = {
+        let view = NSView()
+        view.wantsLayer = true
+        return view
+    }()
     private var mainLabels: [NSTextField] = []
     private var metaLabels: [NSTextField] = []
 
@@ -86,8 +84,13 @@ final class HostsWindowView: NSView {
     private var templateIndex = 0
 
     /// True while the template list is up. esc backs out of it instead of
-    /// closing the window.
-    private(set) var pickingTemplate = false
+    /// closing the window; the title band says which list you are in.
+    private(set) var pickingTemplate = false {
+        didSet {
+            title = pickingTemplate ? "template" : "hosts"
+            badge = pickingTemplate ? " esc back " : " esc close "
+        }
+    }
 
     /// The full client digest, once muxd has answered.
     private var digest: String?
@@ -145,24 +148,11 @@ final class HostsWindowView: NSView {
         return value
     }
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.borderWidth = 1
-        selectionBar.wantsLayer = true
-        addSubview(selectionBar)
-        addSubview(titleLabel)
-        addSubview(cancelBadge)
+    init() {
+        super.init(title: "hosts", badge: " esc close ")
+        // Under the row labels: the highlight is a band behind them.
+        addSubview(selectionBar, positioned: .below, relativeTo: nil)
         addSubview(footerLabel)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(render),
-            name: .muxThemeDidChange, object: nil
-        )
-    }
-
-    @available(*, unavailable)
-    required init?(coder _: NSCoder) {
-        fatalError("not supported")
     }
 
     // MARK: - Machines
@@ -313,7 +303,7 @@ final class HostsWindowView: NSView {
     /// Content-fitting size, capped to the container. Monotonic within one
     /// open and floored by the previous open's final size, so late answers
     /// re-render in place instead of walking the edges around.
-    func desiredSize(in bounds: NSRect) -> NSSize {
+    override func desiredSize(in bounds: NSRect) -> NSSize {
         let current = rows
         var body: CGFloat = 0
         for (i, main) in mainLabels.enumerated() where metaLabels.indices.contains(i) {
@@ -323,10 +313,10 @@ final class HostsWindowView: NSView {
             }
             body = max(body, main.fittingSize.width + Self.gap + meta)
         }
-        let title = titleLabel.fittingSize.width + Self.gap + cancelBadge.fittingSize.width
-        let width = max(body, title, footerLabel.fittingSize.width) + Self.inset * 2
+        let titleRow = titleWidth + Self.gap + badgeWidth
+        let width = max(body, titleRow, footerLabel.fittingSize.width) + Self.inset * 2
         // Title row, the rows themselves, then the footer row.
-        let height = Self.rowHeight * CGFloat(current.count + 2) + Self.inset * 2
+        let height = Chrome.rowHeight * CGFloat(current.count + 2) + Self.inset * 2
         grownSize = NSSize(
             width: max(grownSize.width, width),
             height: max(grownSize.height, height)
@@ -337,48 +327,37 @@ final class HostsWindowView: NSView {
         )
     }
 
-    override func layout() {
-        super.layout()
-        let inset = Self.inset
-        let row = Self.rowHeight
-        titleLabel.sizeToFit()
-        cancelBadge.sizeToFit()
+    override func layoutBody(in rect: NSRect) {
+        let row = Chrome.rowHeight
         footerLabel.sizeToFit()
-        let titleMidY = bounds.height - inset - row / 2
-        titleLabel.frame.origin = NSPoint(x: inset, y: titleMidY - titleLabel.frame.height / 2)
-        cancelBadge.frame.origin = NSPoint(
-            x: bounds.width - inset - cancelBadge.frame.width,
-            y: titleMidY - cancelBadge.frame.height / 2
-        )
         footerLabel.frame.origin = NSPoint(
-            x: inset, y: inset + (row - footerLabel.frame.height) / 2
+            x: rect.minX, y: rect.minY + (row - footerLabel.frame.height) / 2
         )
 
-        let rowsTop = bounds.height - inset - row
         let current = rows
         selectionBar.isHidden = true
         for (i, main) in mainLabels.enumerated() {
             let meta = metaLabels[i]
-            let bandY = rowsTop - row * CGFloat(i + 1)
+            let bandY = rect.maxY - row * CGFloat(i + 1)
             // The footer owns the bottom row: rows that would collide with
             // it are simply not shown.
-            let visible = bandY >= inset + row
+            let visible = bandY >= rect.minY + row
             main.isHidden = !visible
             meta.isHidden = !visible
             guard visible else { continue }
 
             meta.sizeToFit()
             meta.frame = NSRect(
-                x: bounds.width - inset - meta.frame.width,
+                x: rect.maxX - meta.frame.width,
                 y: bandY + (row - meta.frame.height) / 2,
                 width: meta.frame.width,
                 height: meta.frame.height
             )
             main.sizeToFit()
             main.frame = NSRect(
-                x: inset,
+                x: rect.minX,
                 y: bandY + (row - main.frame.height) / 2,
-                width: min(main.frame.width, meta.frame.minX - inset - 8),
+                width: min(main.frame.width, meta.frame.minX - rect.minX - 8),
                 height: main.frame.height
             )
             if i == index, current.indices.contains(i), current[i].selectable {
@@ -446,28 +425,11 @@ final class HostsWindowView: NSView {
         return digest + (copied ? "  copied" : "") + "   y copy   n new vm   t template"
     }
 
-    @objc private func render() {
-        let palette = ThemeManager.shared.palette
-        layer?.backgroundColor = palette.panelBg.cgColor
-        layer?.borderColor = palette.dim.cgColor
+    override func renderBody(_ palette: Palette) {
         selectionBar.layer?.backgroundColor = palette.accent.cgColor
-
-        titleLabel.attributedStringValue = NSAttributedString(
-            string: pickingTemplate ? "template" : "hosts",
-            attributes: [.font: Self.boldFont, .foregroundColor: palette.text]
-        )
-        let badge = pickingTemplate ? " esc back " : " esc close "
-        cancelBadge.attributedStringValue = NSAttributedString(
-            string: badge,
-            attributes: [
-                .font: Self.boldFont,
-                .foregroundColor: palette.accentContrast,
-                .backgroundColor: palette.accent,
-            ]
-        )
         footerLabel.attributedStringValue = NSAttributedString(
             string: footer,
-            attributes: [.font: Self.font, .foregroundColor: palette.dim]
+            attributes: [.font: Chrome.font, .foregroundColor: palette.dim]
         )
 
         for (i, row) in rows.enumerated() where i < mainLabels.count {
@@ -479,7 +441,7 @@ final class HostsWindowView: NSView {
                 main.append(NSAttributedString(
                     string: row.current ? "\u{25C6} " : "  ",
                     attributes: [
-                        .font: Self.font,
+                        .font: Chrome.font,
                         .foregroundColor: selected ? palette.accentContrast : palette.accent,
                     ]
                 ))
@@ -492,7 +454,7 @@ final class HostsWindowView: NSView {
             main.append(NSAttributedString(
                 string: row.text,
                 attributes: [
-                    .font: bold ? Self.boldFont : Self.font,
+                    .font: bold ? Chrome.boldFont : Chrome.font,
                     .foregroundColor: selected
                         ? palette.accentContrast
                         : Self.color(of: row.kind, palette: palette),
@@ -502,7 +464,7 @@ final class HostsWindowView: NSView {
                 main.append(NSAttributedString(
                     string: "  " + row.detail,
                     attributes: [
-                        .font: Self.font,
+                        .font: Chrome.font,
                         .foregroundColor: selected ? palette.accentContrast : palette.dim,
                     ]
                 ))
@@ -521,12 +483,11 @@ final class HostsWindowView: NSView {
             metaLabels[i].attributedStringValue = NSAttributedString(
                 string: text,
                 attributes: [
-                    .font: Self.font,
+                    .font: Chrome.font,
                     .foregroundColor: selected ? palette.accentContrast : color,
                 ]
             )
         }
-        needsLayout = true
     }
 
     private static func color(of kind: Kind, palette: Palette) -> NSColor {
