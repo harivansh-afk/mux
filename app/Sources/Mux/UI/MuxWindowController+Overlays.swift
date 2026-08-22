@@ -1,12 +1,5 @@
 import AppKit
 
-/// The window's chrome: the floating mode bar, the session indicator, the
-/// keybinds overlay, and the canvas and hosts windows. All of them are
-/// overlays on the
-/// pane area - panes never reflow for them - and none of them ever takes
-/// focus: PrefixEngine owns the keys and drives them from the outside
-/// (the canvas additionally takes clicks, which also route through the
-/// engine to leave the mode).
 extension MuxWindowController {
     /// Show or hide the mode overlay. nil hides it. The bar is an overlay
     /// on the bottom row: panes never reflow for it.
@@ -14,7 +7,6 @@ extension MuxWindowController {
         if let segments {
             modeBar.render(segments)
             modeBar.isHidden = false
-            // Keep the overlay above any panes added since last time.
             modeBar.removeFromSuperview()
             container.addSubview(modeBar)
             positionModeBar()
@@ -24,8 +16,7 @@ extension MuxWindowController {
     }
 
     /// Content-sized box floating at the bottom-left, inset by the same
-    /// margin from the left and bottom edges (container is flipped, so
-    /// the bottom is at maxY).
+    /// margin from the left and bottom edges.
     func positionModeBar() {
         let bounds = container.bounds
         let margin = ModeBarView.margin
@@ -66,8 +57,7 @@ extension MuxWindowController {
         positionSessionIndicator()
     }
 
-    /// Bottom-right corner (the container is flipped, so the bottom is
-    /// maxY), level with the mode bar in the opposite corner.
+    /// Bottom-right corner, level with the mode bar in the opposite corner.
     func positionSessionIndicator() {
         let bounds = container.bounds
         let margin = ModeBarView.margin
@@ -83,7 +73,6 @@ extension MuxWindowController {
     // MARK: - Keybinds overlay
 
     func showHelp() {
-        // Keep the overlay above any panes added since last time.
         helpOverlay.removeFromSuperview()
         container.addSubview(helpOverlay)
         positionHelpOverlay()
@@ -226,8 +215,6 @@ extension MuxWindowController {
     /// hide restores the normal rule.
     func showCanvasOverlay() {
         refreshPaneDirectories()
-        // Wired before reload: reload fires the first selection, and the
-        // indicator should track it from the first frame.
         canvasOverlay.onSelectionChange = { [weak self] entry in
             self?.canvasSessionHighlight = entry?.sessionIndex
             self?.updateSessionIndicator()
@@ -387,8 +374,6 @@ extension MuxWindowController {
 
     // MARK: - Pane labels (prefix)
 
-    /// Bare per-pane labels while the prefix is armed: every visible
-    /// pane of the active session names itself (title · host · dir).
     /// Text only - no boxes, no borders, nothing persistent grows on
     /// the panes.
     func showPaneLabels() {
@@ -413,9 +398,7 @@ extension MuxWindowController {
         paneLabels.removeAll()
     }
 
-    /// Flush with each pane's top-right corner, mirroring the bottom
-    /// bars on their window corners; wide labels truncate rather than
-    /// cross a divider.
+    /// Wide labels truncate rather than cross a divider.
     func positionPaneLabels() {
         for label in paneLabels {
             guard let frame = label.paneFrame else {

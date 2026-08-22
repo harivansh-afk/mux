@@ -14,9 +14,6 @@ final class PaneContainerView: NSView {
     }
 }
 
-/// The slab every pane lives on. The canvas slides this one view, so
-/// the push is a single animated property instead of many pane frames
-/// racing each other.
 final class WorkspaceView: NSView {
     override var isFlipped: Bool {
         true
@@ -28,14 +25,10 @@ final class WorkspaceView: NSView {
 /// Tiling state and pane lifecycle live in Session; the controller routes
 /// operations to the active session (or, for pane-originated events, to
 /// the session owning that pane).
-///
-/// The chrome itself lives in MuxWindowController+Overlays.swift.
 final class MuxWindowController: NSObject, NSWindowDelegate {
     let runtime: GhosttyRuntime
     private(set) var window: NSWindow!
 
-    /// Internal (not private): the overlay chrome is managed by
-    /// MuxWindowController+Overlays.swift.
     let container = PaneContainerView()
     let workspace = WorkspaceView()
     let modeBar = ModeBarView()
@@ -47,11 +40,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     private(set) var sessions: [Session] = []
     private(set) var activeSessionIndex = 0
 
-    /// Canvas state (managed by MuxWindowController+Overlays.swift):
-    /// the picker floats over the workspace, which never moves for it -
-    /// sizes and positions untouched, so no pty ever observes the
-    /// canvas. `canvasClosing` keeps the fade-out from being torn down
-    /// by the mode change that follows a commit.
     var canvasOpen = false
     var canvasClosing = false
     /// While the canvas is up, the session indicator highlights the
@@ -59,13 +47,11 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// the numbers follow the scroll in real time. nil = canvas closed.
     var canvasSessionHighlight: Int?
 
-    /// Bare per-pane labels while the prefix is armed (managed by
-    /// MuxWindowController+Overlays.swift).
+    /// Bare per-pane labels while the prefix is armed.
     var paneLabels: [PaneLabelView] = []
 
-    /// The scroll host wearing the resize-mode outline (managed by
-    /// MuxWindowController+Overlays.swift). Non-nil only while resize
-    /// mode is up.
+    /// The scroll host wearing the resize-mode outline; non-nil only
+    /// while resize mode is up.
     weak var resizeOutlineHost: PaneScrollView?
 
     var activeSession: Session? {
@@ -393,9 +379,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             positionPaneLabels()
         }
 
-        // The workspace never moves for the canvas: the picker floats
-        // above it and the scrim dims it in place. Sizes and positions
-        // untouched, so the ptys see nothing.
         workspace.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height)
         for (index, session) in sessions.enumerated() {
             session.applyLayout(in: workspace.bounds, visible: index == activeSessionIndex)
