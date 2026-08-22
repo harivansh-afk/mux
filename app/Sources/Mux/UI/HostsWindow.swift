@@ -166,7 +166,10 @@ final class HostsWindowView: PanelView {
 
     init() {
         super.init(title: "hosts", badge: " esc close ")
-        // Under the row labels: the highlight is a band behind them.
+        // Under the row labels: the highlight is a band behind them. The
+        // layer has to exist before the first renderBody (reload runs
+        // before present), or that paint's backgroundColor goes nowhere.
+        selectionBar.wantsLayer = true
         addSubview(selectionBar, positioned: .below, relativeTo: nil)
         addSubview(footerLabel)
         addSubview(bodyLabel)

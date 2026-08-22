@@ -119,12 +119,12 @@ pub fn control_socket() -> PathBuf {
 /// so a test daemon can never steal the user's ptys.
 pub fn migrate_socket() -> PathBuf {
     std::env::var_os("MUXD_MIGRATE_SOCKET").map_or_else(
-        || {
-            PathBuf::from(format!(
-                "/tmp/muxd-{}-migrate.sock",
-                nix::unistd::getuid().as_raw()
-            ))
-        },
+        || default_migrate_socket(nix::unistd::getuid().as_raw()),
         PathBuf::from,
     )
+}
+
+/// The per-uid [`migrate_socket`] before any override.
+pub fn default_migrate_socket(uid: u32) -> PathBuf {
+    PathBuf::from(format!("/tmp/muxd-{uid}-migrate.sock"))
 }

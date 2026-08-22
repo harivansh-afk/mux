@@ -42,7 +42,7 @@
 use std::io::Write as _;
 use std::net::{IpAddr, SocketAddr};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -99,19 +99,11 @@ fn client_digest() -> Result<()> {
 
 // ------------------------------------------------------------- queries
 
-/// The socket the panes on this machine use.
-fn socket_path() -> PathBuf {
-    std::env::var_os("MUXD_SOCKET").map_or_else(
-        || peer::socket_path(nix::unistd::getuid().as_raw()),
-        PathBuf::from,
-    )
-}
-
 /// The local socket, starting a daemon when nothing answers. A query
 /// that reported "no ptys" merely because the daemon had not come up yet
 /// would lose exactly the sessions startup recovery exists to find.
 fn connect() -> Result<UnixStream> {
-    let path = socket_path();
+    let path = paths::control_socket();
     if let Ok(stream) = UnixStream::connect(&path) {
         return Ok(stream);
     }
@@ -302,6 +294,32 @@ fn init_logging() {
         .init();
 }
 
+/// `--upgrade` adopts whichever daemon answers the migrate socket, then
+/// binds `socket`. The two are overridden independently (`--socket` or
+/// `MUXD_SOCKET`; `MUXD_MIGRATE_SOCKET`), and overriding one without the
+/// other is never a sandbox, it is a stale `export MUXD_SOCKET` from a
+/// harness run: the successor would take the user's ptys off the default
+/// migrate socket and serve them on a path no pane dials, each pane's
+/// mux-attach would reconnect on the default, find nothing, respawn an
+/// empty daemon, and get a fresh shell. Either both point at a sandbox or
+/// neither does.
+fn check_upgrade_sockets(socket: &Path, migrate: &Path, uid: u32) -> Result<()> {
+    let socket_is_default = socket == peer::socket_path(uid);
+    let migrate_is_default = migrate == paths::default_migrate_socket(uid);
+    if socket_is_default != migrate_is_default {
+        let (which, path) = if socket_is_default {
+            ("MUXD_MIGRATE_SOCKET", migrate)
+        } else {
+            ("MUXD_SOCKET", socket)
+        };
+        bail!(
+            "--upgrade refused: {which} points at {} while the other socket is the per-uid default",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn parse_listen(value: &str) -> Result<SocketAddr> {
     if let Ok(addr) = value.parse::<SocketAddr>() {
         return Ok(addr);
@@ -346,6 +364,8 @@ async fn main() -> Result<()> {
 
     // Adopt first: the predecessor owns the socket until it hands over.
     if args.upgrade {
+        let migrate = paths::migrate_socket();
+        check_upgrade_sockets(&args.socket, &migrate, nix::unistd::getuid().as_raw())?;
         migrate::adopt_from_predecessor(&manager).await;
     }
     let listener = server::bind(&args.socket).await?;
@@ -373,5 +393,38 @@ async fn main() -> Result<()> {
             }
         }
         None => server::serve(manager, listener).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upgrade_runs_when_both_sockets_are_default_or_both_overridden() {
+        let socket = peer::socket_path(501);
+        let migrate = paths::default_migrate_socket(501);
+        assert!(check_upgrade_sockets(&socket, &migrate, 501).is_ok());
+        let sandbox = Path::new("/tmp/muxup-x/d.sock");
+        let sandbox_migrate = Path::new("/tmp/muxup-x/m.sock");
+        assert!(check_upgrade_sockets(sandbox, sandbox_migrate, 501).is_ok());
+    }
+
+    #[test]
+    fn upgrade_refuses_one_overridden_socket_and_names_it() {
+        let migrate = paths::default_migrate_socket(501);
+        let err = check_upgrade_sockets(Path::new("/tmp/stale.sock"), &migrate, 501).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("MUXD_SOCKET points at /tmp/stale.sock"),
+            "{err}"
+        );
+        let socket = peer::socket_path(501);
+        let err = check_upgrade_sockets(&socket, Path::new("/tmp/stale-m.sock"), 501).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("MUXD_MIGRATE_SOCKET points at /tmp/stale-m.sock"),
+            "{err}"
+        );
     }
 }
