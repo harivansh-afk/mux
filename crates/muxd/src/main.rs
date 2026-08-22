@@ -5,6 +5,7 @@
 //!   muxd [--socket PATH] [--listen-quic ADDR] [--upgrade]
 //!        [--authorized-tokens PATH]
 //!   muxd ls [alias] [--json]   one JSON object per pty
+//!   muxd watch [alias] [--json] one JSON object per pty, then per change
 //!   muxd kill [host|local]:<name>
 //!   muxd probe <alias>         check a host, one JSON line, exit 1 on failure
 //!   muxd upgrade               replace the running daemon with this binary
@@ -218,6 +219,34 @@ fn ls(args: &[String]) -> Result<()> {
     }
 }
 
+/// One JSON object per line: every pty now, then each change, until the
+/// daemon goes away. What the app holds open per daemon.
+fn watch(args: &[String]) -> Result<()> {
+    let mut alias = None;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => {}
+            flag if flag.starts_with('-') => bail!("unknown flag {flag:?}"),
+            host => alias = Some(host.to_string()),
+        }
+    }
+    let mut stream = connect()?;
+    match exchange(&mut stream, &query(alias, OpenMode::Watch))?
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+    {
+        Opened::Watching => {}
+        other => bail!("unexpected reply: {other:?}"),
+    }
+    let mut out = std::io::stdout().lock();
+    while let Some((_lane, payload)) = frame::read_lane(&mut stream)? {
+        let event = peer::decode::<peer::PtyEvent>(&payload).context("decode event")?;
+        serde_json::to_writer(&mut out, &event).context("encode event")?;
+        out.write_all(b"\n")?;
+        out.flush()?;
+    }
+    Ok(())
+}
+
 fn kill(target: &str) -> Result<()> {
     let (host, name) = parse_target(target)?;
     match ask(host, OpenMode::Kill { name })? {
@@ -417,6 +446,7 @@ async fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("client-digest") => return client_digest(),
         Some("ls") => return ls(&args[1..]),
+        Some("watch") => return watch(&args[1..]),
         Some("kill") => {
             return kill(
                 args.get(1)
