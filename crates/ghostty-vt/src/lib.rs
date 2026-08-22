@@ -38,7 +38,6 @@ mod ffi {
             terminal: *mut core::ffi::c_void,
             row: u16,
         ) -> Bytes;
-        pub fn ghostty_vt_terminal_cursor_pending_wrap(terminal: *mut core::ffi::c_void) -> bool;
         pub fn ghostty_vt_bytes_free(bytes: Bytes);
     }
 }
@@ -111,16 +110,6 @@ impl Terminal {
             );
         }
         CursorPosition { row, col }
-    }
-
-    /// Whether the cursor has the Last Column Flag set (pending wrap).
-    ///
-    /// When true, the next printing character will trigger a line wrap.
-    /// CUP escape sequences clear this flag, so reattach must handle it
-    /// specially to preserve cursor behavior.
-    pub fn cursor_pending_wrap(&self) -> bool {
-        // SAFETY: handle is valid.
-        unsafe { ffi::ghostty_vt_terminal_cursor_pending_wrap(self.handle.as_ptr()) }
     }
 
     /// The plain text of each viewport row, top to bottom.

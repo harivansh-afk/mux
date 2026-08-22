@@ -140,15 +140,6 @@ export fn ghostty_vt_terminal_dump_viewport_row(
     return .{ .ptr = slice.ptr, .len = slice.len };
 }
 
-/// Return the cursor's pending wrap (Last Column Flag) state.
-export fn ghostty_vt_terminal_cursor_pending_wrap(
-    terminal_ptr: ?*anyopaque,
-) callconv(.c) bool {
-    if (terminal_ptr == null) return false;
-    const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
-    return handle.terminal.screens.active.cursor.pending_wrap;
-}
-
 /// Render complete terminal state as VT escape sequences for reattach.
 ///
 /// Uses ghostty's ScreenFormatter for viewport content with per-cell SGR,
