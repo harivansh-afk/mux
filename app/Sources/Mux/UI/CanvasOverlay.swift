@@ -4,7 +4,7 @@ import AppKit
 /// workspace, with air on all sides - not a docked panel.
 ///
 /// Right: the wheel - every pane as a card at its TRUE frame aspect,
-/// grouped under small session headers. The selection is always held at
+/// grouped by session by a wider gap. The selection is always held at
 /// the wheel's vertical center: moving translates the whole track (one
 /// retargetable spring), the previous pane peeks above, the next below,
 /// and distance fades the rest. Left: the stage - the selected pane
