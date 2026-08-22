@@ -3,6 +3,7 @@
 //!
 //! Usage:
 //!   muxd [--socket PATH] [--listen-quic ADDR] [--upgrade]
+//!   muxd upgrade [-- daemon flags]   replace the running daemon, keep its ptys
 //!        [--authorized-tokens PATH]
 //!   muxd ls [alias] [--json]   one JSON object per pty
 //!   muxd watch [alias] [--json] one JSON object per pty, then per change
@@ -58,7 +59,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use mux_proto::frame;
 use mux_proto::peer::{self, ErrorKind, OpenError, OpenMode, OpenReply, OpenRequest, Opened};
-use muxd::{manager, migrate, paths, quic, server, tls};
+use muxd::{manager, migrate, paths, quic, server, systemd, tls};
 
 struct Args {
     socket: PathBuf,
@@ -132,7 +133,7 @@ fn connect() -> Result<UnixStream> {
 /// Start this binary as a daemon on `path`, plus `flags`, in a session of
 /// its own: it must outlive the shell that ran the query and its
 /// controlling tty, or their teardown SIGHUPs it away.
-fn spawn_daemon(path: &Path, flags: &[&str]) -> Result<()> {
+fn spawn_daemon(path: &Path, flags: &[String]) -> Result<()> {
     let exe = std::env::current_exe().context("locate muxd")?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--socket")
@@ -313,10 +314,19 @@ const UPGRADE_POLL: Duration = Duration::from_millis(50);
 /// the successor's bind the socket is dead, and a fresh muxd raced in
 /// there takes the socket from the successor, together with every pty
 /// it just adopted.
-fn upgrade() -> i32 {
+fn upgrade(args: &[String]) -> i32 {
     let path = paths::control_socket();
     let started = Instant::now();
-    let answer = spawn_daemon(&path, &["--upgrade"])
+    let flags = match successor_flags(args) {
+        Ok(flags) => flags,
+        Err(e) => {
+            return report(
+                "local",
+                &Err(OpenError::new(ErrorKind::Other, format!("{e:#}"))),
+            )
+        }
+    };
+    let answer = spawn_daemon(&path, &flags)
         .map_err(|e| OpenError::new(ErrorKind::Other, format!("{e:#}")))
         .and_then(|()| {
             let mut last = OpenError::new(ErrorKind::Unreachable, "nothing answered");
@@ -349,6 +359,19 @@ fn upgrade() -> i32 {
             ))
         });
     report("local", &answer)
+}
+
+/// `--upgrade`, then whatever follows `--`: the flags the successor daemon
+/// runs with (`--listen-quic`, `--authorized-tokens`), which a supervisor
+/// passes through so the replacement serves what the original did.
+fn successor_flags(args: &[String]) -> Result<Vec<String>> {
+    let mut flags = vec!["--upgrade".to_string()];
+    match args {
+        [] => {}
+        [dashes, rest @ ..] if dashes == "--" => flags.extend(rest.iter().cloned()),
+        [other, ..] => bail!("usage: muxd upgrade [-- daemon flags], got {other:?}"),
+    }
+    Ok(flags)
 }
 
 /// Print one `Probe` line for `answer` and turn it into an exit code.
@@ -457,7 +480,7 @@ async fn main() -> Result<()> {
             let alias = args.get(1).context("usage: muxd probe <alias>")?;
             std::process::exit(probe(alias));
         }
-        Some("upgrade") => std::process::exit(upgrade()),
+        Some("upgrade") => std::process::exit(upgrade(&args[1..])),
         _ => {}
     }
 
@@ -472,9 +495,12 @@ async fn main() -> Result<()> {
     let manager = manager::Manager::default();
 
     // Adopt first: the predecessor owns the socket until it hands over.
+    // Under systemd, say so before asking: the predecessor's exit must
+    // read as the main process being replaced, not the service ending.
     if args.upgrade {
         let migrate = paths::migrate_socket();
         check_upgrade_sockets(&args.socket, &migrate, nix::unistd::getuid().as_raw())?;
+        systemd::notify(&format!("MAINPID={}", std::process::id()));
         migrate::adopt_from_predecessor(&manager).await;
     }
     let listener = server::bind(&args.socket).await?;
@@ -482,6 +508,7 @@ async fn main() -> Result<()> {
     // successor should ask for a handoff.
     migrate::write_pidfile()?;
     migrate::spawn_handoff_task(manager.clone());
+    systemd::notify("READY=1");
 
     // The QUIC listener is a second door onto the same ptys: it shares
     // the manager and runs beside the socket, never instead of it. When
@@ -507,6 +534,17 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_successor_runs_with_the_flags_after_the_dashes() {
+        let args = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(super::successor_flags(&[]).unwrap(), args(&["--upgrade"]));
+        assert_eq!(
+            super::successor_flags(&args(&["--", "--listen-quic", "0.0.0.0:4433"])).unwrap(),
+            args(&["--upgrade", "--listen-quic", "0.0.0.0:4433"])
+        );
+        assert!(super::successor_flags(&args(&["--listen-quic"])).is_err());
+    }
+
     use super::*;
 
     #[test]
