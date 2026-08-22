@@ -77,13 +77,14 @@ final class HostsWindowView: NSView {
     private var mainLabels: [NSTextField] = []
     private var metaLabels: [NSTextField] = []
 
-    /// The machine list and the template list are kept side by side, each
-    /// with its own highlight, so `t` and back is not a reload: the probes
-    /// that already answered stay answered.
-    private var hostRows: [Row] = []
-    private var templateRows: [Row] = []
-    private var hostIndex = 0
-    private var templateIndex = 0
+    /// What is on screen: the machines, or the templates while `t` is up.
+    private var rows: [Row] = []
+    private var index = 0
+
+    /// The machines and their highlight, parked while the template list
+    /// stands in front of them. `t` and back is not a reload: the probes
+    /// that already answered are still answered in here.
+    private var stashedHosts: ([Row], Int)?
 
     /// True while the template list is up. esc backs out of it instead of
     /// closing the window.
@@ -97,14 +98,8 @@ final class HostsWindowView: NSView {
     /// the current lists.
     private var generation = 0
 
-    /// Bumped on every entry into the template list, so a slow listing
-    /// cannot append to a list that has since been rebuilt. Separate from
-    /// `generation` because entering the submode must not discard the host
-    /// probes still in flight behind it.
-    private var templateGeneration = 0
-
-    /// Called when late rows or a resolved status change the content size,
-    /// so the controller can re-center the box.
+    /// Called when late rows change the content size, so the controller can
+    /// re-center the box.
     var onContentChange: (() -> Void)?
 
     /// The largest size this open has needed: the box never shrinks while
@@ -114,17 +109,16 @@ final class HostsWindowView: NSView {
     /// is stable, so the box usually appears at full size and stays put.
     private var carriedSize = NSSize.zero
 
-    private var rows: [Row] {
-        pickingTemplate ? templateRows : hostRows
-    }
-
-    private var index: Int {
-        get { pickingTemplate ? templateIndex : hostIndex }
+    /// The machine list wherever it currently lives: on screen, or in the
+    /// stash under the template list. Probe and ix answers land in it
+    /// either way, so pressing `t` mid-probe never costs an answer.
+    private var hosts: [Row] {
+        get { pickingTemplate ? stashedHosts?.0 ?? [] : rows }
         set {
             if pickingTemplate {
-                templateIndex = newValue
+                stashedHosts?.0 = newValue
             } else {
-                hostIndex = newValue
+                rows = newValue
             }
         }
     }
@@ -178,44 +172,41 @@ final class HostsWindowView: NSView {
         copied = false
         digest = nil
         pickingTemplate = false
-        templateRows = []
-        templateIndex = 0
+        stashedHosts = nil
 
-        let hosts = HostsConfig.entries()
+        let entries = HostsConfig.entries()
         // No leading "hosts" heading row: the title band already says it.
-        hostRows = [
+        rows = [
             Row(kind: .host(nil), text: "local", detail: "this mac"),
         ]
-        if hosts.isEmpty {
-            hostRows.append(Row(
+        if entries.isEmpty {
+            rows.append(Row(
                 kind: .inert, text: "none in ~/.config/mux/hosts.json", detail: ""
             ))
         }
-        hostRows += hosts.map {
+        rows += entries.map {
             Row(kind: .host($0.alias), text: $0.alias, detail: $0.addr, status: .pending)
         }
-        hostIndex = 0
-        resetHighlight()
-        refresh()
+        index = 0
+        rowsChanged()
 
-        for host in hosts {
+        for host in entries {
             Muxd.probe(alias: host.alias) { [weak self] probe in
                 // Match on the target, not the label: an alias is free to
                 // be spelled like anything else in the list.
                 guard let self, generation == self.generation,
-                      let row = hostRows.firstIndex(where: {
+                      let row = hosts.firstIndex(where: {
                           if case let .host(target) = $0.kind { target == host.alias } else { false }
                       })
                 else { return }
-                hostRows[row].status = Self.status(of: probe)
+                hosts[row].status = Self.status(of: probe)
                 refresh()
             }
         }
 
         IX.list { [weak self] vms in
             guard let self, generation == self.generation, !vms.isEmpty else { return }
-            hostRows.append(Row(kind: .heading, text: "ix vms", detail: ""))
-            hostRows += vms.map {
+            hosts += [Row(kind: .heading, text: "ix vms", detail: "")] + vms.map {
                 Row(
                     // Only a running VM can take a shell; the rest are
                     // listed for their status and skipped by navigation.
@@ -223,8 +214,7 @@ final class HostsWindowView: NSView {
                     text: $0.name, detail: "", status: .plain($0.status)
                 )
             }
-            resetHighlight()
-            refresh()
+            rowsChanged()
         }
 
         Muxd.clientDigest { [weak self] digest in
@@ -240,39 +230,45 @@ final class HostsWindowView: NSView {
     /// always offered - it needs no listing and always works - and the
     /// current default is marked.
     func showTemplates() {
+        guard !pickingTemplate else { return }
+        let generation = generation
         let current = IXConfig.template()
+        let base = Row(
+            kind: .template(IX.defaultTemplate), text: IX.defaultTemplate,
+            detail: "platform base", current: current == IX.defaultTemplate
+        )
+        stashedHosts = (rows, index)
         pickingTemplate = true
         // Same as the machines: the title band names the list.
-        templateRows = [
-            Row(
-                kind: .template(IX.defaultTemplate), text: IX.defaultTemplate,
-                detail: "platform base", current: current == IX.defaultTemplate
-            ),
-        ]
-        templateIndex = 0
-        resetHighlight()
-        refresh()
+        rows = [base]
+        index = 0
+        rowsChanged()
 
-        templateGeneration += 1
-        let templateGeneration = templateGeneration
         IX.templates { [weak self] templates in
-            guard let self, templateGeneration == self.templateGeneration,
+            guard let self, generation == self.generation, pickingTemplate,
                   !templates.isEmpty else { return }
-            templateRows += templates.map {
+            // Assign, never append: a listing left over from an earlier
+            // visit to this list rebuilds the same rows instead of
+            // doubling them.
+            rows = [base] + templates.map {
                 Row(
                     kind: .template($0.value), text: $0.label, detail: "",
                     current: $0.value == current
                 )
             }
-            resetHighlight()
-            refresh()
+            rowsChanged()
         }
     }
 
     /// Back to the machines, leaving their answered probes as they were.
     func showHosts() {
+        guard pickingTemplate else { return }
         pickingTemplate = false
-        refresh()
+        if let stash = stashedHosts {
+            (rows, index) = stash
+            stashedHosts = nil
+        }
+        rowsChanged()
     }
 
     /// Enter in the template list: persist the highlighted target as the
@@ -388,26 +384,31 @@ final class HostsWindowView: NSView {
         }
     }
 
+    /// The row set changed: re-validate the highlight, repaint, and let the
+    /// controller re-center a box that may have grown a row.
+    private func rowsChanged() {
+        resetHighlight()
+        refresh()
+        onContentChange?()
+    }
+
     /// The highlight lands on the first selectable row, so enter always
     /// does something. Already-valid highlights are left alone: rows are
     /// only ever appended, and moving the highlight under the user would be
     /// worse than a stale-looking one.
     private func resetHighlight() {
-        let current = rows
-        guard !current.indices.contains(index) || !current[index].selectable else { return }
-        index = current.firstIndex(where: \.selectable) ?? 0
+        guard !rows.indices.contains(index) || !rows[index].selectable else { return }
+        index = rows.firstIndex(where: \.selectable) ?? 0
     }
 
-    /// One path for every mutation: rebuild the row labels, recolor, and
-    /// let the controller re-center what may have changed size.
+    /// One path for every mutation: rebuild the row labels and recolor.
     private func refresh() {
-        let current = rows
         for label in mainLabels + metaLabels {
             label.removeFromSuperview()
         }
         mainLabels = []
         metaLabels = []
-        for _ in current {
+        for _ in rows {
             let main = NSTextField(labelWithString: "")
             main.lineBreakMode = .byTruncatingTail
             addSubview(main)
@@ -417,7 +418,6 @@ final class HostsWindowView: NSView {
             metaLabels.append(meta)
         }
         render()
-        onContentChange?()
     }
 
     private static func status(of probe: Muxd.Probe) -> Status {
@@ -511,13 +511,7 @@ final class HostsWindowView: NSView {
 
             // On the highlight bar everything switches to the contrast
             // colour: ok-green on accent would be unreadable.
-            let (text, color): (String, NSColor) = switch row.status {
-            case .none: ("", palette.dim)
-            case .pending: ("...", palette.dim)
-            case let .ok(value): (value, palette.ok)
-            case let .bad(value): (value, palette.bad)
-            case let .plain(value): (value, palette.dim)
-            }
+            let (text, color) = Self.statusText(row.status, palette: palette)
             metaLabels[i].attributedStringValue = NSAttributedString(
                 string: text,
                 attributes: [
@@ -527,6 +521,16 @@ final class HostsWindowView: NSView {
             )
         }
         needsLayout = true
+    }
+
+    private static func statusText(_ status: Status, palette: Palette) -> (String, NSColor) {
+        switch status {
+        case .none: ("", palette.dim)
+        case .pending: ("...", palette.dim)
+        case let .ok(value): (value, palette.ok)
+        case let .bad(value): (value, palette.bad)
+        case let .plain(value): (value, palette.dim)
+        }
     }
 
     private static func color(of kind: Kind, palette: Palette) -> NSColor {
