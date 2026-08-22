@@ -1,5 +1,4 @@
 import AppKit
-import GhosttyKit
 import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -277,18 +276,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func copyFromPane(_: Any?) {
-        bindingAction("copy_to_clipboard")
+        controller?.focusedPane?.bindingAction("copy_to_clipboard")
     }
 
     @objc func pasteToPane(_: Any?) {
-        bindingAction("paste_from_clipboard")
-    }
-
-    private func bindingAction(_ action: String) {
-        guard let surface = controller?.focusedPane?.surface else { return }
-        _ = action.withCString { ptr in
-            ghostty_surface_binding_action(surface, ptr, UInt(action.utf8.count))
-        }
+        controller?.focusedPane?.bindingAction("paste_from_clipboard")
     }
 
     // MARK: - Menu

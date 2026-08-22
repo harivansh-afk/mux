@@ -413,8 +413,8 @@ final class PaneView: NSView {
         delegate.saveSnapshot()
     }
 
-    /// Internal (not private): the context menu handlers in
-    /// PaneView+Input.swift drive ghostty through binding actions too.
+    /// The one call into ghostty's binding actions: font zoom, the
+    /// context menu, and the app menu's Copy/Paste all go through here.
     func bindingAction(_ action: String) {
         guard let surface else { return }
         _ = action.withCString { ptr in
