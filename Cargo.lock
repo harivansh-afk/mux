@@ -506,6 +506,7 @@ dependencies = [
 name = "muxd"
 version = "0.2.0"
 dependencies = [
+ "agents",
  "anyhow",
  "base64",
  "ghostty-vt",

@@ -285,7 +285,7 @@ const UPGRADE_POLL: Duration = Duration::from_millis(50);
 /// there takes the socket from the successor, together with every pty
 /// it just adopted.
 fn upgrade() -> i32 {
-    let path = socket_path();
+    let path = paths::control_socket();
     let started = Instant::now();
     let answer = spawn_daemon(&path, &["--upgrade"])
         .map_err(|e| OpenError::new(ErrorKind::Other, format!("{e:#}")))
