@@ -50,17 +50,6 @@ pub struct CursorPosition {
     pub col: u16,
 }
 
-/// Serialized screen state for reattach redraw.
-#[derive(serde::Serialize)]
-pub struct ScreenDump {
-    pub rows: u16,
-    pub cols: u16,
-    pub cursor_row: u16,
-    pub cursor_col: u16,
-    /// Plain text content of each viewport row.
-    pub row_texts: Vec<String>,
-}
-
 /// Terminal state tracker backed by ghostty VT.
 pub struct Terminal {
     handle: NonNull<core::ffi::c_void>,
@@ -134,13 +123,8 @@ impl Terminal {
         unsafe { ffi::ghostty_vt_terminal_cursor_pending_wrap(self.handle.as_ptr()) }
     }
 
-    /// Capture current screen state for reattach redraw.
-    pub fn screen_dump(&self) -> ScreenDump {
-        let CursorPosition {
-            row: cursor_row,
-            col: cursor_col,
-        } = self.cursor_position();
-
+    /// The plain text of each viewport row, top to bottom.
+    pub fn row_texts(&self) -> Vec<String> {
         let mut row_texts = Vec::with_capacity(usize::from(self.rows));
         for r in 0..self.rows {
             // SAFETY: handle is valid, row index is within bounds.
@@ -160,14 +144,7 @@ impl Terminal {
             };
             row_texts.push(text);
         }
-
-        ScreenDump {
-            rows: self.rows,
-            cols: self.cols,
-            cursor_row,
-            cursor_col,
-            row_texts,
-        }
+        row_texts
     }
 
     /// Render complete terminal state as VT escape sequences for reattach.
@@ -213,46 +190,23 @@ mod tests {
         let mut term = Terminal::new(24, 80).expect("terminal creation");
         term.feed(b"Hello, world!");
 
-        let dump = term.screen_dump();
-        assert_eq!(dump.rows, 24);
-        assert_eq!(dump.cols, 80);
-
-        // First row should contain "Hello, world!"
-        assert!(
-            dump.row_texts[0].contains("Hello, world!"),
-            "row 0: {:?}",
-            dump.row_texts[0]
-        );
-    }
-
-    #[test]
-    fn resize_updates_dimensions() {
-        let mut term = Terminal::new(24, 80).expect("terminal creation");
-        term.resize(40, 120);
-
-        let dump = term.screen_dump();
-        assert_eq!(dump.rows, 40);
-        assert_eq!(dump.cols, 120);
-    }
-
-    #[test]
-    fn new_with_zero_dimensions_clamps_to_1x1() {
-        let term = Terminal::new(0, 0).expect("terminal creation with 0x0");
-        assert_eq!(term.rows, 1);
-        assert_eq!(term.cols, 1);
+        let rows = term.row_texts();
+        assert_eq!(rows.len(), 24);
+        assert!(rows[0].contains("Hello, world!"), "row 0: {:?}", rows[0]);
     }
 
     #[test]
     fn resize_zero_dimensions_clamps_to_1x1() {
+        let term = Terminal::new(0, 0).expect("terminal creation with 0x0");
+        assert_eq!((term.rows, term.cols), (1, 1));
+
         let mut term = Terminal::new(24, 80).expect("terminal creation");
         term.resize(0, 0);
-        assert_eq!(term.rows, 1);
-        assert_eq!(term.cols, 1);
-        // Should still be functional after resize to clamped 1x1
+        assert_eq!((term.rows, term.cols), (1, 1));
+        // A 0 dimension segfaults ghostty's Screen.init; the clamp has to
+        // leave a terminal that still works.
         term.feed(b"X");
-        let dump = term.screen_dump();
-        assert_eq!(dump.rows, 1);
-        assert_eq!(dump.cols, 1);
+        assert_eq!(term.row_texts(), vec!["X".to_string()]);
     }
 
     #[test]

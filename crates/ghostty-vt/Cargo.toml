@@ -8,9 +8,3 @@ description = "Headless terminal state tracking via ghostty VT (Zig FFI shim)"
 
 [lints]
 workspace = true
-
-[dependencies]
-serde.workspace = true
-
-[dev-dependencies]
-nix = { workspace = true, features = ["term", "process", "fs"] }
