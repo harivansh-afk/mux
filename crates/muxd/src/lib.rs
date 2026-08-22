@@ -29,4 +29,5 @@ pub mod paths;
 pub mod pty;
 pub mod quic;
 pub mod server;
+pub mod systemd;
 pub mod tls;
