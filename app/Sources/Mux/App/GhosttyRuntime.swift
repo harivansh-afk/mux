@@ -122,7 +122,11 @@ final class GhosttyRuntime {
     /// Whether password prompts automatically enable secure input
     /// (ghostty's auto-secure-input, default true).
     var autoSecureInput: Bool {
-        configBool("auto-secure-input", default: true)
+        guard let config else { return true }
+        var v = true
+        let key = "auto-secure-input"
+        _ = ghostty_config_get(config, &v, key, UInt(key.utf8.count))
+        return v
     }
 
     /// ghostty's scrollbar config: `system` (default) shows the native
@@ -137,12 +141,6 @@ final class GhosttyRuntime {
         return String(cString: v) != "never"
     }
 
-    private func configBool(_ key: String, default def: Bool = false) -> Bool {
-        guard let config else { return def }
-        var v = def
-        _ = ghostty_config_get(config, &v, key, UInt(key.utf8.count))
-        return v
-    }
 }
 
 // MARK: - Callbacks
