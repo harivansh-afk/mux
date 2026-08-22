@@ -332,9 +332,10 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
 
     @objc private func render() {
         let palette = ThemeManager.shared.palette
-        let dark = !palette.panelBg.isLightColor
-        scrim.layer?.backgroundColor = NSColor.black
-            .withAlphaComponent(dark ? 0.95 : 0.72).cgColor
+        // The scrim is the panel background, not black: the stage text is
+        // palette.text, which on the light palette is dark and vanished on
+        // a black scrim. Same alpha both ways.
+        scrim.layer?.backgroundColor = palette.panelBg.withAlphaComponent(0.95).cgColor
         stage.layer?.backgroundColor = palette.panelBg.cgColor
         // Square hairline, like every other piece of mux chrome: the
         // border sits exactly on the rectangular terminal content, no
