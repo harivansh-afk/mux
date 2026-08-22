@@ -6,6 +6,7 @@
 //! process, so the squeeze stays in here. Multi-threaded, because the
 //! daemon under test has to keep running while this thread squeezes it.
 
+use std::os::fd::{FromRawFd as _, OwnedFd};
 use std::time::Duration;
 
 use mux_proto::peer::{OpenMode, Opened};
@@ -38,13 +39,13 @@ async fn accept_survives_running_out_of_descriptors() {
     ));
     drop(probe);
 
-    let saved = soft_nofile();
+    let saved = limits().rlim_cur;
     set_soft_nofile(SQUEEZED_NOFILE.min(saved));
     let mut hoard = hoard_descriptors();
     assert!(hoard.len() > 4, "the squeeze took no descriptors");
     // Hand one back: enough for the client's connect, nothing left for
     // the daemon's accept.
-    close(hoard.pop().expect("a descriptor to release"));
+    drop(hoard.pop().expect("a descriptor to release"));
 
     // A connect lands in the listener's backlog without the daemon
     // spending a descriptor; the accept it provokes is what fails. The
@@ -63,9 +64,7 @@ async fn accept_survives_running_out_of_descriptors() {
 
     // Pressure off before asserting: a panic holding the whole descriptor
     // table cannot even print itself.
-    for fd in hoard.drain(..) {
-        close(fd);
-    }
+    hoard.clear();
     set_soft_nofile(saved);
     assert!(
         survived,
@@ -87,10 +86,6 @@ async fn accept_survives_running_out_of_descriptors() {
     let _ = std::fs::remove_file(&socket);
 }
 
-fn soft_nofile() -> u64 {
-    limits().rlim_cur
-}
-
 fn limits() -> libc::rlimit {
     // SAFETY: getrlimit fills the struct it is handed; zeroed is a valid
     // starting value for it.
@@ -109,8 +104,9 @@ fn set_soft_nofile(soft: u64) {
 }
 
 /// Take every descriptor the process can still open, so the next `accept`
-/// answers EMFILE.
-fn hoard_descriptors() -> Vec<i32> {
+/// answers EMFILE. Dropping the vec hands them all back, including on a
+/// panic mid-test.
+fn hoard_descriptors() -> Vec<OwnedFd> {
     let mut held = Vec::new();
     loop {
         // SAFETY: dup of the process's own stdin, which is open for the
@@ -119,11 +115,7 @@ fn hoard_descriptors() -> Vec<i32> {
         if fd < 0 {
             return held;
         }
-        held.push(fd);
+        // SAFETY: a fresh descriptor from dup, owned by nobody else.
+        held.push(unsafe { OwnedFd::from_raw_fd(fd) });
     }
-}
-
-fn close(fd: i32) {
-    // SAFETY: fd came from hoard_descriptors and is closed exactly once.
-    unsafe { libc::close(fd) };
 }
