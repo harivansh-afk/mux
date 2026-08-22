@@ -152,16 +152,6 @@ final class CanvasOverlayView: NSView {
         layoutStage()
         renderSelection()
         onSelectionChange?(selection)
-        // The stage retargets with a blink-quick tick, not a crossfade:
-        // the mirror swap is instant, this only softens the cut.
-        if let layer = stage.layer {
-            let tick = CABasicAnimation(keyPath: "opacity")
-            tick.fromValue = 0.7
-            tick.toValue = 1
-            tick.duration = 0.13
-            tick.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1)
-            layer.add(tick, forKey: "stage-tick")
-        }
     }
 
     // MARK: - Live mirrors
