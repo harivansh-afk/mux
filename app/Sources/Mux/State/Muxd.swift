@@ -14,6 +14,105 @@ enum Muxd {
     /// the running daemon is started by the relay.
     static let daemonBinary: String? = bundled("muxd")
 
+    /// Everything about one pane's pty that the relay needs to be told.
+    /// The command line and the kill are the only two things anyone does
+    /// with a pane's attachment, and both live here.
+    struct Attach {
+        let paneID: UUID
+
+        /// Where this pane's terminal lives.
+        ///
+        /// - nil: the local daemon (`mux-attach local:<id>`).
+        /// - a host alias from ~/.config/mux/hosts.json: the local daemon
+        ///   relays the attach to that host (`mux-attach <alias>:<id>`).
+        /// - `ix:<vm>`: a local daemon pty whose command is `ix shell <vm>`
+        ///   instead of the user's shell, so the VM's session persists
+        ///   exactly like a local one - the pty, and the `ix shell` inside
+        ///   it, outlive the app.
+        let target: String?
+
+        /// A command to run in the pty instead of the user's shell, as
+        /// argv. Only VM creation uses it (`ix new -n <name> <template>`),
+        /// and only for the pane that does the creating: it is
+        /// deliberately not persisted, so a restored pane derives
+        /// `ix shell <name>` from its target instead - which is right,
+        /// because by then the VM exists.
+        let ptyCommand: [String]?
+
+        /// True for restored and adopted panes: their pty is believed to
+        /// exist, so the relay is told to call out a `created` reply (the
+        /// daemon lost the shell) instead of silently starting fresh.
+        let expectExisting: Bool
+
+        /// The pty to attach to: `<alias>:<id>` for a pane hosted on
+        /// another machine, `local:<id>` otherwise. An `ix:<vm>` pane is
+        /// local too - the pty runs `ix shell` here, and the VM is on the
+        /// far end of that command, not of the attach.
+        var address: String {
+            guard let target, !target.hasPrefix(IX.prefix) else {
+                return "local:\(paneID.uuidString)"
+            }
+            return "\(target):\(paneID.uuidString)"
+        }
+
+        /// The pane's launch command, as libghostty wants it: one string
+        /// handed to a shell. nil means "the user's shell", the dev
+        /// fallback when no relay binary is bundled. `cwdFrom` names the
+        /// pty (a split's source pane, same daemon) whose live working
+        /// directory the new shell inherits, resolved daemon-side - no
+        /// shell integration needed, and it wins over `cwd`, which only
+        /// seeds panes with no live source (restore, recovery).
+        func commandLine(cwd: String?, cwdFrom: UUID? = nil) -> String? {
+            // An ix pane runs `ix shell <vm>` in its pty unless the caller
+            // named something else to run there (VM creation runs `ix new`
+            // instead, and the shell it drops you into is the pane).
+            let inPty = ptyCommand ?? IX.vm(of: target).map { [IX.binary, "shell", $0] }
+            guard let attach = attachBinary else {
+                // No relay bundled: run it directly (no persistence), or
+                // fall back to the user's shell for a plain local pane.
+                return inPty.map(Self.quote)
+            }
+            var parts = ["\"\(attach)\"", "\"\(address)\""]
+            if expectExisting {
+                // A restored or adopted pane believes its pty survived: the
+                // relay prints a notice if the daemon had to create one.
+                parts.append("--expect-existing")
+            }
+            if let inPty {
+                // `-- cmd` makes the pty run that command instead of the
+                // shell. No cwd: the pty's working directory is this
+                // machine's and means nothing inside the VM.
+                parts += ["--", Self.quote(inPty)]
+                return parts.joined(separator: " ")
+            }
+            if let cwdFrom {
+                // Never send --cwd beside --cwd-from: the daemon would let
+                // it win, and a client-side pwd can be stale (a remote
+                // shell with no OSC 7 never updates it). The live process
+                // is the truth.
+                parts += ["--cwd-from", "\"\(cwdFrom.uuidString)\""]
+            } else if let cwd {
+                parts += ["--cwd", "\"\(cwd)\""]
+            }
+            return parts.joined(separator: " ")
+        }
+
+        /// argv as one command line for libghostty, which hands the string
+        /// to a shell. Every word is double-quoted, so paths with spaces
+        /// and flake refs with `#` survive intact.
+        private static func quote(_ argv: [String]) -> String {
+            argv.map { "\"\($0)\"" }.joined(separator: " ")
+        }
+    }
+
+    /// Kill a pane's pty (a deliberate close, not a detach). For an ix
+    /// pane that ends the `ix shell` the pty is running, and with it the
+    /// session on the VM.
+    static func kill(_ address: String) {
+        guard let attach = attachBinary else { return }
+        Subprocess.run(attach, ["--kill", address]) { _ in }
+    }
+
     /// One host's live state, from `mux-attach probe <alias>`.
     struct Probe {
         let ok: Bool

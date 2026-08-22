@@ -16,28 +16,15 @@ final class PaneView: NSView {
 
     let id: UUID
 
-    /// Where this pane's terminal lives.
-    ///
-    /// - nil: the local daemon (`mux-attach local:<id>`).
-    /// - a host alias from ~/.config/mux/hosts.json: the local daemon
-    ///   relays the attach to that host (`mux-attach <alias>:<id>`).
-    /// - `ix:<vm>`: a local daemon pty whose command is `ix shell <vm>`
-    ///   instead of the user's shell, so the VM's session persists exactly
-    ///   like a local one - the pty, and the `ix shell` inside it, outlive
-    ///   the app.
-    let target: String?
+    /// Which pty this pane is, and how the relay reaches it. Everything
+    /// the command line is built from lives in Muxd.Attach.
+    private let attach: Muxd.Attach
 
-    /// A command to run in the pty instead of the user's shell, as argv.
-    /// Only VM creation uses it (`ix new -n <name> <template>`), and only
-    /// for the pane that does the creating: it is deliberately not
-    /// persisted, so a restored pane derives `ix shell <name>` from its
-    /// target instead - which is right, because by then the VM exists.
-    private let ptyCommand: [String]?
-
-    /// True for restored and adopted panes: their pty is believed to
-    /// exist, so the relay is told to call out a `created` reply (the
-    /// daemon lost the shell) instead of silently starting fresh.
-    private let expectExisting: Bool
+    /// Where this pane's terminal lives: nil local, a host alias, or
+    /// `ix:<vm>`. Chrome, snapshots and split inheritance read it.
+    var target: String? {
+        attach.target
+    }
 
     /// The scroll view wrapping this pane (owned by the window's pane
     /// container; created in attach). Session lays out the host, and the
@@ -182,21 +169,16 @@ final class PaneView: NSView {
     private var eventMonitor: Any?
 
     init(
-        id: UUID = UUID(),
+        attach: Muxd.Attach,
         runtime: GhosttyRuntime,
         workingDirectory: String? = nil,
         cwdFrom: UUID? = nil,
-        target: String? = nil,
-        ptyCommand: [String]? = nil,
         initialFrame: CGRect = .zero,
-        fontDelta: Int = 0,
-        expectExisting: Bool = false
+        fontDelta: Int = 0
     ) {
-        self.id = id
-        self.target = target
-        self.ptyCommand = ptyCommand
+        id = attach.paneID
+        self.attach = attach
         self.fontDelta = fontDelta
-        self.expectExisting = expectExisting
         super.init(frame: initialFrame)
 
         // Seed the directory from the snapshot/daemon cwd (remote panes
@@ -225,7 +207,7 @@ final class PaneView: NSView {
         // pane on a host alias is the same pty one hop away (the local
         // daemon relays the attach), and an `ix:<vm>` pane is a local pty
         // whose command is `ix shell` instead of the user's shell.
-        let command = defaultCommand(cwd: workingDirectory, cwdFrom: cwdFrom)
+        let command = attach.commandLine(cwd: workingDirectory, cwdFrom: cwdFrom)
         // The one unlogged hop used to be right here: whether the surface
         // was actually given the attach command. A pane that silently ran
         // a bare shell instead was indistinguishable from a working one.
@@ -233,7 +215,7 @@ final class PaneView: NSView {
 
         // A remote pane's cwd names a path on the remote host: it travels
         // as --cwd and is never handed to the local surface.
-        let localWorkingDirectory = target == nil ? workingDirectory : nil
+        let localWorkingDirectory = attach.target == nil ? workingDirectory : nil
 
         var cfg = ghostty_surface_config_new()
         cfg.platform_tag = GHOSTTY_PLATFORM_MACOS
@@ -381,64 +363,6 @@ final class PaneView: NSView {
         return event
     }
 
-    /// The pty this pane attaches to: `<alias>:<id>` for a pane hosted on
-    /// another machine, `local:<id>` otherwise. An `ix:<vm>` pane is local
-    /// too - the pty runs `ix shell` here, and the VM is on the far end of
-    /// that command, not of the attach.
-    private var attachAddress: String {
-        guard let target, !target.hasPrefix(IX.prefix) else {
-            return "local:\(id.uuidString)"
-        }
-        return "\(target):\(id.uuidString)"
-    }
-
-    /// The pane's launch command. nil means "the user's shell": the dev
-    /// fallback when no relay binary is bundled. `cwdFrom` names the pty
-    /// (a split's source pane, same daemon) whose live working directory
-    /// the new shell inherits, resolved daemon-side - no shell
-    /// integration needed, and it wins over `cwd`, which only seeds panes
-    /// with no live source (restore, recovery).
-    private func defaultCommand(cwd: String?, cwdFrom: UUID? = nil) -> String? {
-        // An ix pane runs `ix shell <vm>` in its pty unless the caller named
-        // something else to run there (VM creation runs `ix new` instead,
-        // and the shell it drops you into is the pane).
-        let inPty = ptyCommand ?? IX.vm(of: target).map { [IX.binary, "shell", $0] }
-        guard let attach = Muxd.attachBinary else {
-            // No relay bundled: run it directly (no persistence), or fall
-            // back to the user's shell for a plain local pane.
-            return inPty.map(Self.quote)
-        }
-        var parts = ["\"\(attach)\"", "\"\(attachAddress)\""]
-        if expectExisting {
-            // A restored or adopted pane believes its pty survived: the
-            // relay prints a notice if the daemon had to create one.
-            parts.append("--expect-existing")
-        }
-        if let inPty {
-            // `-- cmd` makes the pty run that command instead of the shell.
-            // No cwd: the pty's working directory is this machine's and
-            // means nothing inside the VM.
-            parts += ["--", Self.quote(inPty)]
-            return parts.joined(separator: " ")
-        }
-        if let cwdFrom {
-            // Never send --cwd beside --cwd-from: the daemon would let it
-            // win, and a client-side pwd can be stale (a remote shell with
-            // no OSC 7 never updates it). The live process is the truth.
-            parts += ["--cwd-from", "\"\(cwdFrom.uuidString)\""]
-        } else if let cwd {
-            parts += ["--cwd", "\"\(cwd)\""]
-        }
-        return parts.joined(separator: " ")
-    }
-
-    /// argv as one command line for libghostty, which hands the string to a
-    /// shell. Every word is double-quoted, so paths with spaces and flake
-    /// refs with `#` survive intact.
-    private static func quote(_ argv: [String]) -> String {
-        argv.map { "\"\($0)\"" }.joined(separator: " ")
-    }
-
     /// Free the surface explicitly (kills the local child - the relay).
     /// The daemon pty behind it survives; call killRemote() too when the
     /// user actually closes the pane.
@@ -449,15 +373,9 @@ final class PaneView: NSView {
         }
     }
 
-    /// Kill the pane's pty (deliberate close, not detach). For an ix pane
-    /// that ends the `ix shell` the pty is running, and with it the session
-    /// on the VM.
+    /// Kill the pane's pty: a deliberate close, not a detach.
     func killRemote() {
-        guard let attach = Muxd.attachBinary else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: attach)
-        process.arguments = ["--kill", attachAddress]
-        try? process.run()
+        Muxd.kill(attach.address)
     }
 
     var processExited: Bool {

@@ -78,9 +78,12 @@ final class Session {
         expectExisting: Bool = false
     ) -> PaneView {
         let pane = PaneView(
-            id: id, runtime: runtime, workingDirectory: workingDirectory, cwdFrom: cwdFrom,
-            target: target, ptyCommand: ptyCommand, initialFrame: initialFrame,
-            fontDelta: fontDelta, expectExisting: expectExisting
+            attach: Muxd.Attach(
+                paneID: id, target: target, ptyCommand: ptyCommand,
+                expectExisting: expectExisting
+            ),
+            runtime: runtime, workingDirectory: workingDirectory, cwdFrom: cwdFrom,
+            initialFrame: initialFrame, fontDelta: fontDelta
         )
         pane.controller = controller
         panes[pane.id] = pane
