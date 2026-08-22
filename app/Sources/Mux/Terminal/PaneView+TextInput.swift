@@ -48,7 +48,7 @@ extension PaneView: NSTextInputClient {
             markedText = NSMutableAttributedString(string: v)
 
         default:
-            NSLog("unknown marked text: \(string)")
+            AppLog.log("unknown marked text: \(string)")
         }
 
         // If we're not in a keyDown event, then we want to update our
