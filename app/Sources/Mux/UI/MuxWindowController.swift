@@ -88,6 +88,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
 
         sessions = [Session(controller: self)]
+        wireCanvasCallbacks()
         updateSessionIndicator()
 
         applyTheme()
