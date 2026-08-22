@@ -105,7 +105,9 @@ pub async fn serve(manager: Manager, listener: UnixListener) -> Result<()> {
         };
         let manager = manager.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_unix(manager, stream).await {
+            let (reader, writer) = stream.into_split();
+            let served = handle_connection(manager, reader, writer, &Policy::Local).await;
+            if let Err(e) = served {
                 tracing::debug!(error = %e, "connection ended with error");
             }
         });
@@ -133,11 +135,6 @@ fn transient(e: &std::io::Error) -> bool {
     )
 }
 
-async fn handle_unix(manager: Manager, stream: UnixStream) -> Result<()> {
-    let (reader, writer) = stream.into_split();
-    handle_connection(manager, reader, writer, &Policy::Local).await
-}
-
 /// One run of the protocol over any byte stream: handshake, then either
 /// a one-shot reply (list, kill, rejection) or an attached session.
 pub async fn handle_connection<R, W>(
@@ -151,24 +148,23 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     let mut writer = BufWriter::new(writer);
-    let request: OpenRequest = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_request(&mut reader))
+    let handshake = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_request(&mut reader))
         .await
         .context("handshake timeout")??;
 
-    // Version first: a mismatched client gets a readable diagnosis, not
-    // a dropped socket. A pre-v3 request has no version field, so the
-    // first varint decodes as something else entirely - decode failure or
-    // a wrong version both land here or in read_request's error path.
-    if request.version != peer::PROTOCOL_VERSION {
-        let detail = format!(
-            "protocol version mismatch: daemon v{}, client v{} - upgrade or restart the daemon (muxd --upgrade)",
-            peer::PROTOCOL_VERSION,
-            request.version,
-        );
-        tracing::warn!(detail, "handshake rejected");
-        let error = OpenError::new(ErrorKind::VersionMismatch, detail);
-        return reply(&mut writer, &Err(error)).await;
-    }
+    // A mismatched client gets a readable diagnosis, not a dropped socket.
+    let request = match handshake {
+        Ok(request) => request,
+        Err(version) => {
+            let detail = format!(
+                "protocol version mismatch: daemon v{}, client v{version} - upgrade or restart the daemon (muxd --upgrade)",
+                peer::PROTOCOL_VERSION,
+            );
+            tracing::warn!(detail, "handshake rejected");
+            let error = OpenError::new(ErrorKind::VersionMismatch, detail);
+            return reply(&mut writer, &Err(error)).await;
+        }
+    };
 
     // Admission first, unconditionally: relayed requests must never skip
     // a future Policy::Local check by taking the broker branch early.
@@ -184,72 +180,32 @@ where
         return broker::relay(request, reader, writer).await;
     }
 
-    let OpenRequest {
-        cols,
-        rows,
-        term,
-        mode,
-        ..
-    } = request;
-
-    match mode {
+    match request.mode {
         OpenMode::List => {
-            reply(
+            return reply(
                 &mut writer,
                 &Ok(Opened::Listed {
                     ptys: manager.list(),
                 }),
             )
-            .await
+            .await;
         }
-
-        OpenMode::Kill { name } => {
+        OpenMode::Kill { ref name } => {
             // The request itself is logged, not just the effect: when a
             // session vanishes, the question is always who asked.
             tracing::info!(name, "kill requested");
-            let existed = manager.kill(&name);
-            reply(&mut writer, &Ok(Opened::Killed { existed })).await
+            let existed = manager.kill(name);
+            return reply(&mut writer, &Ok(Opened::Killed { existed })).await;
         }
-
-        OpenMode::Open {
-            name,
-            cwd,
-            command,
-            cwd_from,
-        } => {
-            // Inherit the source pane's directory when no explicit cwd
-            // came along: resolved here, where the source process lives.
-            let cwd = cwd.or_else(|| {
-                let source = manager.get(cwd_from.as_deref()?)?;
-                source.current_cwd()
-            });
-            let open = Open {
-                cols,
-                rows,
-                term,
-                name,
-                cwd,
-                command,
-            };
-            handle_open(manager, open, reader, writer).await
-        }
+        OpenMode::Open { .. } => {}
     }
-}
-
-/// The handshake's attach-or-create parameters.
-struct Open {
-    cols: u16,
-    rows: u16,
-    term: Option<String>,
-    name: String,
-    cwd: Option<String>,
-    command: Vec<String>,
+    handle_open(manager, request, reader, writer).await
 }
 
 /// The attach-or-create arm: reply + replay, then pump both directions.
 async fn handle_open<R, W>(
     manager: Manager,
-    open: Open,
+    request: OpenRequest,
     mut reader: R,
     mut writer: BufWriter<W>,
 ) -> Result<()>
@@ -257,14 +213,25 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
-    let Open {
+    let OpenRequest {
         cols,
         rows,
         term,
+        mode,
+        ..
+    } = request;
+    let OpenMode::Open {
         name,
         cwd,
         command,
-    } = open;
+        cwd_from,
+    } = mode
+    else {
+        bail!("handle_open on a request that is not an open");
+    };
+    // Inherit the source pane's directory when no explicit cwd came
+    // along: resolved here, where the source process lives.
+    let cwd = cwd.or_else(|| manager.get(cwd_from.as_deref()?)?.current_cwd());
 
     let opened = manager.open(&name, &command, cwd.as_deref(), term.as_deref(), cols, rows);
     let (session, created) = match opened {
@@ -378,29 +345,16 @@ pub(crate) async fn reply<W: AsyncWrite + Unpin>(writer: &mut W, reply: &OpenRep
     Ok(())
 }
 
-async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<OpenRequest> {
+/// A decoded handshake, or the protocol version of a client this daemon
+/// cannot speak to: version is the request's first field by design, so
+/// it reads even when nothing else does.
+type Handshake = std::result::Result<OpenRequest, u32>;
+
+async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Handshake> {
     let buf = frame::aio::read_message(reader).await.context("request")?;
-    match peer::decode(&buf) {
-        Ok(request) => Ok(request),
-        // A request shaped by another protocol version cannot decode at
-        // all, but its version is the first varint by design: surface it
-        // as a minimal request so the version check upstream answers
-        // with the readable mismatch instead of a dropped socket.
-        Err(e) => {
-            if let Ok(version) = peer::decode_prefix::<u32>(&buf) {
-                if version != peer::PROTOCOL_VERSION {
-                    return Ok(OpenRequest {
-                        version,
-                        cols: 0,
-                        rows: 0,
-                        term: None,
-                        token: None,
-                        target: None,
-                        mode: OpenMode::List,
-                    });
-                }
-            }
-            Err(e).context("request decode")
-        }
+    let version = peer::decode_prefix::<u32>(&buf).context("request version")?;
+    if version != peer::PROTOCOL_VERSION {
+        return Ok(Err(version));
     }
+    Ok(Ok(peer::decode(&buf).context("request decode")?))
 }
