@@ -76,6 +76,9 @@ DEV_KEYCHAIN="$HOME/Library/Keychains/mux-dev.keychain-db"
 # filters out, but codesign signs with it fine and TCC keys on the stable
 # identity regardless of trust.
 if security find-identity -p codesigning "$DEV_KEYCHAIN" 2>/dev/null | grep -q "mux-dev"; then
+  # A reboot relocks the keychain and codesign fails with
+  # errSecInternalComponent; the password is known by design, so unlock.
+  security unlock-keychain -p mux-dev "$DEV_KEYCHAIN"
   codesign --force --deep --sign "mux-dev" --keychain "$DEV_KEYCHAIN" "$BUNDLE"
   echo "signed with mux-dev"
 else

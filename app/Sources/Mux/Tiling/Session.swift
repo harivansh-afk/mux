@@ -136,8 +136,8 @@ final class Session {
         // New panes inherit the source pane's target, and its working
         // directory only when they stay on the same machine. The directory
         // is resolved daemon-side from the source pane's live process
-        // (cwdFrom); pwd (OSC 7, when shell integration provides it) is an
-        // explicit override.
+        // (cwdFrom); pwd rides along only as the pane's label seed - it
+        // can be stale on a remote shell that never reports OSC 7.
         let sameHost = target.inheritsDirectory(from: source)
         // Splits inherit the source pane's font zoom, matching ghostty's
         // window-inherit-font-size default.

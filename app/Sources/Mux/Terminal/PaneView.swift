@@ -396,7 +396,8 @@ final class PaneView: NSView {
     /// fallback when no relay binary is bundled. `cwdFrom` names the pty
     /// (a split's source pane, same daemon) whose live working directory
     /// the new shell inherits, resolved daemon-side - no shell
-    /// integration needed. An explicit `cwd` wins.
+    /// integration needed, and it wins over `cwd`, which only seeds panes
+    /// with no live source (restore, recovery).
     private func defaultCommand(cwd: String?, cwdFrom: UUID? = nil) -> String? {
         // An ix pane runs `ix shell <vm>` in its pty unless the caller named
         // something else to run there (VM creation runs `ix new` instead,
@@ -420,11 +421,13 @@ final class PaneView: NSView {
             parts += ["--", Self.quote(inPty)]
             return parts.joined(separator: " ")
         }
-        if let cwd {
-            parts += ["--cwd", "\"\(cwd)\""]
-        }
         if let cwdFrom {
+            // Never send --cwd beside --cwd-from: the daemon would let it
+            // win, and a client-side pwd can be stale (a remote shell with
+            // no OSC 7 never updates it). The live process is the truth.
             parts += ["--cwd-from", "\"\(cwdFrom.uuidString)\""]
+        } else if let cwd {
+            parts += ["--cwd", "\"\(cwd)\""]
         }
         return parts.joined(separator: " ")
     }
