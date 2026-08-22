@@ -229,6 +229,10 @@ mod tests {
         let mut buf = Vec::new();
         write_lane(&mut buf, 2, b"hello").unwrap();
         assert_eq!(buf, [6, 0, 0, 0, 2, b'h', b'e', b'l', b'l', b'o']);
+    }
+
+    #[test]
+    fn message_layout_is_exact() {
         // [u32 LE len=5][payload="hello"]
         assert_eq!(
             encode_message(b"hello").unwrap(),
