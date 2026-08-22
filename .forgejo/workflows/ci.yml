@@ -124,16 +124,15 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
-      # Proof that the daemon actually runs on Linux, not just that it
-      # compiles: a real pty, a detach by SIGKILL, and a replayed reattach.
-      - name: muxd end-to-end
-        run: |
-          set -euo pipefail
-          cargo build -p muxd -p mux-attach
-          python3 scripts/test-muxd-e2e.py
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit
+          tool: just,cargo-audit
+      # Proof the daemon actually runs on Linux, not just that it
+      # compiles: real ptys, real binaries, hermetic sockets - attach,
+      # kill, reattach and replay; the self-upgrade handoff; the QUIC
+      # broker. Loopback and a private HOME throughout, so this is safe
+      # to run on a shared runner same as on a developer's machine.
+      - run: just e2e
       - run: cargo audit
 
   lint:
