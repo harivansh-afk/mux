@@ -1,11 +1,7 @@
 import AppKit
 
-/// The keybinds overlay (prefix ?): a bordered box centered over the panes.
-/// Title row ("keybinds" left in plain text, an "esc close" badge right),
-/// then the section blocks laid out in columns side by side so everything
-/// fits at once - no scrolling, no footer. Section headings are bare
-/// words; the key that enters a mode is that section's first row.
-/// PrefixEngine drives dismissal; the overlay never takes focus.
+/// The keybinds overlay (prefix ?): a bordered box centered over the panes,
+/// with the sections laid out in columns so everything fits at once.
 final class HelpOverlayView: NSView {
     private struct Section {
         let title: String

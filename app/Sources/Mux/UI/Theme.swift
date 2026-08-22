@@ -1,16 +1,6 @@
 import AppKit
 import GhosttyKit
 
-// Light/dark theming for mux chrome: cozybox gruvbox with a deliberately
-// greyscale accent, matching the user's terminal theme.
-//
-// The terminal contents theme themselves: we forward the effective
-// appearance to libghostty app-wide (ghostty_app_set_color_scheme) and to
-// every surface (ghostty_surface_set_color_scheme, via .muxThemeDidChange
-// in PaneView), which selects the light/dark variant of the user's
-// `theme = light:...,dark:...` ghostty config live and keeps OSC 10/11
-// luminance detection correct for programs running inside the panes.
-
 enum Appearance {
     case light
     case dark
@@ -56,24 +46,14 @@ enum Chrome {
 }
 
 struct Palette {
-    /// Overlay/bar background (= terminal background).
     let panelBg: NSColor
-    /// Accent for keys and the mode badge background.
     let accent: NSColor
-    /// Badge text on accent (= panelBg for contrast).
     let accentContrast: NSColor
-    /// Dim descriptions.
     let dim: NSColor
-    /// Primary text.
     let text: NSColor
-    /// The active-item highlight (session indicator's current number).
     let pink: NSColor
-    /// Live status in the hosts overlay: a host that answered. Also the
-    /// agent-state done check.
     let ok: NSColor
-    /// Live status in the hosts overlay: a host that did not.
     let bad: NSColor
-    /// Agent-state working (the half-circle while an agent runs).
     let busy: NSColor
     /// Pane separator lines. Derived from the terminal background exactly
     /// like ghostty's default `split-divider-color` (Ghostty.Config.swift
@@ -195,23 +175,11 @@ final class ThemeManager {
         guard force || next != appearance else { return }
         appearance = next
 
-        // Tell libghostty so `theme = light:...,dark:...` configs switch
-        // and OSC 10/11 background reports match the visible theme. Each
-        // surface also carries its own conditional state; PaneView pushes
-        // the scheme per surface on .muxThemeDidChange below.
         if let app = GhosttyRuntime.shared?.app {
             ghostty_app_set_color_scheme(app, colorScheme)
-            // Synchronously re-derive the app config under the new state
-            // before anything else runs. The call above only marks the
-            // state and requests an async soft reload; a surface created
-            // before that lands clones a config whose conditional state
-            // disagrees with the app's, and the core then replays the
-            // config file for that surface - dropping everything set
-            // per-surface, above all the attach command: the pane
-            // silently becomes a bare local shell and nothing reaches
-            // the daemon. refresh runs on the main thread, where panes
-            // are born, so after this line no surface can ever see the
-            // mismatch.
+            // Conditional-theme invariant (CLAUDE.md): this reload must stay
+            // synchronous and run before any surface is created, or a
+            // surface born mid-transition silently loses its attach command.
             GhosttyRuntime.shared?.reloadConfig(soft: true)
         }
 
