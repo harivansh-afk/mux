@@ -210,9 +210,8 @@ class Pty:
         ready, _, _ = select.select([self.master], [], [], max(timeout, 0))
         return bool(ready)
 
-def list_ptys(mux_attach_bin: str, env: dict) -> list[dict]:
+def list_ptys(muxd_bin: str, env: dict) -> list[dict]:
     """The pane list, as the daemon this `env` points at sees it, through
-    `mux-attach --list --json`. Task 07 adds `muxd ls --json`; when it
-    lands, this is the only line these scripts need to change."""
-    result = run([mux_attach_bin, "--list", "--json"], env)
+    `muxd ls --json` (one JSON object per line)."""
+    result = run([muxd_bin, "ls", "--json"], env)
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
