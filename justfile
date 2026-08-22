@@ -33,9 +33,14 @@ lint: check
     lint/astlog/check.sh
 
 # The lint engine: Datalog over tree-sitter, from the index monorepo. Pinned
-# by revision so a rule that passes here passes in CI. `cargo install --git`
-# cannot name a member of a virtual workspace, so this clones first.
-astlog:
+# by revision so a rule that passes here passes in CI.
+#
+# `cargo install --git <url> astlog` does NOT work and is not a shortcut worth
+# retrying: astlog is a member of a virtual workspace, and cargo will not
+# select a member from a git source (checked with and without --rev and
+# --locked; all three fail with "could not find astlog with version *").
+# Cloning first and installing by path is the working form.
+astlog-install:
     #!/usr/bin/env bash
     set -euo pipefail
     src="${XDG_CACHE_HOME:-$HOME/.cache}/mux/astlog-{{ASTLOG_REV}}"
