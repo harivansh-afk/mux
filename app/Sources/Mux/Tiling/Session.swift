@@ -36,15 +36,13 @@ enum NewPaneTarget {
 /// (attach, focus, layoutPanes, saveState, sessionDidEmpty).
 final class Session {
     private weak var controller: MuxWindowController?
-    private let runtime: GhosttyRuntime
 
     private(set) var tree: SplitNode?
     private(set) var panes: [UUID: PaneView] = [:]
     private(set) var focusedID: UUID?
     private(set) var zoomedID: UUID?
 
-    init(runtime: GhosttyRuntime, controller: MuxWindowController) {
-        self.runtime = runtime
+    init(controller: MuxWindowController) {
         self.controller = controller
     }
 
@@ -119,7 +117,7 @@ final class Session {
         expectExisting: Bool = false
     ) -> PaneView {
         let pane = PaneView(
-            id: id, runtime: runtime, workingDirectory: workingDirectory, cwdFrom: cwdFrom,
+            id: id, workingDirectory: workingDirectory, cwdFrom: cwdFrom,
             target: target, ptyCommand: ptyCommand, initialFrame: initialFrame,
             fontDelta: fontDelta, expectExisting: expectExisting
         )
