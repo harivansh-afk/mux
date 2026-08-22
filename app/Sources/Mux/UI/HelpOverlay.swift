@@ -111,18 +111,19 @@ final class HelpOverlayView: PanelView {
             : NSSize(width: sizes.map(\.width).reduce(0, +) + gap, height: sizes.map(\.height).max() ?? 0)
     }
 
-    /// Never wider or taller than the window, less a margin: columns stack
-    /// before the right edge is lost, and the body scrolls before the
-    /// bottom is.
+    /// Never wider than the window, less a margin: columns stack before
+    /// the right edge is lost. Stacking trades width for scrolling, not
+    /// height: a stacked overlay keeps the height the columns had side by
+    /// side, and the body scrolls the rest. A short window caps that too.
     override func desiredSize(in bounds: NSRect) -> NSSize {
-        let room = NSSize(width: bounds.width - 48, height: bounds.height - 48)
-        // Measure side by side first; stack only when that does not fit.
+        let room = NSSize(width: bounds.width - 48, height: bounds.height * 0.85)
         stacked = false
-        stacked = Self.inset * 2 + contentSize.width > room.width
+        let sideBySide = contentSize
+        stacked = Self.inset * 2 + sideBySide.width > room.width
         let content = contentSize
         return NSSize(
             width: min(Self.inset * 2 + content.width, room.width),
-            height: min(Self.inset * 2 + Chrome.rowHeight + content.height, room.height)
+            height: min(Self.inset * 2 + Chrome.rowHeight + sideBySide.height, room.height)
         )
     }
 
