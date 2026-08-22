@@ -68,11 +68,8 @@ impl Policy {
 
 /// Take the control socket. Separate from [`serve`] so a daemon only
 /// publishes itself (the pidfile a successor signals, see `migrate.rs`)
-/// once it actually owns the socket.
-///
-/// # Errors
-///
-/// Another daemon already owns the socket, or the bind fails.
+/// once it actually owns the socket. Fails when another daemon already
+/// owns it.
 pub async fn bind(socket: &std::path::Path) -> Result<UnixListener> {
     // A live daemon on the socket wins; a stale file is replaced.
     if UnixStream::connect(socket).await.is_ok() {
@@ -88,11 +85,6 @@ pub async fn bind(socket: &std::path::Path) -> Result<UnixListener> {
 
 /// Serve the control socket forever. Only a listener that has stopped
 /// being a listener ends this.
-///
-/// # Errors
-///
-/// An accept failure that is about the socket rather than the moment; see
-/// [`transient`].
 pub async fn serve(manager: Manager, listener: UnixListener) -> Result<()> {
     loop {
         let stream = match listener.accept().await {
@@ -144,10 +136,6 @@ async fn handle_unix(manager: Manager, stream: UnixStream) -> Result<()> {
 
 /// One run of the protocol over any byte stream: handshake, then either
 /// a one-shot reply (list, kill, rejection) or an attached session.
-///
-/// # Errors
-///
-/// A malformed or slow handshake, or an IO failure on the stream.
 pub async fn handle_connection<R, W>(
     manager: Manager,
     mut reader: R,

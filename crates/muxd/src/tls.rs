@@ -51,7 +51,6 @@ pub struct Identity {
 /// SHA-256 of a secret. Tokens are compared as digests: equal-length,
 /// fixed-size values, so the comparison leaks nothing about the secret
 /// even though `==` short circuits.
-#[must_use]
 pub fn digest(secret: &str) -> [u8; 32] {
     Sha256::digest(secret.as_bytes()).into()
 }
@@ -59,17 +58,12 @@ pub fn digest(secret: &str) -> [u8; 32] {
 /// The printable form of [`digest`]: `sha256:<64 lowercase hex>`, one
 /// line of an authorized-tokens file. This is what `muxd client-digest`
 /// prints and the only thing about a token that ever leaves its machine.
-#[must_use]
 pub fn digest_line(secret: &str) -> String {
     format!("sha256:{}", hex(&digest(secret)))
 }
 
 /// Read `cert.pem`/`key.pem`, generating a self-signed pair on first
 /// use, and log the pin clients need.
-///
-/// # Errors
-///
-/// Certificate generation, PEM parsing, or writing the state directory.
 pub fn load_or_generate_identity() -> Result<Identity> {
     let cert_path = paths::daemon_cert();
     let key_path = paths::daemon_key();
@@ -108,10 +102,6 @@ pub fn load_or_generate_identity() -> Result<Identity> {
 /// Read the bearer token at `path`, generating 32 random bytes (hex) on
 /// first use. Both the daemon's own token and a client's identity are
 /// this, at the two paths `paths` names.
-///
-/// # Errors
-///
-/// Writing the token file or its parent directory.
 pub fn load_or_generate_token(path: &Path) -> Result<String> {
     if let Ok(existing) = fs::read_to_string(path) {
         let token = existing.trim();
@@ -129,10 +119,6 @@ pub fn load_or_generate_token(path: &Path) -> Result<String> {
 
 /// The digests a `--authorized-tokens` file enrolls, on top of `own`
 /// (the daemon's token always admits itself).
-///
-/// # Errors
-///
-/// The file is unreadable, or a line is not `sha256:<64 hex>`.
 pub fn load_admitted(own: [u8; 32], authorized: Option<&Path>) -> Result<Admitted> {
     let mut digests = HashSet::from([own]);
     if let Some(path) = authorized {

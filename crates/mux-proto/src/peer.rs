@@ -99,18 +99,10 @@ pub enum ServerEvent {
     Detached,
 }
 
-/// # Panics
-///
-/// Never for the types in this module: postcard encoding of plain data
-/// enums cannot fail.
-#[must_use]
 pub fn encode<T: Serialize>(value: &T) -> Vec<u8> {
     postcard::to_stdvec(value).expect("postcard encode cannot fail for these types")
 }
 
-/// # Errors
-///
-/// Returns the postcard error when `bytes` is not a valid encoding of `T`.
 pub fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, postcard::Error> {
     postcard::from_bytes(bytes)
 }
@@ -118,18 +110,12 @@ pub fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, postcard:
 /// Decode a value from the front of `bytes`, ignoring what follows. This
 /// is how a daemon reads the version out of a request whose shape it
 /// cannot decode: the version is the first field by design.
-///
-/// # Errors
-///
-/// Returns the postcard error when `bytes` does not start with a valid
-/// encoding of `T`.
 pub fn decode_prefix<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, postcard::Error> {
     postcard::take_from_bytes(bytes).map(|(value, _rest)| value)
 }
 
 /// Default daemon socket: a short /tmp path (`sun_path` is 104 bytes on
 /// darwin), per-uid so multi-user machines don't collide.
-#[must_use]
 pub fn socket_path(uid: u32) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("/tmp/muxd-{uid}.sock"))
 }

@@ -76,7 +76,6 @@ impl Terminal {
     /// Create a new terminal with the given dimensions.
     ///
     /// Dimensions are clamped to a minimum of 1×1 (see [`resize`]).
-    #[must_use]
     pub fn new(rows: u16, cols: u16) -> Option<Self> {
         let rows = rows.max(1);
         let cols = cols.max(1);
@@ -111,7 +110,6 @@ impl Terminal {
     }
 
     /// Get current cursor position (1-based row, col).
-    #[must_use]
     pub fn cursor_position(&self) -> CursorPosition {
         let mut col: u16 = 1;
         let mut row: u16 = 1;
@@ -131,14 +129,12 @@ impl Terminal {
     /// When true, the next printing character will trigger a line wrap.
     /// CUP escape sequences clear this flag, so reattach must handle it
     /// specially to preserve cursor behavior.
-    #[must_use]
     pub fn cursor_pending_wrap(&self) -> bool {
         // SAFETY: handle is valid.
         unsafe { ffi::ghostty_vt_terminal_cursor_pending_wrap(self.handle.as_ptr()) }
     }
 
     /// Capture current screen state for reattach redraw.
-    #[must_use]
     pub fn screen_dump(&self) -> ScreenDump {
         let CursorPosition {
             row: cursor_row,
@@ -180,7 +176,6 @@ impl Terminal {
     /// per-cell SGR attributes, and emits terminal-level state (modes, scroll
     /// region, tabstops, charsets, etc.) in an order that avoids cursor-homing
     /// side effects. See `renderReattach` in `zig/lib.zig` for emission order.
-    #[must_use]
     pub fn render_screen_bytes(&self) -> Vec<u8> {
         // SAFETY: handle is valid.
         let bytes = unsafe { ffi::ghostty_vt_terminal_render_reattach(self.handle.as_ptr()) };

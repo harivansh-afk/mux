@@ -17,8 +17,12 @@ warnings = "deny"
 # `lint_groups_priority` otherwise).
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
-cargo = { level = "deny", priority = -1 }
-multiple_crate_versions = "allow"
+# The pedantic doc lints ask every fallible or value-returning function to
+# restate its signature in prose. On four unpublished crates that is noise,
+# not documentation.
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 
 [workspace.dependencies]
 # Local crates: declared once here (the one table where a `path` is allowed);

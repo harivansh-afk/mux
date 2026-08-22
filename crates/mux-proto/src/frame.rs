@@ -38,11 +38,6 @@ pub enum FrameError {
 }
 
 /// Write one lane frame.
-///
-/// # Errors
-///
-/// Returns [`FrameError::TooLarge`] when the payload cannot be described by
-/// the u32 length prefix, or [`FrameError::Io`] when the writer fails.
 pub fn write_lane<W: Write>(w: &mut W, lane: u8, payload: &[u8]) -> Result<(), FrameError> {
     let len = u32::try_from(payload.len())
         .ok()
@@ -55,13 +50,6 @@ pub fn write_lane<W: Write>(w: &mut W, lane: u8, payload: &[u8]) -> Result<(), F
 }
 
 /// Read one lane frame. Returns `Ok(None)` on clean EOF at a frame boundary.
-///
-/// # Errors
-///
-/// Returns [`FrameError::Empty`] on a zero-length frame,
-/// [`FrameError::TooLarge`] when the length prefix exceeds
-/// [`FrameLimits::max_frame_size`], or [`FrameError::Io`] on read failure
-/// (including EOF inside a frame).
 pub fn read_lane_frame<R: Read>(
     r: &mut R,
     limits: FrameLimits,

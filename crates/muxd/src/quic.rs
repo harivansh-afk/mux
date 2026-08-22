@@ -40,11 +40,6 @@ use crate::tls::{self, Admitted, Identity};
 /// Load the daemon's identity and the tokens it admits, bind, and serve.
 /// Never returns `Ok`: while the listener was asked for, serving it is
 /// the daemon's job for as long as the daemon lives.
-///
-/// # Errors
-///
-/// Missing or unreadable TLS material, an unparseable authorized-tokens
-/// file, a failed bind, or a closed endpoint.
 pub async fn serve(manager: Manager, addr: SocketAddr, authorized: Option<&Path>) -> Result<()> {
     let identity = tls::load_or_generate_identity()?;
     let token = tls::load_or_generate_token(&paths::daemon_token())?;
@@ -61,10 +56,6 @@ pub async fn serve(manager: Manager, addr: SocketAddr, authorized: Option<&Path>
 /// Bind a QUIC endpoint presenting `identity`. Separate from [`accept`]
 /// so a caller can read `local_addr()` (an ephemeral port in tests)
 /// before serving.
-///
-/// # Errors
-///
-/// A rustls config the ring provider rejects, or a failed UDP bind.
 pub fn endpoint(addr: SocketAddr, identity: &Identity) -> Result<Endpoint> {
     // rustls 0.23 has no implicit provider: name ring (the feature the
     // workspace pins) rather than depending on process-wide install

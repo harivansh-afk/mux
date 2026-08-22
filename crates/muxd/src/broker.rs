@@ -71,11 +71,6 @@ const UNREACHABLE: &str = "cannot reach";
 /// the pane as an `Err` `OpenReply` on lane 0, the same shape the local
 /// arms of the protocol use, so the pane shows a message instead of a
 /// silently dead socket.
-///
-/// # Errors
-///
-/// Returns an error only when writing to the pane's own socket fails;
-/// broker-side failures are turned into error replies instead.
 pub async fn relay<R, W>(request: OpenRequest, reader: R, writer: W) -> Result<()>
 where
     R: AsyncRead + Unpin,

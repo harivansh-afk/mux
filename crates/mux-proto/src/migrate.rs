@@ -18,7 +18,6 @@ pub const MAX_MIGRATE_FDS: usize = 256;
 pub const MIGRATE_ACK: u8 = 0xAC;
 
 /// Short /tmp path (`sun_path` is 104 bytes on darwin), per-uid.
-#[must_use]
 pub fn migrate_socket_path(uid: u32) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("/tmp/muxd-{uid}-migrate.sock"))
 }
