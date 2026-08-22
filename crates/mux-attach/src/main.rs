@@ -310,7 +310,8 @@ fn run_control(target: Option<String>, mode: OpenMode, json: bool) -> Result<()>
                         },
                         if p.attached { "attached" } else { "detached" },
                         if p.exited { " exited" } else { "" },
-                        p.cwd.as_deref()
+                        p.cwd
+                            .as_deref()
                             .map(|c| format!("\t{c}"))
                             .unwrap_or_default(),
                     );
@@ -562,7 +563,11 @@ fn print_notice(message: &str) {
 /// Handshake on an open socket and check the reply. The flag is the
 /// reply's `created`: true when the daemon had no pty by this name and
 /// made one, rather than attaching to a survivor.
-fn open_session(attach: &Attach, stream: UnixStream, size: (u16, u16)) -> Result<(UnixStream, bool)> {
+fn open_session(
+    attach: &Attach,
+    stream: UnixStream,
+    size: (u16, u16),
+) -> Result<(UnixStream, bool)> {
     let (cols, rows) = size;
     let mut writer = stream.try_clone()?;
     write_request(

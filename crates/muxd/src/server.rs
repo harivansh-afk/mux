@@ -282,7 +282,14 @@ where
 
     let attachment = manager::attach(&session, cols, rows);
     let client_id = attachment.id;
-    tracing::info!(name, created, cols, rows, client = client_id.raw(), "attached");
+    tracing::info!(
+        name,
+        created,
+        cols,
+        rows,
+        client = client_id.raw(),
+        "attached"
+    );
 
     let attached: OpenReply = Ok(Opened::Attached {
         name: name.clone(),
