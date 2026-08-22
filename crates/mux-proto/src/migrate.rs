@@ -1,11 +1,5 @@
-//! Daemon self-upgrade contract (M2.5): a new muxd adopts the old one's
-//! live ptys over a unix socket with `SCM_RIGHTS` fd passing.
-//!
-//! Wire: one `[u32 LE len][postcard MigratePayload]` message with the PTY
-//! master fds attached as `SCM_RIGHTS` control data, one fd per pty, in
-//! `ptys` order. Unlike upstream ix-console, the payload carries a screen
-//! snapshot per pty (`render_screen_bytes`), so scrollback and screen
-//! state survive the handoff instead of being rebuilt empty.
+//! Daemon self-upgrade contract: a new muxd adopts the old one's live
+//! ptys over a unix socket with `SCM_RIGHTS` fd passing.
 
 use serde::{Deserialize, Serialize};
 

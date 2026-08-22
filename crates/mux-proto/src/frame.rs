@@ -1,11 +1,8 @@
-//! Lane framing: `[u32 LE length][u8 lane][payload]`.
-//!
-//! `length` counts the lane byte plus the payload, matching ix's
-//! rpc-transport `frame.rs`. Keep this file byte-compatible with upstream.
+//! Lane framing: `[u32 LE length][u8 lane][payload]`. `length` covers
+//! lane + payload.
 
 use std::io::{self, Read, Write};
 
-/// Public-peer frame cap (ix uses 64 MiB public, 512 MiB for mTLS peers).
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,11 +1,3 @@
-//! muxd's native peer protocol: the ix lane framing carrying
-//! postcard-encoded control values.
-//!
-//! ix VMs speak the ix codec encoding (`shell.rs` types, M4 golden-byte
-//! work); mux peers (Mux.app panes via mux-attach <-> muxd) speak these
-//! types. Same framing, same lane numbering, so mux-attach's relay loop
-//! is transport-agnostic.
-//!
 //! Handshake: `[u32 LE len][postcard OpenRequest]`, then lane frames.
 //! Ptys are keyed by client-chosen name (the pane id), so "attach or
 //! create" is one round trip and restore needs no id handoff.
@@ -22,7 +14,7 @@ pub const MAX_REQUEST_BYTES: u32 = 1024 * 1024;
 /// v4: `cwd_from`; v5: `PtyInfo::cwd`).
 pub const PROTOCOL_VERSION: u32 = 5;
 
-/// ALPN for muxd's QUIC listener (M3). Each bidirectional stream carries
+/// ALPN for muxd's QUIC listener. Each bidirectional stream carries
 /// exactly one protocol run: the same handshake + lane frames as a unix
 /// socket connection.
 pub const ALPN: &[u8] = b"muxd/1";
