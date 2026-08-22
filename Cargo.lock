@@ -299,10 +299,6 @@ dependencies = [
 [[package]]
 name = "ghostty-vt"
 version = "0.2.0"
-dependencies = [
- "nix",
- "serde",
-]
 
 [[package]]
 name = "hash32"
