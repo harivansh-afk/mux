@@ -22,7 +22,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use mux_proto::paths;
 use mux_proto::peer;
-use quinn::{Endpoint, Incoming, RecvStream, SendStream, ServerConfig};
+use quinn::{Endpoint, Incoming, ServerConfig};
 
 /// Explicit rather than inherited from quinn (whose default happens to
 /// match): 30 seconds of silence from a client that keep-alives every
@@ -112,7 +112,7 @@ async fn handle_connection(manager: Manager, incoming: Incoming, admitted: Admit
     loop {
         // Every close - graceful, idle timeout, peer gone - ends the
         // accept loop the same way: no more streams are coming.
-        let (send, recv) = match connection.accept_bi().await {
+        let (mut send, mut recv) = match connection.accept_bi().await {
             Ok(stream) => stream,
             Err(e) => {
                 tracing::info!(peer = %peer_addr, reason = %e, "quic client disconnected");
@@ -122,26 +122,14 @@ async fn handle_connection(manager: Manager, incoming: Incoming, admitted: Admit
         let manager = manager.clone();
         let admitted = admitted.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_stream(manager, send, recv, admitted).await {
+            let policy = Policy::Remote { admitted };
+            let served = server::handle_connection(manager, &mut recv, &mut send, &policy).await;
+            // A one-shot caller (list, kill, a rejection) reads until
+            // EOF, so finish even when the handler failed.
+            let _ = send.finish();
+            if let Err(e) = served {
                 tracing::debug!(error = %e, "quic stream ended with error");
             }
         });
     }
-}
-
-async fn handle_stream(
-    manager: Manager,
-    mut send: SendStream,
-    mut recv: RecvStream,
-    admitted: Admitted,
-) -> Result<()> {
-    // By reference: the handler owns the streams for its lifetime, and
-    // we still need `send` afterwards to close our half.
-    let result =
-        server::handle_connection(manager, &mut recv, &mut send, &Policy::Remote { admitted })
-            .await;
-    // A one-shot caller (list, kill, a rejection) reads until EOF, so
-    // finish even when the handler failed.
-    let _ = send.finish();
-    result
 }
