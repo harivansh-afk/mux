@@ -59,21 +59,48 @@ final class HostsWindowView: PanelView {
         }
     }
 
-    /// Minimum gap between a row's name and its right-aligned status.
-    private static let gap: CGFloat = 24
-    /// Width reserved for a pending status, sized to a typical resolved
-    /// probe, so an answer landing does not widen the box.
-    private static let statusReserve = ("ok 100ms  10 ptys" as NSString)
-        .size(withAttributes: [.font: Chrome.font]).width
+    private static let font = Chrome.font
+    private static let boldFont = Chrome.boldFont
+    private static let rowHeight = Chrome.rowHeight
+    /// The list is this many characters wide. The chrome face is
+    /// fixed-advance (Berkeley Mono, or the system mono fallback), so a
+    /// character count is an exact column: an alias, its address and a
+    /// resolved status sit inside 52, and the footer's longest form
+    /// ("client digest unavailable" plus the keys) sets the rest.
+    private static let columns = 58
+    /// Minimum blank columns between a row's name and its status.
+    private static let gap = 2
+    /// Every row is one line of `rowHeight`, so the selection bar lands on
+    /// the highlighted one; the glyphs ride at the middle of their band.
+    private static let paragraph: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.minimumLineHeight = rowHeight
+        style.maximumLineHeight = rowHeight
+        return style
+    }()
+    private static let baselineLift = (rowHeight - (font.ascender - font.descender)) / 2
+
+    private static func attributes(
+        _ color: NSColor, bold: Bool = false
+    ) -> [NSAttributedString.Key: Any] {
+        [
+            .font: bold ? boldFont : font,
+            .foregroundColor: color,
+            .paragraphStyle: paragraph,
+            .baselineOffset: baselineLift,
+        ]
+    }
 
     private let footerLabel = NSTextField(labelWithString: "")
-    private let selectionBar: NSView = {
-        let view = NSView()
-        view.wantsLayer = true
-        return view
+    private let selectionBar = NSView()
+    /// The whole list, rows and columns, as one attributed string.
+    private let bodyLabel: NSTextField = {
+        let field = NSTextField(labelWithString: "")
+        field.maximumNumberOfLines = 0
+        field.cell?.wraps = false
+        field.cell?.isScrollable = false
+        return field
     }()
-    private var mainLabels: [NSTextField] = []
-    private var metaLabels: [NSTextField] = []
 
     /// What is on screen: the machines, or the templates while `t` is up.
     private var rows: [Row] = []
@@ -147,6 +174,7 @@ final class HostsWindowView: PanelView {
         // Under the row labels: the highlight is a band behind them.
         addSubview(selectionBar, positioned: .below, relativeTo: nil)
         addSubview(footerLabel)
+        addSubview(bodyLabel)
     }
 
     // MARK: - Machines
@@ -190,7 +218,7 @@ final class HostsWindowView: PanelView {
                       })
                 else { return }
                 hosts[row].status = Self.status(of: probe)
-                refresh()
+                render()
             }
         }
 
@@ -210,7 +238,7 @@ final class HostsWindowView: PanelView {
         Muxd.clientDigest { [weak self] digest in
             guard let self, generation == self.generation else { return }
             self.digest = digest
-            refresh()
+            render()
         }
     }
 
@@ -294,7 +322,7 @@ final class HostsWindowView: PanelView {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(digest, forType: .string)
         copied = true
-        refresh()
+        render()
     }
 
     // MARK: - Layout
@@ -303,19 +331,12 @@ final class HostsWindowView: PanelView {
     /// open and floored by the previous open's final size, so late answers
     /// re-render in place instead of walking the edges around.
     override func desiredSize(in bounds: NSRect) -> NSSize {
-        let current = rows
-        var body: CGFloat = 0
-        for (i, main) in mainLabels.enumerated() where metaLabels.indices.contains(i) {
-            var meta = metaLabels[i].fittingSize.width
-            if current.indices.contains(i), case .pending = current[i].status {
-                meta = max(meta, Self.statusReserve)
-            }
-            body = max(body, main.fittingSize.width + Self.gap + meta)
-        }
-        let titleRow = titleWidth + Self.gap + badgeWidth
-        let width = max(body, titleRow, footerLabel.fittingSize.width) + Self.inset * 2
+        let title = titleWidth + badgeWidth
+        let width = max(
+            bodyLabel.fittingSize.width, title, footerLabel.fittingSize.width
+        ) + Self.inset * 2
         // Title row, the rows themselves, then the footer row.
-        let height = Chrome.rowHeight * CGFloat(current.count + 2) + Self.inset * 2
+        let height = Self.rowHeight * CGFloat(rows.count + 2) + Self.inset * 2
         grownSize = NSSize(
             width: max(grownSize.width, width),
             height: max(grownSize.height, height)
@@ -333,36 +354,21 @@ final class HostsWindowView: PanelView {
             x: rect.minX, y: rect.minY + (row - footerLabel.frame.height) / 2
         )
 
-        let current = rows
-        selectionBar.isHidden = true
-        for (i, main) in mainLabels.enumerated() {
-            let meta = metaLabels[i]
-            let bandY = rect.maxY - row * CGFloat(i + 1)
-            // The footer owns the bottom row: rows that would collide with
-            // it are simply not shown.
-            let visible = bandY >= rect.minY + row
-            main.isHidden = !visible
-            meta.isHidden = !visible
-            guard visible else { continue }
+        // The list fills the band between the title and the footer; rows
+        // that would collide with the footer are clipped, not shown.
+        let rowsTop = rect.maxY
+        let height = min(row * CGFloat(rows.count), max(0, rect.height - row))
+        bodyLabel.frame = NSRect(
+            x: rect.minX, y: rowsTop - height,
+            width: rect.width, height: height
+        )
 
-            meta.sizeToFit()
-            meta.frame = NSRect(
-                x: rect.maxX - meta.frame.width,
-                y: bandY + (row - meta.frame.height) / 2,
-                width: meta.frame.width,
-                height: meta.frame.height
-            )
-            main.sizeToFit()
-            main.frame = NSRect(
-                x: rect.minX,
-                y: bandY + (row - main.frame.height) / 2,
-                width: min(main.frame.width, meta.frame.minX - rect.minX - 8),
-                height: main.frame.height
-            )
-            if i == index, current.indices.contains(i), current[i].selectable {
-                selectionBar.frame = NSRect(x: 1, y: bandY, width: bounds.width - 2, height: row)
-                selectionBar.isHidden = false
-            }
+        let bandY = rowsTop - row * CGFloat(index + 1)
+        let onScreen = rows.indices.contains(index) && rows[index].selectable
+            && bandY >= rect.minY + row
+        selectionBar.isHidden = !onScreen
+        if onScreen {
+            selectionBar.frame = NSRect(x: 1, y: bandY, width: bounds.width - 2, height: row)
         }
     }
 
@@ -370,7 +376,7 @@ final class HostsWindowView: PanelView {
     /// controller re-center a box that may have grown a row.
     private func rowsChanged() {
         resetHighlight()
-        refresh()
+        render()
         onContentChange?()
     }
 
@@ -381,25 +387,6 @@ final class HostsWindowView: PanelView {
     private func resetHighlight() {
         guard !rows.indices.contains(index) || !rows[index].selectable else { return }
         index = rows.firstIndex(where: \.selectable) ?? 0
-    }
-
-    /// One path for every mutation: rebuild the row labels and recolor.
-    private func refresh() {
-        for label in mainLabels + metaLabels {
-            label.removeFromSuperview()
-        }
-        mainLabels = []
-        metaLabels = []
-        for _ in rows {
-            let main = NSTextField(labelWithString: "")
-            main.lineBreakMode = .byTruncatingTail
-            addSubview(main)
-            mainLabels.append(main)
-            let meta = NSTextField(labelWithString: "")
-            addSubview(meta)
-            metaLabels.append(meta)
-        }
-        render()
     }
 
     private static func status(of probe: Muxd.Probe) -> Status {
@@ -435,56 +422,61 @@ final class HostsWindowView: PanelView {
             attributes: [.font: Chrome.font, .foregroundColor: palette.dim]
         )
 
-        for (i, row) in rows.enumerated() where i < mainLabels.count {
+        bodyLabel.attributedStringValue = body(palette)
+        needsLayout = true
+    }
+
+    /// The list as one string. Each row is the name, its dim detail, then
+    /// blanks out to the status in the last columns; a name too long for
+    /// what is left of the line ends in an ellipsis. On the highlight bar
+    /// every colour switches to the contrast one: ok-green on accent would
+    /// be unreadable.
+    private func body(_ palette: Palette) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        for (i, row) in rows.enumerated() {
+            if i > 0 {
+                out.append(NSAttributedString(
+                    string: "\n", attributes: Self.attributes(palette.dim)
+                ))
+            }
             let selected = i == index && row.selectable
-            let main = NSMutableAttributedString()
+            let front: NSColor? = selected ? palette.accentContrast : nil
             // A marker gutter only in the list that has something to mark,
             // so the machines keep their flush left edge.
-            if pickingTemplate, row.selectable {
-                main.append(NSAttributedString(
-                    string: row.current ? "\u{25C6} " : "  ",
-                    attributes: [
-                        .font: Chrome.font,
-                        .foregroundColor: selected ? palette.accentContrast : palette.accent,
-                    ]
-                ))
+            let marker = pickingTemplate && row.selectable
+                ? (row.current ? "\u{25C6} " : "  ") : ""
+            let detail = row.detail.isEmpty ? "" : "  " + row.detail
+            let (status, statusColor) = Self.statusText(row.status, palette: palette)
+            let taken = marker.count + detail.count + status.count
+            var name = row.text
+            if name.count > Self.columns - taken - Self.gap {
+                let room = Self.columns - taken - Self.gap - 1
+                name = room > 0 ? String(name.prefix(room)) + "\u{2026}" : ""
             }
             let bold: Bool = switch row.kind {
             case .heading: true
             case .inert: false
             case .host, .template: selected || row.current
             }
-            main.append(NSAttributedString(
-                string: row.text,
-                attributes: [
-                    .font: bold ? Chrome.boldFont : Chrome.font,
-                    .foregroundColor: selected
-                        ? palette.accentContrast
-                        : Self.color(of: row.kind, palette: palette),
-                ]
+            out.append(NSAttributedString(
+                string: marker, attributes: Self.attributes(front ?? palette.accent)
             ))
-            if !row.detail.isEmpty {
-                main.append(NSAttributedString(
-                    string: "  " + row.detail,
-                    attributes: [
-                        .font: Chrome.font,
-                        .foregroundColor: selected ? palette.accentContrast : palette.dim,
-                    ]
-                ))
-            }
-            mainLabels[i].attributedStringValue = main
-
-            // On the highlight bar everything switches to the contrast
-            // colour: ok-green on accent would be unreadable.
-            let (text, color) = Self.statusText(row.status, palette: palette)
-            metaLabels[i].attributedStringValue = NSAttributedString(
-                string: text,
-                attributes: [
-                    .font: Chrome.font,
-                    .foregroundColor: selected ? palette.accentContrast : color,
-                ]
-            )
+            out.append(NSAttributedString(
+                string: name,
+                attributes: Self.attributes(
+                    front ?? Self.color(of: row.kind, palette: palette), bold: bold
+                )
+            ))
+            let pad = max(Self.gap, Self.columns - taken - name.count)
+            out.append(NSAttributedString(
+                string: detail + String(repeating: " ", count: pad),
+                attributes: Self.attributes(front ?? palette.dim)
+            ))
+            out.append(NSAttributedString(
+                string: status, attributes: Self.attributes(front ?? statusColor)
+            ))
         }
+        return out
     }
 
     private static func statusText(_ status: Status, palette: Palette) -> (String, NSColor) {
