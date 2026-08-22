@@ -9,10 +9,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use mux_proto::frame::{self, OUT_LANE_OPENED};
 use mux_proto::peer::{self, OpenMode, OpenReply, OpenRequest, Opened};
-use mux_proto::frame::OUT_LANE_OPENED;
 use muxd::manager::Manager;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::UnixStream;
 
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -105,22 +104,18 @@ async fn write_request(stream: &mut UnixStream) {
         target: None,
         mode: OpenMode::List,
     };
-    let bytes = peer::encode(&request);
-    let len = u32::try_from(bytes.len()).expect("request length");
-    stream
-        .write_all(&len.to_le_bytes())
+    frame::aio::write_message(stream, &peer::encode(&request))
         .await
-        .expect("write length");
-    stream.write_all(&bytes).await.expect("write request");
+        .expect("write request");
 }
 
 async fn read_reply(stream: &mut UnixStream) -> OpenReply {
     let read = async {
-        let len = stream.read_u32_le().await.expect("reply length");
-        let lane = stream.read_u8().await.expect("reply lane");
+        let (lane, payload) = frame::aio::read_lane(stream)
+            .await
+            .expect("read reply")
+            .expect("reply frame");
         assert_eq!(lane, OUT_LANE_OPENED);
-        let mut payload = vec![0u8; (len - 1) as usize];
-        stream.read_exact(&mut payload).await.expect("reply body");
         peer::decode::<OpenReply>(&payload).expect("decode reply")
     };
     tokio::time::timeout(PATIENCE, read)

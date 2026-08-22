@@ -12,10 +12,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use mux_proto::frame::{
+    self, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
+};
 use mux_proto::peer::{self, OpenMode, OpenReply, OpenRequest, Opened};
-use mux_proto::frame::{IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
 use muxd::manager::{ClientMsg, Manager, PtySession};
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::AsyncReadExt as _;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::Receiver;
 
@@ -134,7 +136,9 @@ async fn a_stolen_attach_leaves_the_new_client_wired() {
     // EOF lands, the clobber has not had its chance to happen.
     read_until_eof(&mut first).await;
 
-    write_frame(&mut second, IN_LANE_INPUT, b"ping\n").await;
+    frame::aio::write_lane(&mut second, IN_LANE_INPUT, b"ping\n")
+        .await
+        .expect("write input");
     let seen = read_output_until(&mut second, b"ping").await;
     assert!(
         seen.windows(4).any(|w| w == b"ping"),
@@ -368,13 +372,9 @@ async fn open_pane(stream: &mut UnixStream, name: &str) -> OpenReply {
             cwd_from: None,
         },
     };
-    let bytes = peer::encode(&request);
-    let len = u32::try_from(bytes.len()).expect("request length");
-    stream
-        .write_all(&len.to_le_bytes())
+    frame::aio::write_message(stream, &peer::encode(&request))
         .await
-        .expect("write length");
-    stream.write_all(&bytes).await.expect("write request");
+        .expect("write request");
 
     let (lane, payload) = read_frame(stream).await.expect("reply frame");
     assert_eq!(lane, OUT_LANE_OPENED);
@@ -388,27 +388,12 @@ async fn read_dump(stream: &mut UnixStream) -> Vec<u8> {
     payload
 }
 
-async fn write_frame(stream: &mut UnixStream, lane: u8, payload: &[u8]) {
-    let len = u32::try_from(payload.len() + 1).expect("frame length");
-    stream
-        .write_all(&len.to_le_bytes())
-        .await
-        .expect("write length");
-    stream.write_all(&[lane]).await.expect("write lane");
-    stream.write_all(payload).await.expect("write payload");
-}
-
 async fn read_frame(stream: &mut UnixStream) -> Option<(u8, Vec<u8>)> {
-    let read = async {
-        let len = stream.read_u32_le().await.ok()?;
-        let lane = stream.read_u8().await.ok()?;
-        let mut payload = vec![0u8; (len - 1) as usize];
-        stream.read_exact(&mut payload).await.ok()?;
-        Some((lane, payload))
-    };
-    tokio::time::timeout(PATIENCE, read)
+    tokio::time::timeout(PATIENCE, frame::aio::read_lane(stream))
         .await
         .expect("frame timed out")
+        .ok()
+        .flatten()
 }
 
 async fn read_output_until(stream: &mut UnixStream, needle: &[u8]) -> Vec<u8> {

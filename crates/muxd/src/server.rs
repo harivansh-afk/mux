@@ -11,9 +11,9 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
 use mux_proto::frame::{
-    IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
+    self, IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::manager::{self, ClientMsg, Manager};
@@ -288,8 +288,8 @@ where
         name: name.clone(),
         created,
     });
-    write_frame(&mut writer, OUT_LANE_OPENED, &peer::encode(&attached)).await?;
-    write_frame(&mut writer, OUT_LANE_OUTPUT, &attachment.dump).await?;
+    frame::aio::write_lane(&mut writer, OUT_LANE_OPENED, &peer::encode(&attached)).await?;
+    frame::aio::write_lane(&mut writer, OUT_LANE_OUTPUT, &attachment.dump).await?;
     writer.flush().await?;
 
     // The client's handshake size can be provisional (a restoring app
@@ -309,11 +309,11 @@ where
             match msg {
                 ClientMsg::Output(bytes) => {
                     live_output.store(true, std::sync::atomic::Ordering::Relaxed);
-                    write_frame(&mut writer, OUT_LANE_OUTPUT, &bytes).await?;
+                    frame::aio::write_lane(&mut writer, OUT_LANE_OUTPUT, &bytes).await?;
                 }
                 ClientMsg::Exit(code) => {
                     let event = ServerEvent::Exit { code };
-                    write_frame(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event)).await?;
+                    frame::aio::write_lane(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event)).await?;
                 }
             }
             writer.flush().await?;
@@ -326,14 +326,14 @@ where
     let live_output = &live_output;
     let receive = async move {
         loop {
-            let Some(frame) = read_frame(&mut reader).await? else {
+            let Some((lane, payload)) = frame::aio::read_lane(&mut reader).await? else {
                 return Ok::<_, anyhow::Error>(()); // clean detach
             };
-            match frame.0 {
+            match lane {
                 IN_LANE_INPUT => {
-                    pty::write_all(&session_in.master, &frame.1).await?;
+                    pty::write_all(&session_in.master, &payload).await?;
                 }
-                IN_LANE_CONTROL => match peer::decode::<ClientControl>(&frame.1) {
+                IN_LANE_CONTROL => match peer::decode::<ClientControl>(&payload) {
                     Ok(ClientControl::Resize { cols, rows }) => {
                         let redump = {
                             let mut term = session_in.terminal.lock();
@@ -369,19 +369,14 @@ where
 }
 
 /// The one-shot handshake answer on the opened lane.
-async fn reply<W: AsyncWrite + Unpin>(writer: &mut W, reply: &OpenReply) -> Result<()> {
-    write_frame(writer, OUT_LANE_OPENED, &peer::encode(reply)).await?;
+pub(crate) async fn reply<W: AsyncWrite + Unpin>(writer: &mut W, reply: &OpenReply) -> Result<()> {
+    frame::aio::write_lane(writer, OUT_LANE_OPENED, &peer::encode(reply)).await?;
     writer.flush().await?;
     Ok(())
 }
 
 async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<OpenRequest> {
-    let len = reader.read_u32_le().await.context("request length")?;
-    if len == 0 || len > peer::MAX_REQUEST_BYTES {
-        bail!("bad request length {len}");
-    }
-    let mut buf = vec![0u8; len as usize];
-    reader.read_exact(&mut buf).await.context("request body")?;
+    let buf = frame::aio::read_message(reader).await.context("request")?;
     match peer::decode(&buf) {
         Ok(request) => Ok(request),
         // A request shaped by another protocol version cannot decode at
@@ -405,32 +400,4 @@ async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<OpenReques
             Err(e).context("request decode")
         }
     }
-}
-
-/// Lane frame: [u32 LE length][u8 lane][payload]; length covers lane+payload.
-async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<(u8, Vec<u8>)>> {
-    let len = match reader.read_u32_le().await {
-        Ok(len) => len,
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    if len == 0 || len > mux_proto::frame::MAX_FRAME_SIZE {
-        bail!("bad frame length {len}");
-    }
-    let lane = reader.read_u8().await?;
-    let mut payload = vec![0u8; (len - 1) as usize];
-    reader.read_exact(&mut payload).await?;
-    Ok(Some((lane, payload)))
-}
-
-async fn write_frame<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    lane: u8,
-    payload: &[u8],
-) -> Result<()> {
-    let len = 1u32 + u32::try_from(payload.len()).context("frame too large")?;
-    writer.write_u32_le(len).await?;
-    writer.write_u8(lane).await?;
-    writer.write_all(payload).await?;
-    Ok(())
 }
