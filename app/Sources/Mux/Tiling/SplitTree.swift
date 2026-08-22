@@ -177,43 +177,24 @@ extension SplitNode {
 
     /// Adjust the ratio of the deepest ancestor split of `id` whose
     /// direction matches `axis`. `delta` is signed toward first-child growth.
-    /// Returns the adjusted tree and whether a split was found.
+    /// Returns nil when `id` has no such ancestor.
     func adjustingRatio(
         around id: UUID,
         axis: SplitDirection,
         delta: Double
-    ) -> (SplitNode, Bool) {
-        switch self {
-        case .leaf:
-            return (self, false)
-        case var .split(b):
+    ) -> SplitNode? {
+        guard case var .split(b) = self else { return nil }
+        for (isFirst, child) in [(true, b.first), (false, b.second)] where child.contains(id) {
             // Depth-first: prefer the deepest matching split containing id.
-            if b.first.contains(id) {
-                let (adjusted, found) = b.first.adjustingRatio(around: id, axis: axis, delta: delta)
-                if found {
-                    b.first = adjusted
-                    return (.split(b), true)
-                }
-                if b.direction == axis {
-                    b.ratio = min(0.9, max(0.1, b.ratio + delta))
-                    return (.split(b), true)
-                }
-                return (.split(b), false)
+            if let adjusted = child.adjustingRatio(around: id, axis: axis, delta: delta) {
+                if isFirst { b.first = adjusted } else { b.second = adjusted }
+                return .split(b)
             }
-            if b.second.contains(id) {
-                let (adjusted, found) = b.second.adjustingRatio(around: id, axis: axis, delta: delta)
-                if found {
-                    b.second = adjusted
-                    return (.split(b), true)
-                }
-                if b.direction == axis {
-                    // Growing the second child means shrinking first.
-                    b.ratio = min(0.9, max(0.1, b.ratio - delta))
-                    return (.split(b), true)
-                }
-                return (.split(b), false)
-            }
-            return (self, false)
+            guard b.direction == axis else { return nil }
+            // Growing the second child means shrinking the first.
+            b.ratio = min(0.9, max(0.1, b.ratio + (isFirst ? delta : -delta)))
+            return .split(b)
         }
+        return nil
     }
 }

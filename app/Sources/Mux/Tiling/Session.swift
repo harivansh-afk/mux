@@ -313,8 +313,7 @@ final class Session {
         // adjustingRatio applies +delta under `first` and -delta under `second`,
         // so a right/down delta grows the focused pane whichever side it is on.
         let delta: Double = (direction == .right || direction == .down) ? step : -step
-        let (adjusted, found) = tree.adjustingRatio(around: focusedID, axis: axis, delta: delta)
-        guard found else { return }
+        guard let adjusted = tree.adjustingRatio(around: focusedID, axis: axis, delta: delta) else { return }
         self.tree = adjusted
         controller?.layoutPanes()
         controller?.saveState()
