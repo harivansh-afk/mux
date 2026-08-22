@@ -72,8 +72,7 @@ final class HostsWindowView: PanelView {
     /// A text field keeps a few points of its own on each side of the
     /// text; without them the last column is a fraction short and a row
     /// whose last character is a letter wraps onto a second line.
-    private static let boxWidth = (" " as NSString)
-        .size(withAttributes: [.font: font]).width * CGFloat(columns) + inset * 2 + cellInset
+    private static let columnWidth = (" " as NSString).size(withAttributes: [.font: font]).width
     private static let cellInset: CGFloat = {
         let cell = NSTextField(labelWithString: "").cell ?? NSTextFieldCell()
         let bounds = NSRect(x: 0, y: 0, width: 100, height: rowHeight)
@@ -114,6 +113,11 @@ final class HostsWindowView: PanelView {
         field.cell?.isScrollable = false
         return field
     }()
+
+    /// The columns the window has room for: `columns` unless it is
+    /// narrower, in which case the rows are composed for what fits and
+    /// the status still lands in the last ones.
+    private var fitColumns = columns
 
     /// What is on screen: the machines, or the templates while `t` is up.
     private var rows: [Row] = []
@@ -331,8 +335,14 @@ final class HostsWindowView: PanelView {
     /// landing cannot walk an edge; only a row appearing changes the box,
     /// and only downwards.
     override func desiredSize(in bounds: NSRect) -> NSSize {
-        NSSize(
-            width: min(Self.boxWidth, bounds.width - 48),
+        let room = bounds.width - 48 - Self.inset * 2 - Self.cellInset
+        let fit = min(Self.columns, max(16, Int(room / Self.columnWidth)))
+        if fit != fitColumns {
+            fitColumns = fit
+            bodyLabel.attributedStringValue = body(ThemeManager.shared.palette)
+        }
+        return NSSize(
+            width: Self.columnWidth * CGFloat(fitColumns) + Self.inset * 2 + Self.cellInset,
             height: min(
                 Self.rowHeight * CGFloat(rows.count + 2) + Self.inset * 2,
                 bounds.height * 0.9
@@ -437,7 +447,7 @@ final class HostsWindowView: PanelView {
             case let .bad(value): (value, palette.bad)
             case let .plain(value): (value, palette.dim)
             }
-            let room = Self.columns - marker.count - detail.count
+            let room = fitColumns - marker.count - detail.count
                 - status.count - Self.gap
             let name = row.text.count > room
                 ? String(row.text.prefix(max(0, room - 1))) + "\u{2026}"
