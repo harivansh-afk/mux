@@ -164,7 +164,7 @@ fn exchange(stream: &mut UnixStream, request: &OpenRequest) -> Result<OpenReply>
     let Some((_lane, payload)) = frame::read_lane(stream)? else {
         bail!("daemon closed without a reply");
     };
-    peer::decode::<OpenReply>(&payload).context("decode reply")
+    peer::decode_open_reply(&payload).context("decode reply")
 }
 
 fn ask(target: Option<String>, mode: OpenMode) -> Result<Opened> {

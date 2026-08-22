@@ -38,7 +38,7 @@ use mux_proto::frame::{
     self, write_lane, IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED,
     OUT_LANE_OUTPUT,
 };
-use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
+use mux_proto::peer::{self, ClientControl, OpenMode, OpenRequest, Opened, ServerEvent};
 use nix::sys::termios;
 use parking_lot::Mutex;
 
@@ -375,7 +375,7 @@ fn handshake(stream: &mut UnixStream, request: &OpenRequest) -> Result<Opened> {
         bail!("daemon closed during handshake");
     };
     ensure!(lane == OUT_LANE_OPENED, "unexpected first lane {lane}");
-    peer::decode::<OpenReply>(&payload)?.map_err(|e| anyhow!("{e}"))
+    peer::decode_open_reply(&payload)?.map_err(|e| anyhow!("{e}"))
 }
 
 /// Wait out a daemon that went away and reattach by name. Waits forever:

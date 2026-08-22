@@ -180,6 +180,33 @@ pub fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, postcard:
     postcard::from_bytes(bytes)
 }
 
+/// Decode a handshake reply from a daemon of this version or of v5.
+///
+/// One-release shim for the v5 -> v6 boundary; delete it once no v5
+/// daemon can still be running. v5 replied `Result<Opened, String>` and
+/// v6 replies `Result<Opened, OpenError>`. The Ok arm is byte-identical,
+/// but a v5 rejection is one string where v6 expects `detail` then
+/// `kind`, so the v6 decode runs out of bytes at the kind and fails on
+/// exactly the reply that exists to diagnose skew. Retry as v5 and
+/// classify the prose: a v5 daemon's version rejection starts with
+/// [`V5_VERSION_MISMATCH`], and nothing else it could say has a kind.
+pub fn decode_open_reply(bytes: &[u8]) -> Result<OpenReply, postcard::Error> {
+    decode::<OpenReply>(bytes).or_else(|e| {
+        let Ok(Err(detail)) = decode::<Result<Opened, String>>(bytes) else {
+            return Err(e);
+        };
+        let kind = if detail.starts_with(V5_VERSION_MISMATCH) {
+            ErrorKind::VersionMismatch
+        } else {
+            ErrorKind::Other
+        };
+        Ok(Err(OpenError::new(kind, detail)))
+    })
+}
+
+/// How a v5 daemon's rejection of a newer client begins.
+pub const V5_VERSION_MISMATCH: &str = "protocol version mismatch";
+
 /// Decode a value from the front of `bytes`, ignoring what follows. This
 /// is how a daemon reads the version out of a request whose shape it
 /// cannot decode: the version is the first field by design.
@@ -289,6 +316,34 @@ mod tests {
         assert_eq!(decode::<OpenReply>(&encode(&ok)).unwrap(), ok);
         let err: OpenReply = Err(OpenError::new(ErrorKind::PinMismatch, "nope"));
         assert_eq!(decode::<OpenReply>(&encode(&err)).unwrap(), err);
+    }
+
+    /// The two sides of the v5 -> v6 boundary. A v5 daemon's rejection
+    /// reaches a v6 client with its kind recovered from the prose, and a
+    /// v6 daemon's rejection reaches a v5 client as the string it expects.
+    #[test]
+    fn skewed_replies_decode_on_both_sides() {
+        let v5_detail = "protocol version mismatch: daemon v5, client v6 - upgrade";
+        let from_v5 = encode::<Result<Opened, String>>(&Err(v5_detail.into()));
+        assert!(decode::<OpenReply>(&from_v5).is_err(), "the shim is needed");
+        assert_eq!(
+            decode_open_reply(&from_v5).unwrap(),
+            Err(OpenError::new(ErrorKind::VersionMismatch, v5_detail))
+        );
+        let other = encode::<Result<Opened, String>>(&Err("no such pty".into()));
+        assert_eq!(
+            decode_open_reply(&other).unwrap(),
+            Err(OpenError::new(ErrorKind::Other, "no such pty"))
+        );
+
+        let from_v6: OpenReply = Err(OpenError::new(ErrorKind::VersionMismatch, "v6 says"));
+        assert_eq!(
+            decode::<Result<Opened, String>>(&encode(&from_v6)).unwrap(),
+            Err("v6 says".to_string())
+        );
+        // Not a rejection: the shim stays out of the way.
+        let ok: OpenReply = Ok(Opened::Killed { existed: false });
+        assert_eq!(decode_open_reply(&encode(&ok)).unwrap(), ok);
     }
 
     /// Swift switches on these strings; they are the JSON encoding.
