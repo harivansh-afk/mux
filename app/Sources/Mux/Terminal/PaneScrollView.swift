@@ -28,15 +28,11 @@ final class PaneScrollView: NSView {
     init(pane: PaneView) {
         self.pane = pane
 
-        // The scroll view is our outermost view that controls all our
-        // scrollbar rendering and behavior.
         scrollView = NSScrollView()
         scrollView.hasVerticalScroller = false
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = false
         scrollView.usesPredominantAxisScrolling = true
-        // Always use the overlay style; see mouseMoved for how we make it
-        // usable when the system preference is legacy scrollers.
         scrollView.scrollerStyle = .overlay
         scrollView.drawsBackground = false
         scrollView.contentView.clipsToBounds = false
@@ -121,15 +117,12 @@ final class PaneScrollView: NSView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        // Session drives our frame directly; make sure layout() runs so
-        // the scroll view and pane track it.
         needsLayout = true
     }
 
     override func layout() {
         super.layout()
 
-        // Fill our entire bounds with the scroll view.
         scrollView.frame = bounds
         pane.frame.size = scrollView.bounds.size
 
@@ -171,7 +164,6 @@ final class PaneScrollView: NSView {
     private func synchronizeScrollView() {
         documentView.frame.size.height = documentHeight()
 
-        // Only move our scroll position when the user isn't dragging.
         if !isLiveScrolling {
             let cellHeight = pane.cellSize.height
             if cellHeight > 0, let scrollbar = pane.scrollbar {
@@ -236,7 +228,6 @@ final class PaneScrollView: NSView {
         trackingAreas.forEach { removeTrackingArea($0) }
         super.updateTrackingAreas()
 
-        // Our tracking area is the scroller frame.
         guard let scroller = scrollView.verticalScroller else { return }
         addTrackingArea(NSTrackingArea(
             rect: convert(scroller.bounds, from: scroller),

@@ -33,9 +33,7 @@ struct ModeBarSegment {
 }
 
 final class ModeBarView: NSView {
-    /// One terminal-ish row.
     static let height = Chrome.barHeight
-    /// Flush with the window corners: the bars sit ON the edge, no air.
     static let margin: CGFloat = 0
 
     /// The badge is the visual edge of the bar. Horizontal inset is half
@@ -45,7 +43,6 @@ final class ModeBarView: NSView {
         (max(0, (Self.height - label.fittingSize.height) / 2) / 2).rounded()
     }
 
-    /// Content-sized width for the current segments.
     var desiredWidth: CGFloat {
         label.fittingSize.width + textInset * 2
     }

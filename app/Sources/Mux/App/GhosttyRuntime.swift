@@ -233,7 +233,6 @@ final class GhosttyRuntime {
         guard !items.isEmpty else { return }
 
         if !confirm {
-            // Declare all types, then set data for each.
             let types = items.compactMap { NSPasteboard.PasteboardType(mimeType: $0.mime) }
             pasteboard.declareTypes(types, owner: nil)
             for item in items {
@@ -344,7 +343,6 @@ final class GhosttyRuntime {
         target: ghostty_target_s,
         action: ghostty_action_s
     ) -> Bool {
-        // Resolve the pane view for surface-targeted actions.
         var view: PaneView?
         if target.tag == GHOSTTY_TARGET_SURFACE {
             view = paneView(surface: target.target.surface)

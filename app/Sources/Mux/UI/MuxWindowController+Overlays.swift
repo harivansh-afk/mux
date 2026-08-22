@@ -88,10 +88,6 @@ extension MuxWindowController {
 
     // MARK: - Hosts window
 
-    /// prefix t: where a pane can live - local, the aliases with a live
-    /// probe, the ix VMs. Every query fires on open, so the box fills in as
-    /// answers arrive; the view's sticky sizing keeps the box from moving
-    /// while they land.
     func showHostsWindow() {
         hostsWindow.onContentChange = { [weak self] in self?.positionHostsWindow() }
         hostsWindow.reload()
@@ -109,15 +105,11 @@ extension MuxWindowController {
         positionHostsWindow()
     }
 
-    /// True while the template list is up, so esc backs out of it rather
-    /// than closing the window.
     var hostsWindowPickingTemplate: Bool {
         hostsWindow.pickingTemplate
     }
 
-    /// t / esc: swap between the machines and the templates a new VM would
-    /// be built from. Coming back does not re-probe: the answers the hosts
-    /// already gave are still on screen.
+    /// Coming back does not re-probe: the answers the hosts already gave are still on screen.
     func showHostsTemplates() {
         hostsWindow.showTemplates()
         positionHostsWindow()
@@ -128,21 +120,17 @@ extension MuxWindowController {
         positionHostsWindow()
     }
 
-    /// Enter in the template list: persist the highlighted `ix new` target
-    /// as the default for new VMs.
     func commitHostsTemplate() {
         hostsWindow.commitTemplate()
         positionHostsWindow()
     }
 
-    /// y: the client identity digest onto the clipboard, for pasting into a
-    /// host's authorized list.
+    /// For pasting into a host's authorized list.
     func copyClientDigest() {
         hostsWindow.copyDigest()
         positionHostsWindow()
     }
 
-    /// Enter / H J K L: split the focused pane into the highlighted machine.
     /// Rows that cannot host a pane are not selectable, so a nil selection
     /// means there is nothing to open (which is not the same as `local`,
     /// hence NewPaneTarget rather than a bare string).
@@ -151,17 +139,11 @@ extension MuxWindowController {
         split(direction: direction, before: before, target: target)
     }
 
-    /// c: a whole new session on the highlighted machine, rather than a
-    /// split beside the pane you were in.
     func newSessionOnHostsSelection() {
         guard let target = hostsWindow.selectedHost else { return }
         newSession(target: target)
     }
 
-    /// n: create a VM and open a pane on it. mux names the machine up front,
-    /// so the pane's target is `ix:<name>` from the first frame: the pane is
-    /// the creation progress and then the shell, and a restore later derives
-    /// `ix shell <name>` from that target - by which time the VM exists.
     func createIXVM() {
         let name = IX.newVMName()
         split(
@@ -177,8 +159,7 @@ extension MuxWindowController {
 
     // MARK: - Canvas picker
 
-    /// The canvas comes and goes as one quick fade - fast enough to
-    /// read as a keystroke. The workspace never moves for it.
+    /// The canvas comes and goes as one quick fade - fast enough to read as a keystroke.
     private static let canvasFade: CFTimeInterval = 0.14
 
     /// Retargetable: reopening mid-close bends the fade from wherever
@@ -206,13 +187,7 @@ extension MuxWindowController {
         }
     }
 
-    /// prefix f: the pane picker floating over the dimmed workspace -
-    /// the wheel of pane cards on the right, the selected pane
-    /// previewed live at its true aspect on the left. Rebuilt from the
-    /// live session model on every open; the selection starts on the
-    /// focused pane. While the canvas is up, every pane is un-occluded
-    /// so its renderer keeps producing the frames the mirrors show;
-    /// hide restores the normal rule.
+    /// Rebuilt from the live session model on every open; the selection starts on the focused pane.
     func showCanvasOverlay() {
         refreshPaneDirectories()
         canvasOverlay.onSelectionChange = { [weak self] entry in
@@ -263,8 +238,6 @@ extension MuxWindowController {
         canvasOverlay.move(by: delta)
     }
 
-    /// Canvas open: every pane renders (the thumbnails are live).
-    /// Canvas closed: back to "visible window AND active session".
     func applyCanvasOcclusion() {
         let windowVisible = window.occlusionState.contains(.visible)
         let canvasOpen = canvasOverlay.superview != nil
@@ -275,10 +248,7 @@ extension MuxWindowController {
         }
     }
 
-    /// Enter / click: jump to the selected pane, switching session if
-    /// needed and unzooming whatever covers it. The jump is exactly the
-    /// close motion, with focus landing on the chosen pane immediately.
-    /// No extra theater.
+    /// Switches session if needed and unzooms whatever covers the pane.
     func commitCanvas() {
         guard let entry = canvasOverlay.selection else { return }
         commitCanvas(entry)
@@ -300,8 +270,6 @@ extension MuxWindowController {
         scheduleCanvasTeardown()
     }
 
-    /// The overlay covers the whole container; its own layout puts the
-    /// air, the stage and the wheel inside.
     func positionCanvasOverlay() {
         canvasOverlay.frame = container.bounds
     }
@@ -322,11 +290,8 @@ extension MuxWindowController {
         }
     }
 
-    /// The directory a pane shows must not depend on shell integration:
-    /// most shells never report OSC 7, and reattach replays screen
-    /// bytes, not escapes. The daemons resolve every pty's cwd from its
-    /// live process, so each canvas open asks them once (a discrete
-    /// user action, not a poll) and fills in whatever OSC 7 has not.
+    /// Each canvas open asks the daemons for every pty's live cwd once
+    /// (a discrete action, not a poll) and fills in whatever OSC 7 has not.
     func refreshPaneDirectories() {
         var hosts: Set<String?> = []
         var panesByID: [UUID: PaneView] = [:]

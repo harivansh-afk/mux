@@ -226,9 +226,7 @@ final class PrefixEngine {
         }
     }
 
-    /// The hosts window holds two lists: the machines, and (under t) the ix
-    /// template new VMs are built from. Both are driven from here, so the
-    /// window itself never needs focus.
+    /// Both the machines list and (under t) the templates list are driven from here.
     private func handleHostsKey(_ key: String) -> NSEvent? {
         guard let controller else { return nil }
 

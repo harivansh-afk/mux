@@ -316,7 +316,6 @@ final class CanvasOverlayView: NSView {
         stageTitle.sizeToFit()
         stageMeta.sizeToFit()
         let maxLabelWidth = max(0, stage.frame.width - 1)
-        // No topic line: the directory line moves up and stands alone.
         let hasTitle = stageTitle.attributedStringValue.length > 0
         stageTitle.isHidden = !hasTitle
         let labelY = stage.frame.maxY + 10

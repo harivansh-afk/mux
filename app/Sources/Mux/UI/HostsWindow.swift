@@ -140,9 +140,7 @@ final class HostsWindowView: NSView {
 
     // MARK: - Machines
 
-    /// Rebuild from hosts.json and kick off every live query. Local and the
-    /// aliases appear at once, with a pending status; the probes, the VM
-    /// list and the digest fill in as they answer.
+    /// Every live query fires on open; the probes, the VM list and the digest fill in as they answer.
     func reload() {
         generation += 1
         let generation = generation
@@ -155,7 +153,6 @@ final class HostsWindowView: NSView {
         templateIndex = 0
 
         let hosts = HostsConfig.entries()
-        // No leading "hosts" heading row: the title band already says it.
         hostRows = [
             Row(kind: .host(nil), text: "local", detail: "this mac"),
         ]
@@ -209,13 +206,10 @@ final class HostsWindowView: NSView {
 
     // MARK: - Templates
 
-    /// t: swap in the templates a new VM would be built from. `default` is
-    /// always offered - it needs no listing and always works - and the
-    /// current default is marked.
+    /// `default` is always offered - it needs no listing and always works - and the current default is marked.
     func showTemplates() {
         let current = IXConfig.template()
         pickingTemplate = true
-        // Same as the machines: the title band names the list.
         templateRows = [
             Row(
                 kind: .template(IX.defaultTemplate), text: IX.defaultTemplate,
@@ -248,8 +242,6 @@ final class HostsWindowView: NSView {
         refresh()
     }
 
-    /// Enter in the template list: persist the highlighted target as the
-    /// default for new VMs and return to the machines.
     func commitTemplate() {
         if let value = selectedTemplate {
             IXConfig.setTemplate(value)
@@ -269,8 +261,7 @@ final class HostsWindowView: NSView {
         render()
     }
 
-    /// y: the full digest onto the clipboard. The truncation on screen is
-    /// there to be recognized, never to be retyped.
+    /// The truncation on screen is there to be recognized, never to be retyped.
     func copyDigest() {
         guard let digest else { return NSSound.beep() }
         NSPasteboard.general.clearContents()
@@ -281,9 +272,6 @@ final class HostsWindowView: NSView {
 
     // MARK: - Layout
 
-    /// Content-fitting size, capped to the container. Monotonic within one
-    /// open and floored by the previous open's final size, so late answers
-    /// re-render in place instead of walking the edges around.
     func desiredSize(in bounds: NSRect) -> NSSize {
         let current = rows
         var body: CGFloat = 0
@@ -359,10 +347,7 @@ final class HostsWindowView: NSView {
         }
     }
 
-    /// The highlight lands on the first selectable row, so enter always
-    /// does something. Already-valid highlights are left alone: rows are
-    /// only ever appended, and moving the highlight under the user would be
-    /// worse than a stale-looking one.
+    /// Already-valid highlights are left alone: moving it under the user would be worse than a stale-looking one.
     private func resetHighlight() {
         let current = rows
         guard !current.indices.contains(index) || !current[index].selectable else { return }
