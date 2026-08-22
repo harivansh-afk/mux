@@ -578,6 +578,14 @@ final class PaneView: NSView {
 
     // MARK: - Geometry
 
+    /// The pane's true frame ratio, for chrome that previews it at its
+    /// real shape (the canvas stage and cards). 16:9 while the view is
+    /// too small to say - never a stretched preview.
+    var aspect: CGFloat {
+        guard bounds.width > 1, bounds.height > 1 else { return 16.0 / 9.0 }
+        return bounds.width / bounds.height
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         syncSurfaceSize()
