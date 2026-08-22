@@ -9,16 +9,13 @@ use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
-use mux_proto::peer::{self, OpenMode, OpenReply, OpenRequest, Opened};
-use mux_proto::shell::{IN_LANE_INPUT, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
-use quinn::{Endpoint, RecvStream, SendStream};
-use tokio::io::AsyncReadExt as _;
+use mux_proto::peer::{self, OpenMode, Opened};
+use mux_proto::shell::IN_LANE_INPUT;
+use quinn::Endpoint;
 
-/// Long enough to be immune to a loaded CI box, short enough that a hang
-/// fails the run instead of stalling it.
-const PATIENCE: Duration = Duration::from_secs(10);
+mod common;
+use common::{read_dump, read_output_until, read_reply, request, write_frame, write_request};
 
 #[tokio::test]
 async fn quic_listener_serves_authenticated_clients() {
@@ -118,16 +115,11 @@ async fn quic_listener_serves_authenticated_clients() {
             created: true,
         })
     );
-    // The reattach dump always follows the reply, even when empty.
-    let (lane, _dump) = read_frame(&mut recv).await.expect("dump frame");
-    assert_eq!(lane, OUT_LANE_OUTPUT);
+    read_dump(&mut recv).await;
 
+    // cat echoes back, or this never returns.
     write_frame(&mut send, IN_LANE_INPUT, b"ping\n").await;
-    let echoed = read_output_until(&mut recv, b"ping").await;
-    assert!(
-        echoed.windows(4).any(|w| w == b"ping"),
-        "cat should echo back: {echoed:?}"
-    );
+    read_output_until(&mut recv, b"ping").await;
 
     // (d) A relay request is refused: routing is the local daemon's job.
     let (mut send, mut recv) = connection.open_bi().await.expect("open_bi");
@@ -162,66 +154,6 @@ fn mode(path: &Path) -> u32 {
         .permissions()
         .mode()
         & 0o777
-}
-
-fn request(token: Option<&str>, target: Option<&str>, mode: OpenMode) -> OpenRequest {
-    OpenRequest {
-        version: mux_proto::peer::PROTOCOL_VERSION,
-        cols: 80,
-        rows: 24,
-        term: Some("xterm-ghostty".into()),
-        token: token.map(ToString::to_string),
-        target: target.map(ToString::to_string),
-        mode,
-    }
-}
-
-async fn write_request(send: &mut SendStream, request: &OpenRequest) {
-    let bytes = peer::encode(request);
-    let len = u32::try_from(bytes.len()).expect("request length");
-    send.write_all(&len.to_le_bytes()).await.expect("write len");
-    send.write_all(&bytes).await.expect("write request");
-}
-
-async fn write_frame(send: &mut SendStream, lane: u8, payload: &[u8]) {
-    let len = u32::try_from(payload.len() + 1).expect("frame length");
-    send.write_all(&len.to_le_bytes()).await.expect("write len");
-    send.write_all(&[lane]).await.expect("write lane");
-    send.write_all(payload).await.expect("write payload");
-}
-
-async fn read_frame(recv: &mut RecvStream) -> Option<(u8, Vec<u8>)> {
-    let read = async {
-        let len = recv.read_u32_le().await.ok()?;
-        let lane = recv.read_u8().await.ok()?;
-        let mut payload = vec![0u8; (len - 1) as usize];
-        recv.read_exact(&mut payload).await.ok()?;
-        Some((lane, payload))
-    };
-    tokio::time::timeout(PATIENCE, read)
-        .await
-        .expect("frame timed out")
-}
-
-async fn read_reply(recv: &mut RecvStream) -> OpenReply {
-    let (lane, payload) = read_frame(recv).await.expect("reply frame");
-    assert_eq!(lane, OUT_LANE_OPENED);
-    peer::decode(&payload).expect("decode reply")
-}
-
-/// Drain output frames until `needle` shows up. The pty echoes the line
-/// and `cat` writes it again, so the bytes can arrive in any grouping.
-async fn read_output_until(recv: &mut RecvStream, needle: &[u8]) -> Vec<u8> {
-    let mut seen = Vec::new();
-    while !seen.windows(needle.len()).any(|w| w == needle) {
-        let Some((lane, payload)) = read_frame(recv).await else {
-            break;
-        };
-        if lane == OUT_LANE_OUTPUT {
-            seen.extend_from_slice(&payload);
-        }
-    }
-    seen
 }
 
 fn client_endpoint() -> Endpoint {

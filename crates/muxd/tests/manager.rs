@@ -8,20 +8,22 @@
 //! it writes nothing on its own (so a test can wedge a client without the
 //! read loop noticing first), and it exits on EOT.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mux_proto::peer::{self, OpenMode, OpenReply, OpenRequest, Opened};
-use mux_proto::shell::{IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
+use mux_proto::peer::{OpenMode, OpenReply, Opened};
+use mux_proto::shell::IN_LANE_INPUT;
 use muxd::manager::{ClientMsg, Manager, PtySession};
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::AsyncReadExt as _;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::Receiver;
 
-/// Long enough to be immune to a loaded box, short enough that a hang
-/// fails the run instead of stalling it.
-const PATIENCE: Duration = Duration::from_secs(10);
+mod common;
+use common::{
+    contains, read_dump, read_output_until, read_reply, request, temp_socket, write_frame,
+    write_request, PATIENCE,
+};
 
 // ---------------------------------------------------------------- manager
 
@@ -43,11 +45,8 @@ async fn open_attach_and_exit_are_wired_end_to_end() {
     assert!(!info.exited);
 
     write_pty(&session, b"ping\n").await;
-    let seen = recv_output_until(&mut attached.rx, b"ping").await;
-    assert!(
-        seen.windows(4).any(|w| w == b"ping"),
-        "cat echoes what it is fed: {seen:?}"
-    );
+    // cat echoes what it is fed, or this never returns.
+    recv_output_until(&mut attached.rx, b"ping").await;
 
     // EOT: cat exits, the client is told, and the name comes free.
     write_pty(&session, b"\x04").await;
@@ -134,12 +133,9 @@ async fn a_stolen_attach_leaves_the_new_client_wired() {
     // EOF lands, the clobber has not had its chance to happen.
     read_until_eof(&mut first).await;
 
+    // The surviving client still gets output, or this never returns.
     write_frame(&mut second, IN_LANE_INPUT, b"ping\n").await;
-    let seen = read_output_until(&mut second, b"ping").await;
-    assert!(
-        seen.windows(4).any(|w| w == b"ping"),
-        "the surviving client still gets output: {seen:?}"
-    );
+    read_output_until(&mut second, b"ping").await;
 
     let session = manager.get("p1").expect("pty still open");
     assert!(
@@ -284,10 +280,6 @@ async fn write_pty(session: &Arc<PtySession>, bytes: &[u8]) {
         .expect("write to pty");
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
-}
-
 /// Poll `ready` until it holds, or fail the test.
 async fn wait_until(mut ready: impl FnMut() -> bool, what: &str) {
     let deadline = std::time::Instant::now() + PATIENCE;
@@ -334,13 +326,6 @@ async fn recv_exit(rx: &mut Receiver<ClientMsg>) -> i32 {
         .expect("timed out waiting for the exit event")
 }
 
-/// Short /tmp path: `sun_path` is 104 bytes on darwin.
-fn temp_socket(what: &str) -> PathBuf {
-    let path = PathBuf::from(format!("/tmp/muxd-t-{}-{what}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    path
-}
-
 async fn connect(socket: &Path) -> UnixStream {
     UnixStream::connect(socket).await.expect("connect")
 }
@@ -354,76 +339,14 @@ fn attached(name: &str, created: bool) -> Opened {
 
 /// Handshake an attach-or-create of `name` running `/bin/cat`.
 async fn open_pane(stream: &mut UnixStream, name: &str) -> OpenReply {
-    let request = OpenRequest {
-        version: peer::PROTOCOL_VERSION,
-        cols: 80,
-        rows: 24,
-        term: Some("xterm-ghostty".into()),
-        token: None,
-        target: None,
-        mode: OpenMode::Open {
-            name: name.to_string(),
-            cwd: None,
-            command: vec!["/bin/cat".to_string()],
-            cwd_from: None,
-        },
+    let mode = OpenMode::Open {
+        name: name.to_string(),
+        cwd: None,
+        command: vec!["/bin/cat".to_string()],
+        cwd_from: None,
     };
-    let bytes = peer::encode(&request);
-    let len = u32::try_from(bytes.len()).expect("request length");
-    stream
-        .write_all(&len.to_le_bytes())
-        .await
-        .expect("write length");
-    stream.write_all(&bytes).await.expect("write request");
-
-    let (lane, payload) = read_frame(stream).await.expect("reply frame");
-    assert_eq!(lane, OUT_LANE_OPENED);
-    peer::decode(&payload).expect("decode reply")
-}
-
-/// The reattach replay always follows the reply, even when empty.
-async fn read_dump(stream: &mut UnixStream) -> Vec<u8> {
-    let (lane, payload) = read_frame(stream).await.expect("dump frame");
-    assert_eq!(lane, OUT_LANE_OUTPUT);
-    payload
-}
-
-async fn write_frame(stream: &mut UnixStream, lane: u8, payload: &[u8]) {
-    let len = u32::try_from(payload.len() + 1).expect("frame length");
-    stream
-        .write_all(&len.to_le_bytes())
-        .await
-        .expect("write length");
-    stream.write_all(&[lane]).await.expect("write lane");
-    stream.write_all(payload).await.expect("write payload");
-}
-
-async fn read_frame(stream: &mut UnixStream) -> Option<(u8, Vec<u8>)> {
-    let read = async {
-        let len = stream.read_u32_le().await.ok()?;
-        let lane = stream.read_u8().await.ok()?;
-        let mut payload = vec![0u8; (len - 1) as usize];
-        stream.read_exact(&mut payload).await.ok()?;
-        Some((lane, payload))
-    };
-    tokio::time::timeout(PATIENCE, read)
-        .await
-        .expect("frame timed out")
-}
-
-async fn read_output_until(stream: &mut UnixStream, needle: &[u8]) -> Vec<u8> {
-    let mut seen = Vec::new();
-    while !contains(&seen, needle) {
-        let Some((lane, payload)) = read_frame(stream).await else {
-            panic!("connection ended before {needle:?}");
-        };
-        match lane {
-            OUT_LANE_OUTPUT => seen.extend_from_slice(&payload),
-            OUT_LANE_EVENTS => panic!("unexpected event before {needle:?}"),
-            other => panic!("unexpected lane {other}"),
-        }
-    }
-    seen
+    write_request(stream, &request(None, None, mode)).await;
+    read_reply(stream).await
 }
 
 /// Read whatever is left until the daemon closes its half.
