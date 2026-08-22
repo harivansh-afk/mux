@@ -91,7 +91,7 @@ final class PrefixEngine {
 
     /// The single window's controller.
     private var controller: MuxWindowController? {
-        (NSApp.delegate as? AppDelegate)?.controller
+        App.delegate.controller
     }
 
     func install() {

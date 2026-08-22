@@ -489,14 +489,13 @@ final class PaneView: NSView {
     /// exact increment, so per-pane zoom differences are preserved. 0
     /// resets every pane to the config default.
     static func adjustAllFontSizes(_ step: Int) {
-        guard let delegate = NSApp.delegate as? AppDelegate,
-              let controller = delegate.controller else { return }
+        guard let controller = App.delegate.controller else { return }
         for session in controller.sessions {
             for (_, pane) in session.panes {
                 pane.adjustFontSize(step, save: false)
             }
         }
-        delegate.saveSnapshot()
+        App.delegate.saveSnapshot()
     }
 
     /// Internal (not private): the context menu handlers in

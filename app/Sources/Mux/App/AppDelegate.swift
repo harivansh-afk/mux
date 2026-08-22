@@ -1,6 +1,15 @@
 import AppKit
 import GhosttyKit
 
+/// The app itself, reachable from anywhere. mux installs exactly one
+/// delegate in main.swift, before any of this code can run, so this is
+/// the only place the cast belongs.
+enum App {
+    static var delegate: AppDelegate {
+        NSApp.delegate as! AppDelegate
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The one window. mux is deliberately single-window: sessions are
     /// the unit of grouping (prefix c / 1..9 / canvas), and a second
