@@ -376,21 +376,17 @@ final class HostsWindowView: NSView {
         }
     }
 
-    /// The row set changed: re-validate the highlight, repaint, and let the
-    /// controller re-center a box that may have grown a row.
+    /// The row set changed: repaint, and let the controller re-center a box
+    /// that may have grown a row. The highlight lands on the first
+    /// selectable row so enter always does something, but a highlight that
+    /// is still valid stays where it is: moving it under the user as rows
+    /// arrive would be worse than one that looks stale.
     private func rowsChanged() {
-        resetHighlight()
+        if !rows.indices.contains(index) || !rows[index].selectable {
+            index = rows.firstIndex(where: \.selectable) ?? 0
+        }
         render()
         onContentChange?()
-    }
-
-    /// The highlight lands on the first selectable row, so enter always
-    /// does something. A highlight that is still valid is left where it is:
-    /// moving it under the user as rows arrive would be worse than one that
-    /// looks stale.
-    private func resetHighlight() {
-        guard !rows.indices.contains(index) || !rows[index].selectable else { return }
-        index = rows.firstIndex(where: \.selectable) ?? 0
     }
 
     private static func status(of probe: Muxd.Probe) -> Status {
