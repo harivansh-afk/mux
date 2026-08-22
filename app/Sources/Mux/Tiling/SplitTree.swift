@@ -92,9 +92,12 @@ extension SplitNode {
         }
     }
 
+    /// One point between siblings: the divider the container paints into.
+    private static let gap: CGFloat = 1
+
     /// Compute leaf rects within `bounds` (top-left origin assumed by the
-    /// flipped container view). `gap` is inserted between siblings.
-    func layout(in bounds: CGRect, gap: CGFloat = 1.0) -> [UUID: CGRect] {
+    /// flipped container view).
+    func layout(in bounds: CGRect) -> [UUID: CGRect] {
         switch self {
         case let .leaf(id):
             return [id: bounds]
@@ -103,18 +106,18 @@ extension SplitNode {
             var secondRect = bounds
             switch b.direction {
             case .horizontal:
-                let w = (bounds.width - gap) * CGFloat(b.ratio)
+                let w = (bounds.width - Self.gap) * CGFloat(b.ratio)
                 firstRect.size.width = w
-                secondRect.origin.x = bounds.minX + w + gap
-                secondRect.size.width = bounds.width - w - gap
+                secondRect.origin.x = bounds.minX + w + Self.gap
+                secondRect.size.width = bounds.width - w - Self.gap
             case .vertical:
-                let h = (bounds.height - gap) * CGFloat(b.ratio)
+                let h = (bounds.height - Self.gap) * CGFloat(b.ratio)
                 firstRect.size.height = h
-                secondRect.origin.y = bounds.minY + h + gap
-                secondRect.size.height = bounds.height - h - gap
+                secondRect.origin.y = bounds.minY + h + Self.gap
+                secondRect.size.height = bounds.height - h - Self.gap
             }
-            var result = b.first.layout(in: firstRect, gap: gap)
-            result.merge(b.second.layout(in: secondRect, gap: gap)) { a, _ in a }
+            var result = b.first.layout(in: firstRect)
+            result.merge(b.second.layout(in: secondRect)) { a, _ in a }
             return result
         }
     }
@@ -128,23 +131,22 @@ extension SplitNode {
     ) -> UUID? {
         guard let from = rects[id] else { return nil }
         let center = CGPoint(x: from.midX, y: from.midY)
-        var best: (UUID, CGFloat)?
-        for (candidate, rect) in rects where candidate != id {
-            let c = CGPoint(x: rect.midX, y: rect.midY)
-            let eligible: Bool = switch direction {
-            case .left: c.x < center.x - 1
-            case .right: c.x > center.x + 1
-            case .up: c.y < center.y - 1
-            case .down: c.y > center.y + 1
-            }
-            guard eligible else { continue }
-            let dx = c.x - center.x, dy = c.y - center.y
-            let dist = dx * dx + dy * dy
-            if best == nil || dist < best!.1 {
-                best = (candidate, dist)
+        func eligible(_ rect: CGRect) -> Bool {
+            switch direction {
+            case .left: rect.midX < center.x - 1
+            case .right: rect.midX > center.x + 1
+            case .up: rect.midY < center.y - 1
+            case .down: rect.midY > center.y + 1
             }
         }
-        return best?.0
+        func distance(_ rect: CGRect) -> CGFloat {
+            let dx = rect.midX - center.x, dy = rect.midY - center.y
+            return dx * dx + dy * dy
+        }
+        return rects
+            .filter { $0.key != id && eligible($0.value) }
+            .min { distance($0.value) < distance($1.value) }?
+            .key
     }
 
     /// Move a leaf one step in a direction: it re-enters the tree beside
