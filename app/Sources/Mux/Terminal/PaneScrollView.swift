@@ -2,25 +2,10 @@ import AppKit
 import GhosttyKit
 
 /// Wraps a pane in an NSScrollView to provide the native macOS overlay
-/// scrollbar. Ported from ghostty's SurfaceScrollView.swift (MIT).
-///
-/// ## Coordinate system
-/// AppKit uses a +Y-up coordinate system (origin at bottom-left), while
-/// terminals use +Y-down (row 0 at top). This class handles the inversion
-/// when converting between row offsets and pixel positions.
-///
-/// ## Architecture
-/// - `scrollView`: the outermost NSScrollView that manages scrollbar
-///   rendering and behavior.
-/// - `documentView`: a blank NSView whose height represents the total
-///   scrollback (in pixels).
-/// - `pane`: the actual renderer, positioned to always fill the visible
-///   rect, so libghostty only ever renders the viewport.
-///
-/// The scroll view never scrolls content itself: the pane consumes wheel
-/// events and forwards them to the core, the core reports viewport
-/// changes through the SCROLLBAR action, and dragging the scroller sends
-/// scroll_to_row binding actions back to the core.
+/// scrollbar. Ported from ghostty's SurfaceScrollView.swift (MIT). AppKit
+/// uses a +Y-up coordinate system while terminals use +Y-down, so this
+/// class handles the inversion when converting between row offsets and
+/// pixel positions.
 final class PaneScrollView: NSView {
     private let scrollView: NSScrollView
     private let documentView: NSView
@@ -73,8 +58,6 @@ final class PaneScrollView: NSView {
 
         synchronizeAppearance()
 
-        // We listen for scroll events through bounds notifications on the
-        // NSClipView.
         scrollView.contentView.postsBoundsChangedNotifications = true
         observers.append(NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification,
@@ -84,7 +67,6 @@ final class PaneScrollView: NSView {
             self?.synchronizePane()
         })
 
-        // Live scroll events (the user actively dragging the scroller).
         observers.append(NotificationCenter.default.addObserver(
             forName: NSScrollView.willStartLiveScrollNotification,
             object: scrollView,
@@ -107,7 +89,6 @@ final class PaneScrollView: NSView {
             self?.handleLiveScroll()
         })
 
-        // Force the overlay style back if the system preference changes.
         observers.append(NotificationCenter.default.addObserver(
             forName: NSScroller.preferredScrollerStyleDidChangeNotification,
             object: nil,
@@ -116,7 +97,6 @@ final class PaneScrollView: NSView {
             self?.scrollView.scrollerStyle = .overlay
         })
 
-        // Re-match the scroller thumb when the appearance flips.
         observers.append(NotificationCenter.default.addObserver(
             forName: .muxThemeDidChange,
             object: nil,

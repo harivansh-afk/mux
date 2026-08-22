@@ -17,21 +17,9 @@ final class PaneView: NSView {
     let id: UUID
 
     /// Where this pane's terminal lives.
-    ///
-    /// - nil: the local daemon (`mux-attach local:<id>`).
-    /// - a host alias from ~/.config/mux/hosts.json: the local daemon
-    ///   relays the attach to that host (`mux-attach <alias>:<id>`).
-    /// - `ix:<vm>`: a local daemon pty whose command is `ix shell <vm>`
-    ///   instead of the user's shell, so the VM's session persists exactly
-    ///   like a local one - the pty, and the `ix shell` inside it, outlive
-    ///   the app.
     let target: String?
 
     /// A command to run in the pty instead of the user's shell, as argv.
-    /// Only VM creation uses it (`ix new -n <name> <template>`), and only
-    /// for the pane that does the creating: it is deliberately not
-    /// persisted, so a restored pane derives `ix shell <name>` from its
-    /// target instead - which is right, because by then the VM exists.
     private let ptyCommand: [String]?
 
     /// True for restored and adopted panes: their pty is believed to
@@ -114,8 +102,6 @@ final class PaneView: NSView {
     /// persists and restore replays.
     private(set) var fontDelta: Int = 0
 
-    /// Internal (not private): managed by updateTrackingAreas in
-    /// PaneView+Input.swift.
     var trackingArea: NSTrackingArea?
     private(set) var focused: Bool = false
 
@@ -155,7 +141,7 @@ final class PaneView: NSView {
 
     /// Whether the surface sits on a password prompt (SECURE_INPUT action).
     /// While true and focused, keyboard input is protected from event
-    /// taps via the Carbon secure input API, like ghostty.
+    /// taps via the Carbon secure input API.
     var passwordInput: Bool = false {
         didSet {
             let input = SecureInput.shared
@@ -169,7 +155,7 @@ final class PaneView: NSView {
     }
 
     /// Delivered notification identifiers for this pane, removed when the
-    /// pane gains focus (ghostty does the same).
+    /// pane gains focus.
     private var notificationIdentifiers: Set<String> = []
 
     /// Coalesces rapid terminal title changes to avoid flicker (ghostty
@@ -219,16 +205,7 @@ final class PaneView: NSView {
 
         guard let app = runtime.app else { return }
 
-        // M2: every pane is a daemon pty named by the pane id. Attach
-        // reconnects and replays; a missing pty is created at the saved
-        // cwd. Terminal content survives the app by construction. M3: a
-        // pane on a host alias is the same pty one hop away (the local
-        // daemon relays the attach), and an `ix:<vm>` pane is a local pty
-        // whose command is `ix shell` instead of the user's shell.
         let command = defaultCommand(cwd: workingDirectory, cwdFrom: cwdFrom)
-        // The one unlogged hop used to be right here: whether the surface
-        // was actually given the attach command. A pane that silently ran
-        // a bare shell instead was indistinguishable from a working one.
         AppLog.log("spawn pane=\(id.uuidString) cmd=\(command ?? "<user shell>")")
 
         // A remote pane's cwd names a path on the remote host: it travels
@@ -284,7 +261,7 @@ final class PaneView: NSView {
 
         // Each surface carries its own light/dark conditional state
         // (`theme = light:...,dark:...`): push the current scheme now and
-        // on every system appearance flip, like ghostty's own app does.
+        // on every system appearance flip.
         // The core re-derives the surface colors and reports the change
         // to running programs (mode 2031), so TUIs repaint too.
         applyColorScheme()
@@ -392,12 +369,7 @@ final class PaneView: NSView {
         return "\(target):\(id.uuidString)"
     }
 
-    /// The pane's launch command. nil means "the user's shell": the dev
-    /// fallback when no relay binary is bundled. `cwdFrom` names the pty
-    /// (a split's source pane, same daemon) whose live working directory
-    /// the new shell inherits, resolved daemon-side - no shell
-    /// integration needed, and it wins over `cwd`, which only seeds panes
-    /// with no live source (restore, recovery).
+    /// The pane's launch command. nil means "the user's shell".
     private func defaultCommand(cwd: String?, cwdFrom: UUID? = nil) -> String? {
         // An ix pane runs `ix shell <vm>` in its pty unless the caller named
         // something else to run there (VM creation runs `ix new` instead,
@@ -449,9 +421,7 @@ final class PaneView: NSView {
         }
     }
 
-    /// Kill the pane's pty (deliberate close, not detach). For an ix pane
-    /// that ends the `ix shell` the pty is running, and with it the session
-    /// on the VM.
+    /// Kill the pane's pty (deliberate close, not detach).
     func killRemote() {
         guard let attach = Muxd.attachBinary else { return }
         let process = Process()
@@ -500,8 +470,6 @@ final class PaneView: NSView {
         delegate.saveSnapshot()
     }
 
-    /// Internal (not private): the context menu handlers in
-    /// PaneView+Input.swift drive ghostty through binding actions too.
     func bindingAction(_ action: String) {
         guard let surface else { return }
         _ = action.withCString { ptr in
@@ -512,7 +480,7 @@ final class PaneView: NSView {
     func setTitle(_ title: String) {
         // Coalesce rapid changes: very quick title updates cause an
         // unpleasant flicker. The timer is short enough that it still
-        // feels instant (ghostty uses the same interval).
+        // feels instant.
         titleChangeTimer?.invalidate()
         titleChangeTimer = Timer.scheduledTimer(
             withTimeInterval: 0.075,
@@ -587,7 +555,7 @@ final class PaneView: NSView {
         super.viewDidChangeBackingProperties()
 
         // Keep the compositor from rescaling our layer contents; we manage
-        // resolution ourselves via set_content_scale (ghostty does the same).
+        // resolution ourselves via set_content_scale.
         if let window {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
