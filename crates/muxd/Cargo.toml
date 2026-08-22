@@ -13,7 +13,8 @@ anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-mux-proto.workspace = true
+mux-proto = { workspace = true, features = ["tokio"] }
+agents.workspace = true
 ghostty-vt.workspace = true
 # `uio` adds sendmsg/recvmsg + SCM_RIGHTS, which the self-upgrade handoff
 # (src/migrate.rs) is built on; only muxd needs it.
@@ -27,4 +28,8 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 base64.workspace = true
+hex.workspace = true
 rand.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

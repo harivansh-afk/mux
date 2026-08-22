@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mux-proto", "crates/mux-attach", "crates/muxd", "crates/ghostty-vt"]
+members = ["crates/mux-proto", "crates/mux-attach", "crates/muxd", "crates/ghostty-vt", "crates/agents"]
 
 [workspace.package]
 edition = "2021"
@@ -17,16 +17,20 @@ warnings = "deny"
 # `lint_groups_priority` otherwise).
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
-cargo = { level = "deny", priority = -1 }
-multiple_crate_versions = "allow"
+# The pedantic doc lints ask every fallible or value-returning function to
+# restate its signature in prose. On four unpublished crates that is noise,
+# not documentation.
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 
 [workspace.dependencies]
 # Local crates: declared once here (the one table where a `path` is allowed);
 # members inherit with `name.workspace = true`.
 mux-proto = { path = "crates/mux-proto" }
 ghostty-vt = { path = "crates/ghostty-vt" }
+agents = { path = "crates/agents" }
 anyhow = "1"
-thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -34,6 +38,8 @@ serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
 nix = { version = "0.29", features = ["term", "process", "fs", "socket", "poll", "signal", "user"] }
 parking_lot = "0.12"
+regex = "1"
+toml = "0.8"
 libc = "0.2"
 # M3 remote transport (QUIC) + auth material. Pre-pinned here so parallel
 # branches don't conflict on dependency additions.
@@ -43,4 +49,5 @@ rcgen = "0.13"
 serde_json = "1"
 sha2 = "0.10"
 base64 = "0.22"
+hex = "0.4"
 rand = "0.8"

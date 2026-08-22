@@ -1,0 +1,7 @@
+fn home() -> Option<String> {
+    let entry = unsafe { libc::getpwuid(libc::getuid()) };
+    if entry.is_null() {
+        return None;
+    }
+    None
+}

@@ -6,17 +6,21 @@
 //! bidirectional stream run the identical protocol, and differ only in
 //! the [`Policy`] that decides who is let in.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
-use mux_proto::shell::{
-    IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
+use mux_proto::frame::{
+    self, IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
+};
+use mux_proto::peer::{
+    self, ClientControl, ErrorKind, OpenError, OpenMode, OpenReply, OpenRequest, Opened,
+    ServerEvent,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::manager::{self, ClientMsg, Manager};
+use crate::manager::{self, ClientMsg, Manager, PtySession};
 use crate::{broker, pty, tls};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -39,9 +43,8 @@ pub enum Policy {
 }
 
 impl Policy {
-    /// `Err(message)` goes back to the client verbatim as the failed
-    /// `OpenReply`.
-    fn admit(&self, request: &OpenRequest) -> Result<(), String> {
+    /// The error goes back to the client as the failed `OpenReply`.
+    fn admit(&self, request: &OpenRequest) -> Result<(), OpenError> {
         match self {
             // The 0600 socket is the auth boundary, and requests naming a
             // remote target were handed to the broker before admission.
@@ -49,15 +52,17 @@ impl Policy {
             Self::Remote { admitted } => {
                 // Digests, not the secrets: fixed-size and preimage
                 // resistant, so a short circuit leaks nothing useful.
-                // `mux-attach probe` classifies this message, so its
-                // wording is a contract.
                 let presented = request.token.as_deref().map(tls::digest);
                 if !presented.is_some_and(|d| admitted.contains(&d)) {
-                    return Err("authentication failed".into());
+                    return Err(OpenError::new(
+                        ErrorKind::TokenRejected,
+                        "authentication failed",
+                    ));
                 }
                 if let Some(host) = &request.target {
-                    return Err(format!(
-                        "target {host:?} rejected: a remote daemon does not relay"
+                    return Err(OpenError::new(
+                        ErrorKind::Other,
+                        format!("target {host:?} rejected: a remote daemon does not relay"),
                     ));
                 }
                 Ok(())
@@ -68,11 +73,8 @@ impl Policy {
 
 /// Take the control socket. Separate from [`serve`] so a daemon only
 /// publishes itself (the pidfile a successor signals, see `migrate.rs`)
-/// once it actually owns the socket.
-///
-/// # Errors
-///
-/// Another daemon already owns the socket, or the bind fails.
+/// once it actually owns the socket. Fails when another daemon already
+/// owns it.
 pub async fn bind(socket: &std::path::Path) -> Result<UnixListener> {
     // A live daemon on the socket wins; a stale file is replaced.
     if UnixStream::connect(socket).await.is_ok() {
@@ -88,11 +90,6 @@ pub async fn bind(socket: &std::path::Path) -> Result<UnixListener> {
 
 /// Serve the control socket forever. Only a listener that has stopped
 /// being a listener ends this.
-///
-/// # Errors
-///
-/// An accept failure that is about the socket rather than the moment; see
-/// [`transient`].
 pub async fn serve(manager: Manager, listener: UnixListener) -> Result<()> {
     loop {
         let stream = match listener.accept().await {
@@ -109,7 +106,9 @@ pub async fn serve(manager: Manager, listener: UnixListener) -> Result<()> {
         };
         let manager = manager.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_unix(manager, stream).await {
+            let (reader, writer) = stream.into_split();
+            let served = handle_connection(manager, reader, writer, &Policy::Local).await;
+            if let Err(e) = served {
                 tracing::debug!(error = %e, "connection ended with error");
             }
         });
@@ -137,17 +136,8 @@ fn transient(e: &std::io::Error) -> bool {
     )
 }
 
-async fn handle_unix(manager: Manager, stream: UnixStream) -> Result<()> {
-    let (reader, writer) = stream.into_split();
-    handle_connection(manager, reader, writer, &Policy::Local).await
-}
-
 /// One run of the protocol over any byte stream: handshake, then either
 /// a one-shot reply (list, kill, rejection) or an attached session.
-///
-/// # Errors
-///
-/// A malformed or slow handshake, or an IO failure on the stream.
 pub async fn handle_connection<R, W>(
     manager: Manager,
     mut reader: R,
@@ -159,30 +149,29 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     let mut writer = BufWriter::new(writer);
-    let request: OpenRequest = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_request(&mut reader))
+    let handshake = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_request(&mut reader))
         .await
         .context("handshake timeout")??;
 
-    // Version first: a mismatched client gets a readable diagnosis, not
-    // a dropped socket. A pre-v3 request has no version field, so the
-    // first varint decodes as something else entirely - decode failure or
-    // a wrong version both land here or in read_request's error path.
-    // The leading phrase is what `mux-attach probe` classifies on.
-    if request.version != peer::PROTOCOL_VERSION {
-        let message = format!(
-            "protocol version mismatch: daemon v{}, client v{} - upgrade or restart the daemon (muxd --upgrade)",
-            peer::PROTOCOL_VERSION,
-            request.version,
-        );
-        tracing::warn!(message, "handshake rejected");
-        return reply(&mut writer, &Err(message)).await;
-    }
+    // A mismatched client gets a readable diagnosis, not a dropped socket.
+    let request = match handshake {
+        Ok(request) => request,
+        Err(version) => {
+            let detail = format!(
+                "protocol version mismatch: daemon v{}, client v{version} - upgrade or restart the daemon (muxd --upgrade)",
+                peer::PROTOCOL_VERSION,
+            );
+            tracing::warn!(detail, "handshake rejected");
+            let error = OpenError::new(ErrorKind::VersionMismatch, detail);
+            return reply(&mut writer, &Err(error)).await;
+        }
+    };
 
     // Admission first, unconditionally: relayed requests must never skip
     // a future Policy::Local check by taking the broker branch early.
-    if let Err(message) = policy.admit(&request) {
-        tracing::debug!(message, "request rejected");
-        return reply(&mut writer, &Err(message)).await;
+    if let Err(error) = policy.admit(&request) {
+        tracing::debug!(detail = error.detail, "request rejected");
+        return reply(&mut writer, &Err(error)).await;
     }
     // target = Some(host) on the unix socket: this daemon is the broker,
     // not the server - the whole connection goes out over the per-host
@@ -192,72 +181,72 @@ where
         return broker::relay(request, reader, writer).await;
     }
 
-    let OpenRequest {
-        cols,
-        rows,
-        term,
-        mode,
-        ..
-    } = request;
-
-    match mode {
+    match request.mode {
         OpenMode::List => {
-            reply(
+            return reply(
                 &mut writer,
                 &Ok(Opened::Listed {
                     ptys: manager.list(),
                 }),
             )
-            .await
+            .await;
         }
-
-        OpenMode::Kill { name } => {
+        OpenMode::Kill { ref name } => {
             // The request itself is logged, not just the effect: when a
             // session vanishes, the question is always who asked.
             tracing::info!(name, "kill requested");
-            let existed = manager.kill(&name);
-            reply(&mut writer, &Ok(Opened::Killed { existed })).await
+            let existed = manager.kill(name);
+            return reply(&mut writer, &Ok(Opened::Killed { existed })).await;
         }
+        OpenMode::Watch => {
+            reply(&mut writer, &Ok(Opened::Watching)).await?;
+            return watch(manager, reader, writer).await;
+        }
+        OpenMode::Open { .. } => {}
+    }
+    handle_open(manager, request, reader, writer).await
+}
 
-        OpenMode::Open {
-            name,
-            cwd,
-            command,
-            cwd_from,
-        } => {
-            // Inherit the source pane's directory when no explicit cwd
-            // came along: resolved here, where the source process lives.
-            let cwd = cwd.or_else(|| {
-                let source = manager.get(cwd_from.as_deref()?)?;
-                source.current_cwd()
-            });
-            let open = Open {
-                cols,
-                rows,
-                term,
-                name,
-                cwd,
-                command,
-            };
-            handle_open(manager, open, reader, writer).await
+/// Stream pty events on the events lane until the client hangs up. A subscriber
+/// that fell behind the backlog gets every pty again rather than a gap.
+async fn watch<R, W>(manager: Manager, mut reader: R, mut writer: BufWriter<W>) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    use tokio::sync::broadcast::error::RecvError;
+
+    let (mut snapshot, mut rx) = manager.watch();
+    let mut sink = [0u8; 64];
+    loop {
+        for event in snapshot.drain(..) {
+            frame::aio::write_lane(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event)).await?;
+        }
+        writer.flush().await?;
+        tokio::select! {
+            received = rx.recv() => match received {
+                Ok(event) => snapshot.push(event),
+                Err(RecvError::Lagged(_)) => snapshot = manager.watch().0,
+                Err(RecvError::Closed) => return Ok(()),
+            },
+            // The client writes nothing on a watch; any read result is
+            // its departure.
+            _ = reader.read(&mut sink) => return Ok(()),
         }
     }
 }
 
-/// The handshake's attach-or-create parameters.
-struct Open {
-    cols: u16,
-    rows: u16,
-    term: Option<String>,
-    name: String,
-    cwd: Option<String>,
-    command: Vec<String>,
+/// The directory a new pty starts in: the explicit `cwd`, else the live
+/// working directory of `cwd_from` (a split's source pane), resolved here
+/// where that process lives.
+fn inherited_cwd(manager: &Manager, cwd: Option<String>, cwd_from: Option<&str>) -> Option<String> {
+    cwd.or_else(|| manager.get(cwd_from?)?.current_cwd())
 }
 
 /// The attach-or-create arm: reply + replay, then pump both directions.
 async fn handle_open<R, W>(
     manager: Manager,
-    open: Open,
+    request: OpenRequest,
     mut reader: R,
     mut writer: BufWriter<W>,
 ) -> Result<()>
@@ -265,31 +254,49 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
-    let Open {
+    let OpenRequest {
         cols,
         rows,
         term,
+        mode,
+        ..
+    } = request;
+    let OpenMode::Open {
         name,
         cwd,
         command,
-    } = open;
-
+        cwd_from,
+    } = mode
+    else {
+        bail!("handle_open on a request that is not an open");
+    };
+    let cwd = inherited_cwd(&manager, cwd, cwd_from.as_deref());
     let opened = manager.open(&name, &command, cwd.as_deref(), term.as_deref(), cols, rows);
     let (session, created) = match opened {
         Ok(v) => v,
-        Err(e) => return reply(&mut writer, &Err(format!("{e:#}"))).await,
+        Err(e) => {
+            let error = OpenError::new(ErrorKind::Other, format!("{e:#}"));
+            return reply(&mut writer, &Err(error)).await;
+        }
     };
 
     let attachment = manager::attach(&session, cols, rows);
     let client_id = attachment.id;
-    tracing::info!(name, created, cols, rows, client = client_id.raw(), "attached");
+    tracing::info!(
+        name,
+        created,
+        cols,
+        rows,
+        client = client_id.raw(),
+        "attached"
+    );
 
     let attached: OpenReply = Ok(Opened::Attached {
         name: name.clone(),
         created,
     });
-    write_frame(&mut writer, OUT_LANE_OPENED, &peer::encode(&attached)).await?;
-    write_frame(&mut writer, OUT_LANE_OUTPUT, &attachment.dump).await?;
+    frame::aio::write_lane(&mut writer, OUT_LANE_OPENED, &peer::encode(&attached)).await?;
+    frame::aio::write_lane(&mut writer, OUT_LANE_OUTPUT, &attachment.dump).await?;
     writer.flush().await?;
 
     // The client's handshake size can be provisional (a restoring app
@@ -309,11 +316,12 @@ where
             match msg {
                 ClientMsg::Output(bytes) => {
                     live_output.store(true, std::sync::atomic::Ordering::Relaxed);
-                    write_frame(&mut writer, OUT_LANE_OUTPUT, &bytes).await?;
+                    frame::aio::write_lane(&mut writer, OUT_LANE_OUTPUT, &bytes).await?;
                 }
                 ClientMsg::Exit(code) => {
                     let event = ServerEvent::Exit { code };
-                    write_frame(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event)).await?;
+                    frame::aio::write_lane(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event))
+                        .await?;
                 }
             }
             writer.flush().await?;
@@ -326,28 +334,16 @@ where
     let live_output = &live_output;
     let receive = async move {
         loop {
-            let Some(frame) = read_frame(&mut reader).await? else {
+            let Some((lane, payload)) = frame::aio::read_lane(&mut reader).await? else {
                 return Ok::<_, anyhow::Error>(()); // clean detach
             };
-            match frame.0 {
+            match lane {
                 IN_LANE_INPUT => {
-                    pty::write_all(&session_in.master, &frame.1).await?;
+                    pty::write_all(&session_in.master, &payload).await?;
                 }
-                IN_LANE_CONTROL => match peer::decode::<ClientControl>(&frame.1) {
+                IN_LANE_CONTROL => match peer::decode::<ClientControl>(&payload) {
                     Ok(ClientControl::Resize { cols, rows }) => {
-                        let redump = {
-                            let mut term = session_in.terminal.lock();
-                            term.resize(rows, cols);
-                            (!live_output.load(std::sync::atomic::Ordering::Relaxed))
-                                .then(|| term.render_screen_bytes())
-                        };
-                        let _ = pty::resize(&session_in.master, cols, rows);
-                        if let Some(dump) = redump {
-                            let tx = session_in.client.lock().as_ref().map(|c| c.tx.clone());
-                            if let Some(tx) = tx {
-                                let _ = tx.send(ClientMsg::Output(dump)).await;
-                            }
-                        }
+                        resize(&session_in, cols, rows, live_output).await;
                     }
                     Err(e) => tracing::warn!(error = %e, "bad control frame"),
                 },
@@ -368,69 +364,48 @@ where
     Ok(())
 }
 
-/// The one-shot handshake answer on the opened lane.
-async fn reply<W: AsyncWrite + Unpin>(writer: &mut W, reply: &OpenReply) -> Result<()> {
-    write_frame(writer, OUT_LANE_OPENED, &peer::encode(reply)).await?;
-    writer.flush().await?;
-    Ok(())
-}
-
-async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<OpenRequest> {
-    let len = reader.read_u32_le().await.context("request length")?;
-    if len == 0 || len > peer::MAX_REQUEST_BYTES {
-        bail!("bad request length {len}");
-    }
-    let mut buf = vec![0u8; len as usize];
-    reader.read_exact(&mut buf).await.context("request body")?;
-    match peer::decode(&buf) {
-        Ok(request) => Ok(request),
-        // A request shaped by another protocol version cannot decode at
-        // all, but its version is the first varint by design: surface it
-        // as a minimal request so the version check upstream answers
-        // with the readable mismatch instead of a dropped socket.
-        Err(e) => {
-            if let Ok(version) = peer::decode_prefix::<u32>(&buf) {
-                if version != peer::PROTOCOL_VERSION {
-                    return Ok(OpenRequest {
-                        version,
-                        cols: 0,
-                        rows: 0,
-                        term: None,
-                        token: None,
-                        target: None,
-                        mode: OpenMode::List,
-                    });
-                }
-            }
-            Err(e).context("request decode")
+/// A client resize: the VT and the pty follow. Until the first byte of
+/// live output, the replay is re-rendered and re-sent at the new size
+/// (the handshake size can be provisional); after it, a re-dump would
+/// clear real screen state, so only the sizes change.
+async fn resize(
+    session: &Arc<PtySession>,
+    cols: u16,
+    rows: u16,
+    live_output: &std::sync::atomic::AtomicBool,
+) {
+    let redump = {
+        let mut term = session.terminal.lock();
+        term.resize(rows, cols);
+        (!live_output.load(std::sync::atomic::Ordering::Relaxed))
+            .then(|| term.render_screen_bytes())
+    };
+    let _ = pty::resize(&session.master, cols, rows);
+    if let Some(dump) = redump {
+        let tx = session.client.lock().as_ref().map(|c| c.tx.clone());
+        if let Some(tx) = tx {
+            let _ = tx.send(ClientMsg::Output(dump)).await;
         }
     }
 }
 
-/// Lane frame: [u32 LE length][u8 lane][payload]; length covers lane+payload.
-async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<(u8, Vec<u8>)>> {
-    let len = match reader.read_u32_le().await {
-        Ok(len) => len,
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    if len == 0 || len > mux_proto::frame::MAX_FRAME_SIZE {
-        bail!("bad frame length {len}");
-    }
-    let lane = reader.read_u8().await?;
-    let mut payload = vec![0u8; (len - 1) as usize];
-    reader.read_exact(&mut payload).await?;
-    Ok(Some((lane, payload)))
+/// The one-shot handshake answer on the opened lane.
+pub(crate) async fn reply<W: AsyncWrite + Unpin>(writer: &mut W, reply: &OpenReply) -> Result<()> {
+    frame::aio::write_lane(writer, OUT_LANE_OPENED, &peer::encode(reply)).await?;
+    writer.flush().await?;
+    Ok(())
 }
 
-async fn write_frame<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    lane: u8,
-    payload: &[u8],
-) -> Result<()> {
-    let len = 1u32 + u32::try_from(payload.len()).context("frame too large")?;
-    writer.write_u32_le(len).await?;
-    writer.write_u8(lane).await?;
-    writer.write_all(payload).await?;
-    Ok(())
+/// A decoded handshake, or the protocol version of a client this daemon
+/// cannot speak to: version is the request's first field by design, so
+/// it reads even when nothing else does.
+type Handshake = std::result::Result<OpenRequest, u32>;
+
+async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Handshake> {
+    let buf = frame::aio::read_message(reader).await.context("request")?;
+    let version = peer::decode_prefix::<u32>(&buf).context("request version")?;
+    if version != peer::PROTOCOL_VERSION {
+        return Ok(Err(version));
+    }
+    Ok(Ok(peer::decode(&buf).context("request decode")?))
 }

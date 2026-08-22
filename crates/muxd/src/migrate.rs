@@ -1,7 +1,7 @@
 //! Zero-downtime self-upgrade: a new muxd adopts the running one's live
 //! ptys, so replacing the binary never kills a shell.
 //!
-//! The wire contract is `mux_proto::migrate`: one
+//! The wire contract is one
 //! `[u32 LE len][postcard MigratePayload]` message whose `SCM_RIGHTS`
 //! control data carries the PTY master fds in `ptys` order. Unlike
 //! upstream ix-console, the payload also carries each pty's
@@ -29,26 +29,50 @@
 //! Clients see the predecessor's EOF and reconnect (mux-attach), which
 //! reattaches by name and repaints from the migrated VT.
 //!
-//! `MUXD_MIGRATE_SOCKET` overrides the migration socket path; the pidfile
-//! follows `HOME` (`mux_proto::paths::daemon_pid`). Both exist so a test
-//! daemon can never signal, or steal the ptys of, the user's daemon.
+//! The migration socket (`paths::migrate_socket`) takes an environment
+//! override and the pidfile (`paths::daemon_pid`) follows `HOME`, so a
+//! test daemon can never signal, or steal the ptys of, the user's.
 
 use std::io::{Read as _, Write as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use mux_proto::migrate::{
-    MigratePayload, MigratePty, MAX_MIGRATE_FDS, MIGRATE_ACK, MIGRATE_VERSION,
-};
 use nix::sys::socket::{ControlMessage, ControlMessageOwned, MsgFlags};
 use nix::unistd::Pid;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, Interest};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::manager::Manager;
-use crate::pty;
+use crate::{paths, pty};
+
+pub const MIGRATE_VERSION: u32 = 1;
+pub const MAX_MIGRATE_FDS: usize = 256;
+/// The successor's "they are mine now" byte, written once every pty in
+/// the payload has been adopted. The predecessor does not exit until it
+/// lands: an fd that has left the old process but reached no new one is a
+/// session nobody can serve.
+pub const MIGRATE_ACK: u8 = 0xAC;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MigratePty {
+    pub name: String,
+    pub command: Vec<String>,
+    pub child_pid: i32,
+    pub cols: u16,
+    pub rows: u16,
+    /// `render_screen_bytes()` of the old daemon's terminal at handoff;
+    /// the new daemon feeds it into a fresh VT before reading the fd.
+    pub screen: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MigratePayload {
+    pub version: u32,
+    pub ptys: Vec<MigratePty>,
+}
 
 /// Predecessor signal to payload. Generous: the predecessor only has to
 /// render its screens and write one message.
@@ -68,23 +92,9 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Payload cap on receive; a screen snapshot per pty is well under this.
 const MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
-/// Migration rendezvous socket. `MUXD_MIGRATE_SOCKET` overrides the
-/// per-uid default so tests never touch the user's.
-#[must_use]
-pub fn socket_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("MUXD_MIGRATE_SOCKET") {
-        return PathBuf::from(path);
-    }
-    mux_proto::migrate::migrate_socket_path(nix::unistd::getuid().as_raw())
-}
-
 /// Publish our pid so a successor knows who to ask for a handoff.
-///
-/// # Errors
-///
-/// The state directory or the pidfile itself cannot be written.
 pub fn write_pidfile() -> Result<()> {
-    let path = mux_proto::paths::daemon_pid();
+    let path = paths::daemon_pid();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
@@ -94,7 +104,7 @@ pub fn write_pidfile() -> Result<()> {
 }
 
 fn read_pidfile() -> Option<Pid> {
-    let text = std::fs::read_to_string(mux_proto::paths::daemon_pid()).ok()?;
+    let text = std::fs::read_to_string(paths::daemon_pid()).ok()?;
     let pid = text.trim().parse::<i32>().ok()?;
     (pid > 1 && pid != std::process::id().cast_signed()).then(|| Pid::from_raw(pid))
 }
@@ -162,7 +172,7 @@ struct Adopted {
 /// No predecessor, or a predecessor that never answers, is not fatal: the
 /// new daemon simply starts with no ptys.
 pub async fn adopt_from_predecessor(manager: &Manager) {
-    let path = socket_path();
+    let path = paths::migrate_socket();
     let listener = match bind_listener(&path) {
         Ok(listener) => listener,
         Err(e) => {
@@ -215,10 +225,6 @@ pub async fn adopt_from_predecessor(manager: &Manager) {
 /// Public, with [`accept_handoff`] and [`hand_off`], so a test can drive
 /// both halves of the upgrade in one process; the daemon reaches them
 /// through [`adopt_from_predecessor`] and [`spawn_handoff_task`].
-///
-/// # Errors
-///
-/// The socket cannot be bound or chmod'ed.
 pub fn bind_listener(path: &Path) -> Result<UnixListener> {
     // Usual outcome is ENOENT; a bind that is actually blocked reports it.
     let _ = std::fs::remove_file(path);
@@ -233,13 +239,6 @@ pub fn bind_listener(path: &Path) -> Result<UnixListener> {
 
 /// Successor half: take one handoff, adopt every pty it carries, and
 /// acknowledge it.
-///
-/// # Errors
-///
-/// The connection, the payload, or the ack write failed. An individual
-/// pty that cannot be adopted is logged, not fatal: its master fd is here
-/// either way, so the predecessor could not serve it any more regardless,
-/// and refusing the ack would only strand the rest.
 pub async fn accept_handoff(listener: &UnixListener, manager: &Manager) -> Result<usize> {
     let (mut stream, _) = listener.accept().await.context("accept handoff")?;
     let adopted = receive(&mut stream).await?;
@@ -359,7 +358,7 @@ pub fn spawn_handoff_task(manager: Manager) {
                 }
             };
         while signals.recv().await.is_some() {
-            match hand_off(&manager, &socket_path()) {
+            match hand_off(&manager, &paths::migrate_socket()) {
                 Ok(count) => {
                     tracing::info!(count, "handed off ptys; exiting for the successor");
                     std::process::exit(0);
@@ -382,11 +381,6 @@ pub fn spawn_handoff_task(manager: Manager) {
 /// `Ok` means a successor has the ptys and the caller may exit. `Err`
 /// means it does not: the caller keeps serving, and the locks release
 /// with the guards below.
-///
-/// # Errors
-///
-/// Too many ptys for one `SCM_RIGHTS` message, an unreachable successor,
-/// a failed send, or a successor that never acknowledged.
 pub fn hand_off(manager: &Manager, socket: &Path) -> Result<usize> {
     let sessions = manager.live_sessions();
     if sessions.len() > MAX_MIGRATE_FDS {

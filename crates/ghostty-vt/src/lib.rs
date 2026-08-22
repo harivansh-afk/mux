@@ -38,7 +38,7 @@ mod ffi {
             terminal: *mut core::ffi::c_void,
             row: u16,
         ) -> Bytes;
-        pub fn ghostty_vt_terminal_cursor_pending_wrap(terminal: *mut core::ffi::c_void) -> bool;
+        pub fn ghostty_vt_terminal_title(terminal: *mut core::ffi::c_void) -> Bytes;
         pub fn ghostty_vt_bytes_free(bytes: Bytes);
     }
 }
@@ -48,17 +48,6 @@ mod ffi {
 pub struct CursorPosition {
     pub row: u16,
     pub col: u16,
-}
-
-/// Serialized screen state for reattach redraw.
-#[derive(serde::Serialize)]
-pub struct ScreenDump {
-    pub rows: u16,
-    pub cols: u16,
-    pub cursor_row: u16,
-    pub cursor_col: u16,
-    /// Plain text content of each viewport row.
-    pub row_texts: Vec<String>,
 }
 
 /// Terminal state tracker backed by ghostty VT.
@@ -76,7 +65,6 @@ impl Terminal {
     /// Create a new terminal with the given dimensions.
     ///
     /// Dimensions are clamped to a minimum of 1×1 (see [`resize`]).
-    #[must_use]
     pub fn new(rows: u16, cols: u16) -> Option<Self> {
         let rows = rows.max(1);
         let cols = cols.max(1);
@@ -111,7 +99,6 @@ impl Terminal {
     }
 
     /// Get current cursor position (1-based row, col).
-    #[must_use]
     pub fn cursor_position(&self) -> CursorPosition {
         let mut col: u16 = 1;
         let mut row: u16 = 1;
@@ -126,25 +113,8 @@ impl Terminal {
         CursorPosition { row, col }
     }
 
-    /// Whether the cursor has the Last Column Flag set (pending wrap).
-    ///
-    /// When true, the next printing character will trigger a line wrap.
-    /// CUP escape sequences clear this flag, so reattach must handle it
-    /// specially to preserve cursor behavior.
-    #[must_use]
-    pub fn cursor_pending_wrap(&self) -> bool {
-        // SAFETY: handle is valid.
-        unsafe { ffi::ghostty_vt_terminal_cursor_pending_wrap(self.handle.as_ptr()) }
-    }
-
-    /// Capture current screen state for reattach redraw.
-    #[must_use]
-    pub fn screen_dump(&self) -> ScreenDump {
-        let CursorPosition {
-            row: cursor_row,
-            col: cursor_col,
-        } = self.cursor_position();
-
+    /// The plain text of each viewport row, top to bottom.
+    pub fn row_texts(&self) -> Vec<String> {
         let mut row_texts = Vec::with_capacity(usize::from(self.rows));
         for r in 0..self.rows {
             // SAFETY: handle is valid, row index is within bounds.
@@ -164,14 +134,24 @@ impl Terminal {
             };
             row_texts.push(text);
         }
+        row_texts
+    }
 
-        ScreenDump {
-            rows: self.rows,
-            cols: self.cols,
-            cursor_row,
-            cursor_col,
-            row_texts,
+    /// The title the program last set (OSC 0/2), `None` when unset.
+    pub fn title(&self) -> Option<String> {
+        // SAFETY: handle is valid.
+        let bytes = unsafe { ffi::ghostty_vt_terminal_title(self.handle.as_ptr()) };
+        if bytes.ptr.is_null() || bytes.len == 0 {
+            return None;
         }
+        // SAFETY: ghostty returns a valid buffer.
+        let slice = unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len) };
+        let title = String::from_utf8_lossy(slice).into_owned();
+        // SAFETY: freeing the ghostty-allocated buffer.
+        unsafe {
+            ffi::ghostty_vt_bytes_free(bytes);
+        }
+        Some(title)
     }
 
     /// Render complete terminal state as VT escape sequences for reattach.
@@ -180,7 +160,6 @@ impl Terminal {
     /// per-cell SGR attributes, and emits terminal-level state (modes, scroll
     /// region, tabstops, charsets, etc.) in an order that avoids cursor-homing
     /// side effects. See `renderReattach` in `zig/lib.zig` for emission order.
-    #[must_use]
     pub fn render_screen_bytes(&self) -> Vec<u8> {
         // SAFETY: handle is valid.
         let bytes = unsafe { ffi::ghostty_vt_terminal_render_reattach(self.handle.as_ptr()) };
@@ -218,46 +197,23 @@ mod tests {
         let mut term = Terminal::new(24, 80).expect("terminal creation");
         term.feed(b"Hello, world!");
 
-        let dump = term.screen_dump();
-        assert_eq!(dump.rows, 24);
-        assert_eq!(dump.cols, 80);
-
-        // First row should contain "Hello, world!"
-        assert!(
-            dump.row_texts[0].contains("Hello, world!"),
-            "row 0: {:?}",
-            dump.row_texts[0]
-        );
-    }
-
-    #[test]
-    fn resize_updates_dimensions() {
-        let mut term = Terminal::new(24, 80).expect("terminal creation");
-        term.resize(40, 120);
-
-        let dump = term.screen_dump();
-        assert_eq!(dump.rows, 40);
-        assert_eq!(dump.cols, 120);
-    }
-
-    #[test]
-    fn new_with_zero_dimensions_clamps_to_1x1() {
-        let term = Terminal::new(0, 0).expect("terminal creation with 0x0");
-        assert_eq!(term.rows, 1);
-        assert_eq!(term.cols, 1);
+        let rows = term.row_texts();
+        assert_eq!(rows.len(), 24);
+        assert!(rows[0].contains("Hello, world!"), "row 0: {:?}", rows[0]);
     }
 
     #[test]
     fn resize_zero_dimensions_clamps_to_1x1() {
+        let term = Terminal::new(0, 0).expect("terminal creation with 0x0");
+        assert_eq!((term.rows, term.cols), (1, 1));
+
         let mut term = Terminal::new(24, 80).expect("terminal creation");
         term.resize(0, 0);
-        assert_eq!(term.rows, 1);
-        assert_eq!(term.cols, 1);
-        // Should still be functional after resize to clamped 1x1
+        assert_eq!((term.rows, term.cols), (1, 1));
+        // A 0 dimension segfaults ghostty's Screen.init; the clamp has to
+        // leave a terminal that still works.
         term.feed(b"X");
-        let dump = term.screen_dump();
-        assert_eq!(dump.rows, 1);
-        assert_eq!(dump.cols, 1);
+        assert_eq!(term.row_texts(), vec!["X".to_string()]);
     }
 
     #[test]
@@ -313,6 +269,25 @@ mod tests {
             !bytes.windows(b"\x1b]0;".len()).any(|w| w == b"\x1b]0;"),
             "replay must not clear a client title the pty never set"
         );
+    }
+
+    #[test]
+    fn title_is_none_until_set() {
+        let mut term = Terminal::new(4, 10).expect("terminal creation");
+        assert_eq!(term.title(), None);
+
+        term.feed(b"no title here");
+        assert_eq!(term.title(), None);
+    }
+
+    #[test]
+    fn title_follows_the_latest_osc() {
+        let mut term = Terminal::new(4, 10).expect("terminal creation");
+        term.feed(b"\x1b]0;hello\x07");
+        assert_eq!(term.title().as_deref(), Some("hello"));
+
+        term.feed(b"\x1b]2;second\x07");
+        assert_eq!(term.title().as_deref(), Some("second"));
     }
 
     #[test]

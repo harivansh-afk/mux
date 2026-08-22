@@ -16,7 +16,9 @@ concurrency:
 env:
   SWIFTLINT_VERSION: "0.65.0"
   SWIFTFORMAT_VERSION: "0.62.1"
-  ASTGREP_VERSION: "0.43.0"
+  # Cache key for the astlog build. The revision itself is pinned once, in the
+  # justfile's ASTLOG_REV; keep this equal to it.
+  ASTLOG_REV: "55b2f75e4e595314bc7441368ab19c346b152616"
   # ghostty-vt compiles ghostty's terminal package from source with Zig, so
   # the rust job needs both. Keep ZIG_VERSION in sync with
   # crates/ghostty-vt/zig/build.zig.zon (minimum_zig_version).
@@ -124,29 +126,44 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
-      # Proof that the daemon actually runs on Linux, not just that it
-      # compiles: a real pty, a detach by SIGKILL, and a replayed reattach.
-      - name: muxd end-to-end
-        run: |
-          set -euo pipefail
-          cargo build -p muxd -p mux-attach
-          python3 scripts/test-muxd-e2e.py
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit
+          tool: just,cargo-audit
+      # Proof the daemon actually runs on Linux, not just that it
+      # compiles: real ptys, real binaries, hermetic sockets - attach,
+      # kill, reattach and replay; the self-upgrade handoff; the QUIC
+      # broker. Loopback and a private HOME throughout, so this is safe
+      # to run on a shared runner same as on a developer's machine.
+      - run: just e2e
       - run: cargo audit
 
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.1" # keep in sync with rust-toolchain.toml
+      # Same shape as the Zig cache in the rust job: cache the installed
+      # binary, keyed on the pin, and skip the build on a hit.
+      - name: Cache astlog
+        id: astlog-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/astlog
+          key: astlog-${{ env.ASTLOG_REV }}-${{ runner.os }}-${{ runner.arch }}
       - uses: taiki-e/install-action@v2
         with:
-          tool: ast-grep@${{ env.ASTGREP_VERSION }}
-      - run: ast-grep test
-      - run: ast-grep scan
-      - run: ./scripts/lint/no-cargo-path-dep.sh
+          tool: just
+      # One definition of how astlog is obtained: the justfile recipe. See the
+      # comment there for why `cargo install --git` cannot do this.
+      - if: steps.astlog-cache.outputs.cache-hit != 'true'
+        run: just astlog-install
+      - run: astlog scan lint/astlog/rust.astlog crates
+      - run: astlog scan lint/astlog/swift.astlog app/Sources
+      - run: astlog scan lint/astlog/cargo.astlog Cargo.toml crates/*/Cargo.toml
+      - run: lint/astlog/check.sh
 
   swift:
     runs-on: ubuntu-latest
@@ -176,11 +193,23 @@ jobs:
       - run: swiftformat --lint app/Sources
       - run: swiftlint lint --strict app/Sources
 
+  # The split-tree model is the one Swift target that needs nothing but
+  # Foundation, so TilingTests run on Linux. app/Package.swift declares the
+  # AppKit app target and MuxTests only on macOS, which is what keeps this
+  # buildable without the GhosttyKit xcframework; those tests run on a Mac.
+  swift-test:
+    runs-on: ubuntu-latest
+    container: swift:6.1
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test --package-path app
+
   # Ported from ix: a required status that cannot false-green when an
   # upstream job is skipped or cancelled. Branch protection requires this
   # job's status, not the individual gates.
   closure-gate:
-    needs: [rust, lint, swift]
+    needs: [rust, lint, swift, swift-test]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 1

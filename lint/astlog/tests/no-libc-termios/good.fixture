@@ -1,0 +1,8 @@
+use nix::sys::termios;
+
+fn raw_mode(fd: std::os::fd::BorrowedFd<'_>) -> nix::Result<()> {
+    let saved = termios::tcgetattr(fd)?;
+    let mut raw = saved.clone();
+    termios::cfmakeraw(&mut raw);
+    termios::tcsetattr(fd, termios::SetArg::TCSANOW, &raw)
+}

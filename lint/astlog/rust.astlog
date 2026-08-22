@@ -1,0 +1,66 @@
+;; Rust lint rules. One relation per rule, named after the rule id, each
+;; carrying a (lint <rule> ...) declaration so `astlog scan` turns every
+;; derived row into a located finding. A legitimate exception is silenced in
+;; place with an `astlog-ignore: <rule>` comment and shows up in
+;; `astlog suppressions`.
+;;
+;; Every lint has a fixture pair under tests/<rule-id>/; check.sh fails the
+;; build if one is missing, does not fire on bad.fixture, or fires on
+;; good.fixture.
+
+;; no-anon-tuple: an anonymous tuple *type* with 3+ fields carries several
+;; distinct domain values positionally, so every call site re-derives what
+;; .0/.1/.2 mean and a reorder is a silent bug. Promote it to a named struct.
+;; Two-field pairs (key/value, a parse split) stay idiomatic and are allowed;
+;; `(_) (_) (_)` matches a tuple_type with three or more named element types
+;; (commas/parens are anonymous, so they don't count). Targets tuple *types*
+;; only: tuple expressions `(1, 2, 3)` and patterns `let (a, b, c)` are other
+;; node kinds and never match.
+(rule (no-anon-tuple n)
+  (match rust "(tuple_type (_) (_) (_)) @n"))
+(lint no-anon-tuple error
+  "anonymous tuple with 3+ fields; promote it to a named struct so each field has a name (2-field pairs are fine)")
+
+;; no-poison-unwrap: `std::sync::Mutex` returns a Result on every lock so a
+;; panic while held can be observed, and the only thing this workspace ever
+;; does with that Result is throw it away. parking_lot::Mutex has no poison
+;; state and no Result to launder.
+(rule (no-poison-unwrap n)
+  (match rust "
+    (call_expression
+      function: (field_expression field: (field_identifier) @m)
+      arguments: (arguments (scoped_identifier path: (_) @p name: (identifier) @f))) @n")
+  (text m "unwrap_or_else")
+  (text f "into_inner")
+  (text-match p "PoisonError$"))
+(lint no-poison-unwrap error
+  "std Mutex poison ceremony; use parking_lot::Mutex (already a workspace dependency)")
+
+;; no-getpwuid: getpwuid returns a pointer into a static record that the next
+;; call overwrites. muxd is a multithreaded tokio runtime, so two threads
+;; resolving the passwd entry at once is a data race on that record.
+(rule (no-getpwuid n)
+  (match rust "(call_expression function: (scoped_identifier path: (identifier) @p name: (identifier) @f)) @n")
+  (text p "libc")
+  (text f "getpwuid"))
+(lint no-getpwuid error
+  "non-reentrant getpwuid from a multithreaded runtime; use nix::unistd::User::from_uid")
+
+;; no-libc-termios: raw termios through libc means `mem::zeroed`, hand-checked
+;; return codes, and a struct layout this code does not own. nix::sys::termios
+;; is already a dependency and is the same syscalls with a type.
+(rule (no-libc-termios n)
+  (match rust "(call_expression function: (scoped_identifier path: (identifier) @p name: (identifier) @f)) @n")
+  (text p "libc")
+  (text-match f "^(tcgetattr|tcsetattr|cfmakeraw)$"))
+(lint no-libc-termios error
+  "use nix::sys::termios")
+
+;; no-handrolled-frame: reading or writing the length prefix by hand is the
+;; frame layout written a fourth time. mux_proto::frame is the definition; it
+;; encodes the prefix itself with to_le_bytes/from_le_bytes and never matches.
+(rule (no-handrolled-frame n)
+  (match rust "(call_expression function: (field_expression field: (field_identifier) @m)) @n")
+  (text-match m "^(write_u32_le|read_u32_le)$"))
+(lint no-handrolled-frame error
+  "the lane frame and handshake layout live in mux_proto::frame; call its read/write functions")

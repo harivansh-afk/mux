@@ -4,7 +4,7 @@ import AppKit
 /// workspace, with air on all sides - not a docked panel.
 ///
 /// Right: the wheel - every pane as a card at its TRUE frame aspect,
-/// grouped under small session headers. The selection is always held at
+/// grouped by session by a wider gap. The selection is always held at
 /// the wheel's vertical center: moving translates the whole track (one
 /// retargetable spring), the previous pane peeks above, the next below,
 /// and distance fades the rest. Left: the stage - the selected pane
@@ -21,18 +21,11 @@ import AppKit
 /// j/k (and arrows) move, click selects (click again jumps), enter
 /// jumps, esc or a click on the scrim cancels. PrefixEngine drives the
 /// keys; the overlay never takes focus.
-final class CanvasOverlayView: NSView {
+final class CanvasOverlayView: FlippedView, ChromeOverlay {
     struct Entry {
         let sessionIndex: Int
         let paneID: UUID
         weak var pane: PaneView?
-    }
-
-    /// One session's cards. No header, no session number: the gap
-    /// between groups is the grouping, and the session indicator
-    /// highlights the selection's number live.
-    struct Group {
-        let entries: [Entry]
     }
 
     // One spacing scale, derived from the chrome size knob.
@@ -42,7 +35,7 @@ final class CanvasOverlayView: NSView {
     private static let itemGap: CGFloat = 10
     private static let sectionGap: CGFloat = 22
     /// The floating badges keep their bottom strip.
-    private static let bottomReserve: CGFloat = ModeBarView.height + ModeBarView.margin * 2
+    private static let bottomReserve: CGFloat = ModeBarView.height
 
     /// A click on a card that is already selected - or on the stage -
     /// jumps; the controller commits and tells PrefixEngine to leave
@@ -50,20 +43,19 @@ final class CanvasOverlayView: NSView {
     var onJump: ((Entry) -> Void)?
     /// A click on the scrim leaves the mode, like esc.
     var onCancel: (() -> Void)?
-    /// Fires whenever the selection lands somewhere (reload, j/k, click):
-    /// the session indicator follows it live, so the numbers tell you
-    /// which session you are scrolling through as you scroll.
     var onSelectionChange: ((Entry?) -> Void)?
 
-    private let scrim = ScrimView()
-    private let stage = StageView()
-    private let stageMirror = CALayer()
+    private let scrim = FlippedView()
+    /// The stage box; a click on it jumps to the previewed pane. Wheel
+    /// events over it scroll the previewed pane's real scrollback, but
+    /// that routing lives in the scroll monitor below, not in the view:
+    /// responsive scrolling would never deliver the event to it.
+    private let stage = MirrorHostView(radius: 28, offset: 14, opacity: 0.55)
     private let stageTitle = NSTextField(labelWithString: "")
     private let stageMeta = NSTextField(labelWithString: "")
     private let wheel = FlippedView()
     private let track = FlippedView()
 
-    private var groups: [Group] = []
     private var items: [WheelItemView] = []
     private var index = 0
     /// The pane the user came from (the focused pane on open).
@@ -74,33 +66,18 @@ final class CanvasOverlayView: NSView {
         return items[index].entry
     }
 
-    override var isFlipped: Bool {
-        true
-    }
-
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
 
+        scrim.wantsLayer = true
         scrim.onClick = { [weak self] in self?.onCancel?() }
         addSubview(scrim)
 
-        stage.wantsLayer = true
-        // Square hairline, like every other piece of mux chrome: the
-        // border sits exactly on the rectangular terminal content, no
-        // rounded corners clipping cells or fuzzing the edge. Width is
-        // one device pixel, set in render() where the backing scale is
-        // known.
-        // Depth is what separates the stage from the wall behind it:
-        // one wide soft shadow, path-backed so it costs a blit, not a
-        // mask pass.
-        stage.layer?.shadowColor = NSColor.black.cgColor
-        stage.layer?.shadowOpacity = 0.55
-        stage.layer?.shadowRadius = 28
-        stage.layer?.shadowOffset = CGSize(width: 0, height: 14)
-        stageMirror.contentsGravity = .resizeAspect
-        stageMirror.masksToBounds = true
-        stage.layer?.addSublayer(stageMirror)
+        // A click on the stage jumps to the previewed pane. Wheel events
+        // over it scroll that pane for real, but that routing lives in
+        // the scroll monitor below: responsive scrolling would never
+        // deliver the event to this view.
         stage.onClick = { [weak self] in
             guard let self, let selection else { return }
             onJump?(selection)
@@ -130,22 +107,17 @@ final class CanvasOverlayView: NSView {
 
     /// Rebuild the wheel; the selection starts on `selected` (the focused
     /// pane) so enter with no movement is a no-op jump.
-    func reload(groups: [Group], selected: UUID?) {
-        self.groups = groups
+    func reload(entries: [Entry], selected: UUID?) {
         cameFrom = selected
 
         for view in items {
             view.removeFromSuperview()
         }
-        items = []
-
-        for group in groups {
-            for entry in group.entries {
-                let item = WheelItemView(entry: entry)
-                item.onClick = { [weak self] in self?.clicked(item) }
-                track.addSubview(item)
-                items.append(item)
-            }
+        items = entries.map { entry in
+            let item = WheelItemView(entry: entry)
+            item.onClick = { [weak self] in self?.clicked(item) }
+            track.addSubview(item)
+            return item
         }
 
         index = items.firstIndex { $0.entry.paneID == selected } ?? 0
@@ -177,16 +149,6 @@ final class CanvasOverlayView: NSView {
         layoutStage()
         renderSelection()
         onSelectionChange?(selection)
-        // The stage retargets with a blink-quick tick, not a crossfade:
-        // the mirror swap is instant, this only softens the cut.
-        if let layer = stage.layer {
-            let tick = CABasicAnimation(keyPath: "opacity")
-            tick.fromValue = 0.7
-            tick.toValue = 1
-            tick.duration = 0.13
-            tick.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1)
-            layer.add(tick, forKey: "stage-tick")
-        }
     }
 
     // MARK: - Live mirrors
@@ -195,8 +157,6 @@ final class CanvasOverlayView: NSView {
     private var scrollMonitor: Any?
     private var tick = 0
 
-    /// Mirrors and the scroll monitor run exactly while the overlay is
-    /// on screen.
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
         mirrorTimer?.invalidate()
@@ -213,29 +173,15 @@ final class CanvasOverlayView: NSView {
         RunLoop.main.add(timer, forMode: .common)
         mirrorTimer = timer
 
-        // Wheel events over the stage scroll the previewed pane for
-        // real. This is a local monitor, not a view override, because
-        // every pane sits in an NSScrollView and responsive scrolling
-        // latches wheel gestures onto the scroll view under the cursor
-        // at the window level - the overlay is never hit-tested for
-        // them. The monitor claims the event first; anything not over
-        // the stage is swallowed, so the workspace under the scrim
-        // never moves.
+        // Delivery is a local .scrollWheel NSEvent monitor, not a view
+        // override; see CLAUDE.md's stage-scroll invariants.
         scrollMonitor = NSEvent.addLocalMonitorForEvents(
             matching: .scrollWheel
         ) { [weak self] event in
             guard let self, event.window === window else { return event }
             if let pane = selection?.pane, !stage.isHidden,
                stage.frame.contains(convert(event.locationInWindow, from: nil)) {
-                // Hovering the stage IS hovering the pane. libghostty
-                // gives a wheel event meaning only at the surface's
-                // stored mouse position (mouse-reporting programs
-                // receive the scroll AT it; it parks at -1/-1 =
-                // outside), so place the mouse first - the same
-                // mouseMoved-then-scrollWheel pair a real hover
-                // produces. The stage box is the pane's exact aspect,
-                // so the point maps by pure proportion; repeated
-                // identical positions are deduped surface-side.
+                // Position before scroll; see CLAUDE.md's stage-scroll invariants.
                 if hoverPane !== pane {
                     hoverPane?.clearMousePos()
                     hoverPane = pane
@@ -244,7 +190,7 @@ final class CanvasOverlayView: NSView {
                 pane.reportMousePos(
                     topLeft: NSPoint(
                         x: p.x / max(stage.bounds.width, 1) * pane.bounds.width,
-                        y: (1 - p.y / max(stage.bounds.height, 1)) * pane.bounds.height
+                        y: p.y / max(stage.bounds.height, 1) * pane.bounds.height
                     ),
                     flags: event.modifierFlags
                 )
@@ -255,10 +201,6 @@ final class CanvasOverlayView: NSView {
         refreshMirrors()
     }
 
-    /// The pane last given a synthetic hover by the stage. When the
-    /// preview moves off it (selection change, canvas close), it gets
-    /// the same -1/-1 "left the viewport" report mouseExited sends, so
-    /// no pane keeps a phantom mouse.
     private weak var hoverPane: PaneView?
 
     private func clearHover() {
@@ -266,17 +208,13 @@ final class CanvasOverlayView: NSView {
         hoverPane = nil
     }
 
-    /// One pointer read and one assignment per mirror: the pane's layer
-    /// holds the IOSurface of its latest frame, the mirrors show the
-    /// same object. Titles drift slower, so they refresh on a coarser
-    /// beat.
     private func refreshMirrors() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for item in items {
-            item.mirror.contents = item.entry.pane?.layer?.contents
+            item.thumb.mirror.contents = item.entry.pane?.layer?.contents
         }
-        stageMirror.contents = selection?.pane?.layer?.contents
+        stage.mirror.contents = selection?.pane?.layer?.contents
         CATransaction.commit()
         tick += 1
         if tick % 15 == 0 {
@@ -285,6 +223,12 @@ final class CanvasOverlayView: NSView {
     }
 
     // MARK: - Layout
+
+    /// The whole pane area: the scrim covers everything, and this
+    /// overlay's own layout puts the air, the stage and the wheel inside.
+    func desiredSize(in bounds: NSRect) -> NSSize {
+        bounds.size
+    }
 
     override func layout() {
         super.layout()
@@ -299,22 +243,22 @@ final class CanvasOverlayView: NSView {
         layoutStage()
     }
 
-    /// Stack headers and cards top-down, then translate the whole track
-    /// so the selected card's center sits at the wheel's center. The
-    /// translate is the wheel's only motion: one spring, retargetable
-    /// mid-flight.
+    /// Stack the cards top-down, then translate the whole track so the
+    /// selected card's center sits at the wheel's center. The translate
+    /// is the wheel's only motion: one spring, retargetable mid-flight.
+    ///
+    /// Sessions are not headed or numbered: the wider gap where the
+    /// session index changes is the grouping, and the session indicator
+    /// highlights the selection's number live.
     private func positionTrack(animated: Bool) {
         var y: CGFloat = 0
-        var itemIndex = 0
-        for group in groups {
-            for _ in group.entries {
-                let item = items[itemIndex]
-                let height = item.height(for: Self.wheelWidth)
-                item.frame = NSRect(x: 0, y: y, width: Self.wheelWidth, height: height)
-                y += height + Self.itemGap
-                itemIndex += 1
+        for (i, item) in items.enumerated() {
+            if i > 0, item.entry.sessionIndex != items[i - 1].entry.sessionIndex {
+                y += Self.sectionGap - Self.itemGap
             }
-            y += Self.sectionGap - Self.itemGap
+            let height = item.height(for: Self.wheelWidth)
+            item.frame = NSRect(x: 0, y: y, width: Self.wheelWidth, height: height)
+            y += height + Self.itemGap
         }
 
         let selectedMid = items.indices.contains(index) ? items[index].frame.midY : 0
@@ -334,9 +278,6 @@ final class CanvasOverlayView: NSView {
         layer.add(spring, forKey: "wheel")
     }
 
-    /// The stage box takes the pane's true frame aspect and fits it into
-    /// the space left of the wheel - scaled uniformly, never stretched,
-    /// never resizing anything.
     private func layoutStage() {
         guard let pane = selection?.pane else {
             stage.isHidden = true
@@ -351,34 +292,24 @@ final class CanvasOverlayView: NSView {
         let areaX = Self.margin
         let areaY = Self.margin
         let areaW = max(1, wheel.frame.minX - Self.gap - areaX)
-        // Two stacked descriptor lines under the stage: title, then
-        // directory + host.
         let labelBlock = (Chrome.fontSize * 2.7).rounded()
         let areaH = max(1, bounds.height - Self.bottomReserve - areaY - Self.margin - labelBlock)
 
-        let size = pane.bounds.size
-        let aspect = size.width > 1 && size.height > 1 ? size.width / size.height : 16.0 / 9.0
         var w = areaW
-        var h = (w / aspect).rounded()
+        var h = (w / pane.aspect).rounded()
         if h > areaH {
             h = areaH
-            w = (h * aspect).rounded()
+            w = (h * pane.aspect).rounded()
         }
         stage.frame = NSRect(
             x: (areaX + (areaW - w) / 2).rounded(),
             y: (areaY + (areaH - h) / 2).rounded(),
             width: w, height: h
         )
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        stageMirror.frame = stage.bounds
-        stage.layer?.shadowPath = CGPath(rect: stage.bounds, transform: nil)
-        CATransaction.commit()
 
         stageTitle.sizeToFit()
         stageMeta.sizeToFit()
         let maxLabelWidth = max(0, stage.frame.width - 1)
-        // No topic line: the directory line moves up and stands alone.
         let hasTitle = stageTitle.attributedStringValue.length > 0
         stageTitle.isHidden = !hasTitle
         let labelY = stage.frame.maxY + 10
@@ -400,21 +331,21 @@ final class CanvasOverlayView: NSView {
 
     @objc private func render() {
         let palette = ThemeManager.shared.palette
-        // The scrim drops the workspace well back - Mission Control
-        // dark, not a light mist - so the live mirrors carry all the
-        // brightness in the room.
-        let dark = !palette.panelBg.isLightColor
-        scrim.layer?.backgroundColor = NSColor.black
-            .withAlphaComponent(dark ? 0.95 : 0.72).cgColor
+        // The scrim is the panel background, not black: the stage text is
+        // palette.text, which on the light palette is dark and vanished on
+        // a black scrim. Same alpha both ways.
+        scrim.layer?.backgroundColor = palette.panelBg.withAlphaComponent(0.95).cgColor
         stage.layer?.backgroundColor = palette.panelBg.cgColor
+        // Square hairline, like every other piece of mux chrome: the
+        // border sits exactly on the rectangular terminal content, no
+        // rounded corners clipping cells or fuzzing the edge, one device
+        // pixel wide.
         stage.layer?.borderColor = palette.accent.cgColor
         stage.layer?.borderWidth = 1 / (window?.backingScaleFactor ?? 2)
         renderSelection()
         needsLayout = true
     }
 
-    /// Everything that follows the selection or the live panes: card
-    /// labels and borders, distance fades, the stage labels.
     private func renderSelection() {
         let palette = ThemeManager.shared.palette
         for (i, item) in items.enumerated() {
@@ -427,31 +358,23 @@ final class CanvasOverlayView: NSView {
         }
 
         guard let entry = selection, let pane = entry.pane else { return }
-        // The stage descriptor, two stacked lines and nothing else:
-        //   <state glyph> <agent topic>
-        //   <directory> [<host>]
-        // No session number - the session indicator highlights the
-        // selection's session live instead.
-        // The first line exists only when the pane announces an agent
-        // (the state glyph is the proof); a bare shell gets no first
-        // line at all, whatever it titled itself - shells love titling
-        // themselves after their directory, which the second line
-        // already says.
+        // Line one is the agent: its state glyph, its topic, either alone
+        // when that is all there is, and nothing at all when the pane has
+        // neither (the directory line moves up).
         let title = NSMutableAttributedString()
         if let glyph = Self.stateGlyph(for: pane, palette: palette, font: Chrome.uiTitleFont) {
             title.append(glyph)
-            let topic = pane.displayTitle
-            if !topic.isEmpty {
-                title.append(NSAttributedString(
-                    string: topic,
-                    attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
-                ))
-            }
+        }
+        if let topic = pane.agent?.topic, !topic.isEmpty {
+            title.append(NSAttributedString(
+                string: topic,
+                attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
+            ))
         }
         stageTitle.attributedStringValue = title
 
         let meta = NSMutableAttributedString()
-        if let dir = PaneLabelParts.promptDir(for: pane) {
+        if let dir = pane.promptDir {
             meta.append(NSAttributedString(
                 string: dir + " ",
                 attributes: [.font: Chrome.metaFont, .foregroundColor: palette.dim]
@@ -465,39 +388,32 @@ final class CanvasOverlayView: NSView {
         needsLayout = true
     }
 
-    /// The agent-state indicator shared by the stage and the cards.
-    /// Exactly two states: ◐ working (busy yellow), ✓ done (ok green).
-    /// Nothing for panes that announce no state.
     static func stateGlyph(
         for pane: PaneView, palette: Palette, font: NSFont
     ) -> NSAttributedString? {
-        guard let state = pane.agentState else { return nil }
-        let working = state == .working
+        guard let state = pane.agent?.state else { return nil }
+        let (glyph, color): (String, NSColor) = switch state {
+        case .working: ("\u{25D0}", palette.busy)
+        case .idle: ("\u{2713}", palette.ok)
+        case .blocked: ("\u{00D7}", palette.bad)
+        }
         return NSAttributedString(
-            string: (working ? "\u{25D0}" : "\u{2713}") + " ",
-            attributes: [
-                .font: font,
-                .foregroundColor: working ? palette.busy : palette.ok,
-            ]
+            string: glyph + " ", attributes: [.font: font, .foregroundColor: color]
         )
     }
 }
 
 /// One wheel card: the mirrored framebuffer at the pane's true aspect,
 /// its title underneath in the product voice.
-private final class WheelItemView: NSView {
+private final class WheelItemView: FlippedView {
     let entry: CanvasOverlayView.Entry
-    let mirror = CALayer()
-    var onClick: (() -> Void)?
+    let thumb = MirrorHostView(radius: 10, offset: 5, opacity: 0.4)
 
-    private let thumb = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
 
     /// The pane's real frame ratio; the card never stretches it.
     private var aspect: CGFloat {
-        let size = entry.pane?.bounds.size ?? .zero
-        guard size.width > 1, size.height > 1 else { return 16.0 / 9.0 }
-        return size.width / size.height
+        entry.pane?.aspect ?? 16.0 / 9.0
     }
 
     private static let labelHeight = (Chrome.fontSize * 1.15).rounded()
@@ -505,14 +421,6 @@ private final class WheelItemView: NSView {
     init(entry: CanvasOverlayView.Entry) {
         self.entry = entry
         super.init(frame: .zero)
-        thumb.wantsLayer = true
-        thumb.layer?.shadowColor = NSColor.black.cgColor
-        thumb.layer?.shadowOpacity = 0.4
-        thumb.layer?.shadowRadius = 10
-        thumb.layer?.shadowOffset = CGSize(width: 0, height: 5)
-        mirror.contentsGravity = .resizeAspect
-        mirror.masksToBounds = true
-        thumb.layer?.addSublayer(mirror)
         addSubview(thumb)
         titleLabel.lineBreakMode = .byTruncatingTail
         addSubview(titleLabel)
@@ -521,10 +429,6 @@ private final class WheelItemView: NSView {
     @available(*, unavailable)
     required init?(coder _: NSCoder) {
         fatalError("not supported")
-    }
-
-    override var isFlipped: Bool {
-        true
     }
 
     func height(for width: CGFloat) -> CGFloat {
@@ -537,10 +441,6 @@ private final class WheelItemView: NSView {
         frame.contains(point) ? self : nil
     }
 
-    override func mouseDown(with _: NSEvent) {
-        onClick?()
-    }
-
     override func layout() {
         super.layout()
         let thumbHeight = bounds.height - 4 - Self.labelHeight
@@ -548,11 +448,6 @@ private final class WheelItemView: NSView {
         titleLabel.frame = NSRect(
             x: 1, y: thumbHeight + 4, width: bounds.width - 2, height: Self.labelHeight
         )
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        mirror.frame = thumb.bounds
-        thumb.layer?.shadowPath = CGPath(rect: thumb.bounds, transform: nil)
-        CATransaction.commit()
     }
 
     func render(palette: Palette, selected: Bool, cameFrom: Bool) {
@@ -563,9 +458,6 @@ private final class WheelItemView: NSView {
                 attributes: [.font: Chrome.metaFont, .foregroundColor: palette.accent]
             ))
         }
-        // Cards carry only the state glyph and the host - topics and
-        // directories live on the stage, where there is room to read
-        // them.
         if let pane = entry.pane {
             if let glyph = CanvasOverlayView.stateGlyph(
                 for: pane, palette: palette, font: Chrome.metaFont
@@ -589,13 +481,24 @@ private final class WheelItemView: NSView {
     }
 }
 
-/// The dimming layer under the picker; a click on it cancels, like esc.
-private final class ScrimView: NSView {
-    var onClick: (() -> Void)?
+/// A pane's framebuffer, mirrored: ghostty publishes each frame as an
+/// IOSurface in the pane layer's `contents` and `mirror` shows the same
+/// object - zero copy, GPU-scaled, and the pane's own frame is never
+/// touched. Depth is what separates it from the wall behind it: one soft
+/// shadow, path-backed so it costs a blit, not a mask pass.
+private final class MirrorHostView: FlippedView {
+    let mirror = CALayer()
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
+    init(radius: CGFloat, offset: CGFloat, opacity: Float) {
+        super.init(frame: .zero)
         wantsLayer = true
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = opacity
+        layer?.shadowRadius = radius
+        layer?.shadowOffset = CGSize(width: 0, height: offset)
+        mirror.contentsGravity = .resizeAspect
+        mirror.masksToBounds = true
+        layer?.addSublayer(mirror)
     }
 
     @available(*, unavailable)
@@ -603,25 +506,13 @@ private final class ScrimView: NSView {
         fatalError("not supported")
     }
 
-    override func mouseDown(with _: NSEvent) {
-        onClick?()
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        mirror.frame = bounds
+        layer?.shadowPath = CGPath(rect: bounds, transform: nil)
+        CATransaction.commit()
     }
 }
 
-/// The stage box; a click on it jumps to the previewed pane. Wheel
-/// events over it scroll the previewed pane's real scrollback, but that
-/// routing lives in the overlay's scroll monitor, not here: responsive
-/// scrolling would never deliver the event to this view.
-private final class StageView: NSView {
-    var onClick: (() -> Void)?
-
-    override func mouseDown(with _: NSEvent) {
-        onClick?()
-    }
-}
-
-private final class FlippedView: NSView {
-    override var isFlipped: Bool {
-        true
-    }
-}

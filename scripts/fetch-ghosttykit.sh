@@ -4,8 +4,7 @@
 # ReleaseFast and publishes GhosttyKit.xcframework + GhosttyKit-resources.tar.gz
 # as release assets; dev machines never need Zig).
 #
-# M1 setup: point REPO at our ghostty artifacts fork once its CI exists.
-# Until then, build locally on the Mac:
+# Build locally on the Mac:
 #   git clone https://github.com/ghostty-org/ghostty && cd ghostty
 #   zig build -Demit-xcframework -Dxcframework-target=native -Doptimize=ReleaseFast  # zig 0.16
 #   cp -R macos/GhosttyKit.xcframework <this-repo>/app/GhosttyKit/

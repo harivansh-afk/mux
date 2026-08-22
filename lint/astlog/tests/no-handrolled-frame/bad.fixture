@@ -1,0 +1,9 @@
+async fn send<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, payload: &[u8]) -> std::io::Result<()> {
+    let len = payload.len() as u32;
+    w.write_u32_le(len).await?;
+    w.write_all(payload).await
+}
+
+async fn recv<R: tokio::io::AsyncReadExt + Unpin>(r: &mut R) -> std::io::Result<u32> {
+    r.read_u32_le().await
+}

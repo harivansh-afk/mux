@@ -141,19 +141,11 @@ Framing from <code>ix/crates/rpc/transport/src/frame.rs</code> (~300 lines neede
 
 <span class="c">lanes in:</span>   0 <span class="g">input</span> (raw PTY bytes)   1 <span class="g">control</span> (codec values)
 <span class="c">lanes out:</span>  0 <span class="g">opened</span>                  1 <span class="g">output</span> (raw PTY bytes)   2 <span class="g">events</span>
-
-<span class="c">handshake/control types (7, tiny, hand-rolled encoder ~200 lines):</span>
-<span class="a">Request</span>       { vm_id, cols, rows, term, mode, env }
-<span class="a">Mode</span>          Create { command, default_shell } | Attach { session } | Peek { session } | List
-<span class="a">ClientControl</span> Resize { cols, rows } | Close
-<span class="a">OpenSuccess</span>   Attached { session } | Listed { sessions }
-<span class="a">ServerEvent</span>   Exit { code } | Detached
-<span class="a">SessionInfo</span>   { id, command, attached, exited }
 </pre>
 
 <p><b>PTY bytes travel only on raw byte lanes.</b> The encoded values are handshake, control and
 status metadata. That is why this protocol is so forkable: the bulk of the wire is opaque bytes,
-and the seven control types are trivial to encode without ix's 6,000-line nightly-only
+and the control types are trivial to encode without ix's 6,000-line nightly-only
 <code>codec</code> crate (append-only <code>#[wire(N)]</code> slot table - we reimplement just enough,
 keeping byte-for-byte wire compat).</p>
 
@@ -203,7 +195,7 @@ Handshake: attach-or-create pty <code>"p1"</code> at 120x40, TERM=xterm-ghostty,
 <pre>
 <span class="c">handshake message = [u32 LE payload length][payload]</span>
 1b 00 00 00                                        <span class="c">length = 27</span>
-05                                                 <span class="c">version = 5       (varint)</span>
+06                                                 <span class="c">version = 6       (varint)</span>
 78                                                 <span class="c">cols = 120        (u16, varint)</span>
 28                                                 <span class="c">rows = 40</span>
 01 0d 78 74 65 72 6d 2d 67 68 6f 73 74 74 79      <span class="c">term = Some, len 13, "xterm-ghostty"</span>
@@ -215,7 +207,13 @@ Handshake: attach-or-create pty <code>"p1"</code> at 120x40, TERM=xterm-ghostty,
 00                                                 <span class="c">command = 0 args (login shell)</span>
 00                                                 <span class="c">cwd_from = None</span>
 </pre>
-<p>After the reply (<code>OpenReply</code> on egress lane 0) and the screen replay (raw bytes on
+<p>The reply is <code>OpenReply = Result&lt;Opened, OpenError&gt;</code>, and
+<code>OpenError { detail, kind }</code> carries the reason as a value:
+<code>unreachable</code>, <code>pin-mismatch</code>, <code>token-rejected</code>,
+<code>version-mismatch</code>, <code>no-host</code> or <code>error</code>, set where the failure
+is raised. <code>detail</code> is prose for the user and nothing parses it. It is encoded
+first: a v5 client, whose error is a bare string, reads it verbatim and never sees the kind.</p>
+<p>After the reply (on egress lane 0) and the screen replay (raw bytes on
 egress lane 1), everything is lane frames. A resize control frame and an exit event, complete:</p>
 <pre>
 <span class="c">resize to 120x40, ingress lane 1:</span>
@@ -253,9 +251,10 @@ handshake.</p>
 <tr><td>Channel crypto</td><td>TLS 1.3 inside QUIC (rustls): AEAD only, forward secrecy, no legacy
 versions to misconfigure</td><td>ssh transport layer</td></tr>
 <tr><td>Server identity</td><td>self-signed cert generated on first run (rcgen); client pins
-SHA-256 of the SPKI per host alias, trust-on-first-use, recorded in
-<code>~/.local/state/mux/known_hosts</code>; hard fail on mismatch. The daemon logs its SPKI hash at
-startup for out-of-band verification</td><td><code>known_hosts</code> fingerprint pinning</td></tr>
+SHA-256 of the certificate DER per host alias, trust-on-first-use, recorded in
+<code>~/.local/state/mux/known_hosts</code>; hard fail on mismatch. The cert and its key are
+generated and regenerated together, so the pin covers the key doing the channel
+crypto</td><td><code>known_hosts</code> fingerprint pinning</td></tr>
 <tr><td>Client authorization</td><td>256-bit random client token, generated 0600 at
 <code>~/.local/state/mux/token</code>, never copied anywhere; the daemon accepts any token whose
 SHA-256 digest is listed in its <code>--authorized-tokens</code> file (digests are not secrets -
@@ -270,8 +269,8 @@ same way: the client mints its identity, the host's config authorizes its finger
 user</td><td>sshd: root daemon, PAM, subsystems, forwarding, config drift</td></tr>
 </table>
 <p>What a network observer sees: opaque QUIC datagrams. What a MITM can do: nothing after first
-contact (the pin covers the key doing the channel crypto); on <i>first</i> contact, TOFU has the
-same window ssh has - verify the logged SPKI hash out-of-band if the first connection crosses
+contact; on <i>first</i> contact, TOFU has the same window ssh has - compare the pinned line
+against the host's own <code>cert.pem</code> out-of-band if the first connection crosses
 hostile ground. What a stolen client token yields: attach rights to the daemons that authorized its
 digest; rotate by deleting <code>~/.local/state/mux/token</code> and updating the digest in the
 flake. Deliberately
@@ -398,15 +397,15 @@ mux/
 │   │   └── UI/                     <span class="c">MuxWindow(+Controller), ModeBar, HelpOverlay, Theme</span>
 │   └── GhosttyKit/                 <span class="c">xcframework, copied/fetched - never vendored in git</span>
 ├── crates/                         <span class="c">Rust workspace (zig 0.16 + GHOSTTY_SOURCE_DIR to build)</span>
-│   ├── mux-proto/                  <span class="c">frame.rs (ix framing) + peer.rs (postcard control) + shell.rs (ix types, M4)</span>
+│   ├── mux-proto/                  <span class="c">frame.rs (ix framing, sync + async) + peer.rs (postcard control)</span>
 │   ├── muxd/                       <span class="c">daemon: manager/pty/server; ptys survive clients</span>
 │   ├── mux-attach/                 <span class="c">raw-mode stdio relay (the pane command)</span>
 │   └── ghostty-vt/                 <span class="c">headless VT + render_reattach (zig shim, vendored from ix)</span>
 ├── scripts/
 │   ├── make-app.sh                 <span class="c">swift build + cargo release + bundle all three binaries</span>
-│   ├── fetch-ghosttykit.sh         <span class="c">prebuilt xcframework (ReleaseFast REQUIRED - see comments)</span>
-│   └── lint/no-cargo-path-dep.sh
-├── .forgejo/workflows/ci.yml       <span class="c">fmt/clippy(pedantic)/test/audit + ast-grep + swift lints</span>
+│   └── fetch-ghosttykit.sh         <span class="c">prebuilt xcframework (ReleaseFast REQUIRED - see comments)</span>
+├── lint/astlog/                    <span class="c">rust/swift/cargo rules + a bad/good fixture per lint</span>
+├── .forgejo/workflows/ci.yml       <span class="c">fmt/clippy(pedantic)/test/audit + astlog + swift lints</span>
 └── justfile
 </pre>
 <p>Prebuilt GhosttyKit (the muxy pattern): a CI job builds <code>GhosttyKit.xcframework</code> +

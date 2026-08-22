@@ -4,10 +4,11 @@
 
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use nix::pty::Winsize;
-use nix::unistd::{ForkResult, Pid};
+use nix::unistd::{ForkResult, Pid, User};
 use tokio::io::unix::AsyncFd;
 
 pub struct Pty {
@@ -60,61 +61,37 @@ fn winsize(cols: u16, rows: u16) -> Winsize {
     }
 }
 
+/// A daemon under a service manager has no $SHELL or $HOME: ask passwd,
+/// like login does. A service account's nologin surfaces verbatim rather
+/// than being masked, because the daemon must run as the human whose
+/// shells it spawns.
+fn passwd() -> Option<User> {
+    User::from_uid(nix::unistd::Uid::current()).ok().flatten()
+}
+
+fn env_or<F: FnOnce(&User) -> PathBuf>(var: &str, field: F, fallback: &str) -> String {
+    if let Ok(value) = std::env::var(var) {
+        if !value.is_empty() {
+            return value;
+        }
+    }
+    passwd()
+        .map(|user| field(&user))
+        .and_then(|path| path.into_os_string().into_string().ok())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 fn user_shell() -> String {
-    if let Ok(shell) = std::env::var("SHELL") {
-        if !shell.is_empty() {
-            return shell;
-        }
-    }
-    // Daemons have no $SHELL: ask passwd, like login does. A service
-    // account's nologin surfaces verbatim rather than being masked -
-    // the daemon must run as the human whose shells it spawns.
-    // SAFETY: getpwuid returns a pointer to a static record or null;
-    // pw_shell, when present, is a NUL-terminated string.
-    let entry = unsafe { libc::getpwuid(libc::getuid()) };
-    if !entry.is_null() {
-        let shell = unsafe { (*entry).pw_shell };
-        if !shell.is_null() {
-            if let Ok(shell) = unsafe { std::ffi::CStr::from_ptr(shell) }.to_str() {
-                if !shell.is_empty() {
-                    return shell.to_string();
-                }
-            }
-        }
-    }
-    "/bin/zsh".to_string()
+    env_or("SHELL", |user| user.shell.clone(), "/bin/zsh")
 }
 
 fn user_home() -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return home;
-        }
-    }
-    // Same reasoning as user_shell: a daemon under a service manager may
-    // have no $HOME; ask passwd, like login does.
-    // SAFETY: getpwuid returns a pointer to a static record or null;
-    // pw_dir, when present, is a NUL-terminated string.
-    let entry = unsafe { libc::getpwuid(libc::getuid()) };
-    if !entry.is_null() {
-        let dir = unsafe { (*entry).pw_dir };
-        if !dir.is_null() {
-            if let Ok(dir) = unsafe { std::ffi::CStr::from_ptr(dir) }.to_str() {
-                if !dir.is_empty() {
-                    return dir.to_string();
-                }
-            }
-        }
-    }
-    "/".to_string()
+    env_or("HOME", |user| user.dir.clone(), "/")
 }
 
 /// The tokio reactor requires it, and an inherited fd (migrate.rs) may
 /// arrive without it.
-///
-/// # Errors
-///
-/// The `fcntl` get/set of the descriptor's flags fails.
 pub fn set_nonblocking(fd: &OwnedFd) -> Result<()> {
     let flags = nix::fcntl::fcntl(fd.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)?;
     let mut oflags = nix::fcntl::OFlag::from_bits_truncate(flags);
@@ -131,7 +108,6 @@ pub struct WindowSize {
 
 /// Current size of the pty, falling back to the protocol default when the
 /// ioctl fails or reports an unset size.
-#[must_use]
 pub fn window_size(master: &AsyncFd<OwnedFd>) -> WindowSize {
     let mut ws = winsize(0, 0);
     let ok =
@@ -143,15 +119,12 @@ pub fn window_size(master: &AsyncFd<OwnedFd>) -> WindowSize {
         }
     } else {
         WindowSize {
-            cols: mux_proto::shell::DEFAULT_COLS,
-            rows: mux_proto::shell::DEFAULT_ROWS,
+            cols: mux_proto::peer::DEFAULT_COLS,
+            rows: mux_proto::peer::DEFAULT_ROWS,
         }
     }
 }
 
-/// # Errors
-///
-/// The pty could not be allocated or the child could not be forked.
 pub fn spawn(params: &Spawn) -> Result<Pty> {
     let pty =
         nix::pty::openpty(Some(&winsize(params.cols, params.rows)), None).context("openpty")?;
@@ -199,9 +172,7 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
             // daemon; leaking them makes every pane shell look like a
             // nested agent session (e.g. claude disables transcript
             // saving under CLAUDE_CODE_CHILD_SESSION).
-            Some(k) => {
-                !matches!(k, "TERM" | "COLORTERM" | "AI_AGENT") && !k.starts_with("CLAUDE")
-            }
+            Some(k) => !matches!(k, "TERM" | "COLORTERM" | "AI_AGENT") && !k.starts_with("CLAUDE"),
             None => true,
         })
         .filter_map(|(k, v)| {
@@ -264,10 +235,6 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
 }
 
 /// Write all of `data` to the PTY, waiting for writability.
-///
-/// # Errors
-///
-/// The write failed for any reason other than "would block".
 pub async fn write_all(master: &AsyncFd<OwnedFd>, data: &[u8]) -> Result<()> {
     let mut written = 0;
     while written < data.len() {
@@ -285,9 +252,6 @@ pub async fn write_all(master: &AsyncFd<OwnedFd>, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// # Errors
-///
-/// The `TIOCSWINSZ` ioctl failed.
 pub fn resize(master: &AsyncFd<OwnedFd>, cols: u16, rows: u16) -> Result<()> {
     let ws = winsize(cols, rows);
     let res = unsafe { libc::ioctl(master.get_ref().as_raw_fd(), libc::TIOCSWINSZ, &ws) };

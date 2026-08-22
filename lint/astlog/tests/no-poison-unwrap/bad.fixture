@@ -1,0 +1,9 @@
+use std::sync::{Mutex, PoisonError};
+
+fn short_path(cell: &Mutex<u32>) -> u32 {
+    *cell.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn full_path(cell: &Mutex<u32>) -> u32 {
+    *cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}

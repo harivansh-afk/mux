@@ -16,28 +16,22 @@ final class PaneView: NSView {
 
     let id: UUID
 
-    /// Where this pane's terminal lives.
-    ///
-    /// - nil: the local daemon (`mux-attach local:<id>`).
-    /// - a host alias from ~/.config/mux/hosts.json: the local daemon
-    ///   relays the attach to that host (`mux-attach <alias>:<id>`).
-    /// - `ix:<vm>`: a local daemon pty whose command is `ix shell <vm>`
-    ///   instead of the user's shell, so the VM's session persists exactly
-    ///   like a local one - the pty, and the `ix shell` inside it, outlive
-    ///   the app.
-    let target: String?
+    /// Which pty this pane is, and how the relay reaches it. Everything
+    /// the command line is built from lives in Muxd.Attach.
+    private let attach: Muxd.Attach
 
-    /// A command to run in the pty instead of the user's shell, as argv.
-    /// Only VM creation uses it (`ix new -n <name> <template>`), and only
-    /// for the pane that does the creating: it is deliberately not
-    /// persisted, so a restored pane derives `ix shell <name>` from its
-    /// target instead - which is right, because by then the VM exists.
-    private let ptyCommand: [String]?
+    /// Where this pane's terminal lives: nil local, a host alias, or
+    /// `ix:<vm>`. Chrome, snapshots and split inheritance read it.
+    var target: String? {
+        attach.target
+    }
 
-    /// True for restored and adopted panes: their pty is believed to
-    /// exist, so the relay is told to call out a `created` reply (the
-    /// daemon lost the shell) instead of silently starting fresh.
-    private let expectExisting: Bool
+    /// The daemon the pane's pty is on, as the watch and the listings key
+    /// it: a host alias, or nil for local - which an ix pane is too, its
+    /// pty runs `ix shell` here.
+    var daemon: String? {
+        IX.vm(of: target) == nil ? target : nil
+    }
 
     /// The scroll view wrapping this pane (owned by the window's pane
     /// container; created in attach). Session lays out the host, and the
@@ -58,54 +52,38 @@ final class PaneView: NSView {
     var title: String = ""
     var pwd: String?
 
-    /// The title as chrome shows it (canvas cards, the stage): the state
-    /// glyph coding agents prefix their titles with is dropped (claude:
-    /// U+2733 idle, a braille spinner <= 2.1.227 and the half-circle
-    /// spinner U+25D0-25D3 after while working).
-    var displayTitle: String {
-        var cleaned = title.trimmingCharacters(in: .whitespaces)
-        if let first = cleaned.unicodeScalars.first, Self.isStateGlyph(first) {
-            cleaned = String(cleaned.unicodeScalars.dropFirst())
-                .trimmingCharacters(in: .whitespaces)
+    /// The coding agent the daemon sees in this pty, or nil. Seeded from
+    /// `muxd ls` and kept live by the daemon watch; the app never reads
+    /// it out of the title itself.
+    var agent: Muxd.AgentInfo?
+
+    /// What the daemon says about this pty, from a listing or the watch.
+    /// The cwd is the live process's, the truth here (OSC 7 overrides it
+    /// when a shell does report) - except for an ix pane, whose local
+    /// pty sits where `ix shell` started, not where the VM's shell is.
+    func apply(agent: Muxd.AgentInfo?, cwd: String?) {
+        self.agent = agent
+        if let cwd, IX.vm(of: target) == nil {
+            pwd = cwd
         }
-        return cleaned
     }
 
-    private static func isStateGlyph(_ scalar: Unicode.Scalar) -> Bool {
-        scalar.value == 0x2733
-            || (0x2800 ... 0x28FF).contains(scalar.value)
-            || (0x25D0 ... 0x25D3).contains(scalar.value)
-    }
-
-    /// What a coding agent in the pane says it is doing, read from that
-    /// leading glyph exactly as the title rules define it: a spinner
-    /// (braille or half-circle) followed by a space is working, U+2733
-    /// followed by a space is idle. Anything else announces nothing.
-    enum AgentState {
-        case working
-        case idle
-    }
-
-    var agentState: AgentState? {
-        Self.agentState(of: title)
-    }
-
-    static func agentState(of title: String) -> AgentState? {
-        let scalars = title.unicodeScalars
-        guard let first = scalars.first,
-              scalars.dropFirst().first == " "
-        else { return nil }
-        if (0x2800 ... 0x28FF).contains(first.value)
-            || (0x25D0 ... 0x25D3).contains(first.value)
-        {
-            return .working
+    /// The pane's directory the way its prompt would print it: the full
+    /// path with the home prefix folded to `~`. Remote paths fold their
+    /// own home (/home/x or /Users/x) - the pane's pwd names the pane's
+    /// host, so the abbreviation reads exactly like a prompt there.
+    var promptDir: String? {
+        guard var dir = pwd, !dir.isEmpty else { return nil }
+        let home = NSHomeDirectory()
+        if dir == home || dir.hasPrefix(home + "/") {
+            dir = "~" + dir.dropFirst(home.count)
+        } else if let match = dir.range(
+            of: "^/(home|Users)/[^/]+", options: .regularExpression
+        ) {
+            dir = "~" + dir[match.upperBound...]
         }
-        if first.value == 0x2733 {
-            return .idle
-        }
-        return nil
+        return dir
     }
-
 
     /// Points added to the config font size via cmd+= / cmd+- (font
     /// zoom). libghostty owns the actual value and exposes no getter,
@@ -115,11 +93,12 @@ final class PaneView: NSView {
     private(set) var fontDelta: Int = 0
 
     /// Internal (not private): managed by updateTrackingAreas in
-    /// PaneView+Input.swift.
+    /// PaneView+Mouse.swift.
     var trackingArea: NSTrackingArea?
     private(set) var focused: Bool = false
 
-    // MARK: - Keyboard / IME state (used by PaneView+Input.swift)
+    // MARK: - Keyboard / IME state (used by PaneView+Key.swift and
+    // PaneView+TextInput.swift)
 
     /// In-progress IME composition (preedit) text.
     var markedText = NSMutableAttributedString()
@@ -141,7 +120,7 @@ final class PaneView: NSView {
     /// racing requests complete instead of stacking sheets.
     var clipboardConfirmationActive = false
 
-    // MARK: - Mouse state (used by PaneView+Input.swift)
+    // MARK: - Mouse state (used by PaneView+Mouse.swift)
 
     /// True when we've consumed a left mouse-down only to move focus and
     /// should suppress the matching mouse-up from being reported.
@@ -182,21 +161,15 @@ final class PaneView: NSView {
     private var eventMonitor: Any?
 
     init(
-        id: UUID = UUID(),
-        runtime: GhosttyRuntime,
+        attach: Muxd.Attach,
         workingDirectory: String? = nil,
         cwdFrom: UUID? = nil,
-        target: String? = nil,
-        ptyCommand: [String]? = nil,
         initialFrame: CGRect = .zero,
-        fontDelta: Int = 0,
-        expectExisting: Bool = false
+        fontDelta: Int = 0
     ) {
-        self.id = id
-        self.target = target
-        self.ptyCommand = ptyCommand
+        id = attach.paneID
+        self.attach = attach
         self.fontDelta = fontDelta
-        self.expectExisting = expectExisting
         super.init(frame: initialFrame)
 
         // Seed the directory from the snapshot/daemon cwd (remote panes
@@ -217,7 +190,7 @@ final class PaneView: NSView {
         // The UTTypes that can be dragged onto this view.
         registerForDraggedTypes(Array(Self.dropTypes))
 
-        guard let app = runtime.app else { return }
+        guard let app = GhosttyRuntime.shared?.app else { return }
 
         // M2: every pane is a daemon pty named by the pane id. Attach
         // reconnects and replays; a missing pty is created at the saved
@@ -225,7 +198,7 @@ final class PaneView: NSView {
         // pane on a host alias is the same pty one hop away (the local
         // daemon relays the attach), and an `ix:<vm>` pane is a local pty
         // whose command is `ix shell` instead of the user's shell.
-        let command = defaultCommand(cwd: workingDirectory, cwdFrom: cwdFrom)
+        let command = attach.commandLine(cwd: workingDirectory, cwdFrom: cwdFrom)
         // The one unlogged hop used to be right here: whether the surface
         // was actually given the attach command. A pane that silently ran
         // a bare shell instead was indistinguishable from a working one.
@@ -233,7 +206,7 @@ final class PaneView: NSView {
 
         // A remote pane's cwd names a path on the remote host: it travels
         // as --cwd and is never handed to the local surface.
-        let localWorkingDirectory = target == nil ? workingDirectory : nil
+        let localWorkingDirectory = attach.target == nil ? workingDirectory : nil
 
         var cfg = ghostty_surface_config_new()
         cfg.platform_tag = GHOSTTY_PLATFORM_MACOS
@@ -324,8 +297,6 @@ final class PaneView: NSView {
     private func localEventHandler(_ event: NSEvent) -> NSEvent? {
         switch event.type {
         case .keyUp:
-            // We only care about events with "command" because all others
-            // trigger the normal responder chain.
             guard event.modifierFlags.contains(.command) else { return event }
             guard focused else { return event }
             keyUp(with: event)
@@ -342,7 +313,6 @@ final class PaneView: NSView {
     /// Ported from ghostty: clicking an unfocused pane transfers focus
     /// without also starting a selection in it.
     private func localEventLeftMouseDown(_ event: NSEvent) -> NSEvent? {
-        // We only want to process events that are on this window.
         guard let window,
               event.window != nil,
               window == event.window else { return event }
@@ -355,12 +325,8 @@ final class PaneView: NSView {
         // vertically and the wrong pane eats the click.
         guard window.contentView?.hitTest(event.locationInWindow) == self else { return event }
 
-        // We always assume that we're resetting our mouse suppression
-        // unless we see the specific scenario below to set it.
         suppressNextLeftMouseUp = false
 
-        // If we're already the first responder then no focus transfer is
-        // happening, so the click should continue as normal.
         guard window.firstResponder !== self else { return event }
 
         // If our window/app is already focused, then this click is only
@@ -372,71 +338,12 @@ final class PaneView: NSView {
             return nil
         }
 
-        // Make ourselves the first responder.
         window.makeFirstResponder(self)
 
         // We have to keep processing the event so that AppKit can properly
         // focus the window and dispatch events. If you return nil here
         // then nobody gets a windowDidBecomeKey event and so on.
         return event
-    }
-
-    /// The pty this pane attaches to: `<alias>:<id>` for a pane hosted on
-    /// another machine, `local:<id>` otherwise. An `ix:<vm>` pane is local
-    /// too - the pty runs `ix shell` here, and the VM is on the far end of
-    /// that command, not of the attach.
-    private var attachAddress: String {
-        guard let target, !target.hasPrefix(IX.prefix) else {
-            return "local:\(id.uuidString)"
-        }
-        return "\(target):\(id.uuidString)"
-    }
-
-    /// The pane's launch command. nil means "the user's shell": the dev
-    /// fallback when no relay binary is bundled. `cwdFrom` names the pty
-    /// (a split's source pane, same daemon) whose live working directory
-    /// the new shell inherits, resolved daemon-side - no shell
-    /// integration needed, and it wins over `cwd`, which only seeds panes
-    /// with no live source (restore, recovery).
-    private func defaultCommand(cwd: String?, cwdFrom: UUID? = nil) -> String? {
-        // An ix pane runs `ix shell <vm>` in its pty unless the caller named
-        // something else to run there (VM creation runs `ix new` instead,
-        // and the shell it drops you into is the pane).
-        let inPty = ptyCommand ?? IX.vm(of: target).map { [IX.binary, "shell", $0] }
-        guard let attach = Muxd.attachBinary else {
-            // No relay bundled: run it directly (no persistence), or fall
-            // back to the user's shell for a plain local pane.
-            return inPty.map(Self.quote)
-        }
-        var parts = ["\"\(attach)\"", "\"\(attachAddress)\""]
-        if expectExisting {
-            // A restored or adopted pane believes its pty survived: the
-            // relay prints a notice if the daemon had to create one.
-            parts.append("--expect-existing")
-        }
-        if let inPty {
-            // `-- cmd` makes the pty run that command instead of the shell.
-            // No cwd: the pty's working directory is this machine's and
-            // means nothing inside the VM.
-            parts += ["--", Self.quote(inPty)]
-            return parts.joined(separator: " ")
-        }
-        if let cwdFrom {
-            // Never send --cwd beside --cwd-from: the daemon would let it
-            // win, and a client-side pwd can be stale (a remote shell with
-            // no OSC 7 never updates it). The live process is the truth.
-            parts += ["--cwd-from", "\"\(cwdFrom.uuidString)\""]
-        } else if let cwd {
-            parts += ["--cwd", "\"\(cwd)\""]
-        }
-        return parts.joined(separator: " ")
-    }
-
-    /// argv as one command line for libghostty, which hands the string to a
-    /// shell. Every word is double-quoted, so paths with spaces and flake
-    /// refs with `#` survive intact.
-    private static func quote(_ argv: [String]) -> String {
-        argv.map { "\"\($0)\"" }.joined(separator: " ")
     }
 
     /// Free the surface explicitly (kills the local child - the relay).
@@ -449,20 +356,9 @@ final class PaneView: NSView {
         }
     }
 
-    /// Kill the pane's pty (deliberate close, not detach). For an ix pane
-    /// that ends the `ix shell` the pty is running, and with it the session
-    /// on the VM.
+    /// Kill the pane's pty: a deliberate close, not a detach.
     func killRemote() {
-        guard let attach = Muxd.attachBinary else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: attach)
-        process.arguments = ["--kill", attachAddress]
-        try? process.run()
-    }
-
-    var processExited: Bool {
-        guard let surface else { return true }
-        return ghostty_surface_process_exited(surface)
+        Muxd.kill(attach.address)
     }
 
     // MARK: - Font zoom
@@ -490,18 +386,17 @@ final class PaneView: NSView {
     /// exact increment, so per-pane zoom differences are preserved. 0
     /// resets every pane to the config default.
     static func adjustAllFontSizes(_ step: Int) {
-        guard let delegate = NSApp.delegate as? AppDelegate,
-              let controller = delegate.controller else { return }
+        guard let controller = App.delegate.controller else { return }
         for session in controller.sessions {
             for (_, pane) in session.panes {
                 pane.adjustFontSize(step, save: false)
             }
         }
-        delegate.saveSnapshot()
+        App.delegate.saveSnapshot()
     }
 
-    /// Internal (not private): the context menu handlers in
-    /// PaneView+Input.swift drive ghostty through binding actions too.
+    /// The one call into ghostty's binding actions: font zoom, the
+    /// context menu, and the app menu's Copy/Paste all go through here.
     func bindingAction(_ action: String) {
         guard let surface else { return }
         _ = action.withCString { ptr in
@@ -529,41 +424,36 @@ final class PaneView: NSView {
     /// Post a desktop notification for this pane (OSC 9 / OSC 777),
     /// ported from ghostty: delivered notifications are tracked so they
     /// clear when the pane gains focus, and notifications for a focused
-    /// pane expire after a few seconds.
+    /// pane expire after a few seconds. Authorization was asked for once,
+    /// at launch; an unauthorized app gets the refusal back as an error.
     func showUserNotification(title: String, body: String) {
-        let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
-            guard granted else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.subtitle = self.title
+        content.body = body
+        content.sound = .default
 
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.subtitle = self?.title ?? ""
-            content.body = body
-            content.sound = .default
-
-            let uuid = UUID().uuidString
-            let request = UNNotificationRequest(identifier: uuid, content: content, trigger: nil)
-            center.add(request) { error in
-                if let error {
-                    NSLog("error scheduling user notification: \(error)")
-                    return
-                }
-
-                DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
-                    notificationIdentifiers.insert(uuid)
-
-                    // If we're focused then remove the notification after
-                    // a few seconds; on focus gain they clear immediately.
-                    if focused {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                            self?.notificationIdentifiers.remove(uuid)
-                            UNUserNotificationCenter.current()
-                                .removeDeliveredNotifications(withIdentifiers: [uuid])
-                        }
-                    }
-                }
+        let uuid = UUID().uuidString
+        let request = UNNotificationRequest(identifier: uuid, content: content, trigger: nil)
+        let paneID = id
+        UNUserNotificationCenter.current().add(request) { [weak self] error in
+            if let error {
+                AppLog.log("notification pane=\(paneID.uuidString) failed: \(error)")
+                return
             }
+            DispatchQueue.main.async { self?.noteDelivered(uuid) }
+        }
+    }
+
+    /// Remember a delivered notification so focus can clear it. One for a
+    /// pane that already has focus expires by itself after a few seconds.
+    private func noteDelivered(_ uuid: String) {
+        notificationIdentifiers.insert(uuid)
+        guard focused else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.notificationIdentifiers.remove(uuid)
+            UNUserNotificationCenter.current()
+                .removeDeliveredNotifications(withIdentifiers: [uuid])
         }
     }
 
@@ -577,6 +467,14 @@ final class PaneView: NSView {
     }
 
     // MARK: - Geometry
+
+    /// The pane's true frame ratio, for chrome that previews it at its
+    /// real shape (the canvas stage and cards). 16:9 while the view is
+    /// too small to say - never a stretched preview.
+    var aspect: CGFloat {
+        guard bounds.width > 1, bounds.height > 1 else { return 16.0 / 9.0 }
+        return bounds.width / bounds.height
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)

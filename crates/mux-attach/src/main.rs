@@ -1,40 +1,23 @@
 //! mux-attach: the stdio relay every pane runs.
 //!
 //! libghostty's only IO backend is `exec`, so Mux.app sets each pane's
-//! command to `mux-attach <target>`. libghostty forks us against a real
-//! PTY; we bridge raw-mode stdio to the lane-framed protocol. That gets
-//! correct key encoding, resize (winsize poll -> `ClientControl::Resize`),
-//! and rendering for free, with no ghostty fork.
+//! command to `mux-attach <target>`; it bridges raw-mode stdio to the
+//! lane-framed protocol.
 //!
 //! Usage:
-//!   mux-attach local:<name> [--cwd DIR] [-- cmd args...]   attach or create
-//!   mux-attach --list [alias] [--json]                      list ptys
-//!   mux-attach --kill local:<name>                          kill a pty
-//!   mux-attach probe <alias>                                check a host
+//!   mux-attach [host|local]:<name> [--cwd DIR] [-- cmd args...]
+//!
+//! Only that: asking the daemon about itself (list, kill, probe a host)
+//! is `muxd`'s own job, and this binary never relays those bytes.
 //!
 //! `--expect-existing` marks an attach that restores a known pane: if the
 //! daemon had to create the pty, a notice is written into the terminal so
 //! a lost shell never masquerades as a healthy restore. Reconnects after
 //! a daemon EOF always print the notice when the pty came back `created`.
 //!
-//! `probe` is the health check Mux.app runs per host. It relays a `List`
-//! through the local daemon's broker, so one call exercises dial, pin,
-//! token and protocol version end to end, and prints exactly one line of
-//! JSON on stdout - exit 0 when the host answered, 1 otherwise:
-//!
-//! ```text
-//! {"alias":"spark","ok":true,"rtt_ms":12,"ptys":2}
-//! {"alias":"spark","ok":false,"class":"token-rejected","error":"..."}
-//! ```
-//!
-//! `class` is one of `unreachable`, `pin-mismatch`, `token-rejected`,
-//! `version-mismatch`, `no-host` (the alias is not in `hosts.json`) or
-//! `error`. `rtt_ms` covers request to reply only, never the daemon
-//! spawn that may precede it.
-//!
 //! Plain threads, no async: stdin pump, winsize poll (200ms - coalesces
-//! during drags, same policy as ix's shell client), and the main thread
-//! draining the socket to stdout. Exit code mirrors the remote process.
+//! during drags), and the main thread draining the socket to stdout.
+//! Exit code mirrors the remote process.
 //!
 //! Socket EOF is not the end: only `ServerEvent::Exit` is. A daemon that
 //! goes away mid-session (a `muxd --upgrade` handoff, or a crash) is
@@ -47,21 +30,23 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
-use mux_proto::frame::{read_lane_frame, write_lane, FrameLimits};
-use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
-use mux_proto::shell::{
-    IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
+use anyhow::{anyhow, bail, ensure, Context, Result};
+use mux_proto::frame::{
+    self, write_lane, IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED,
+    OUT_LANE_OUTPUT,
 };
+use mux_proto::peer::{self, ClientControl, OpenMode, OpenRequest, Opened, ServerEvent};
+use nix::sys::termios;
+use parking_lot::Mutex;
 
 fn socket_path() -> std::path::PathBuf {
-    if let Ok(path) = std::env::var("MUXD_SOCKET") {
-        return path.into();
-    }
-    peer::socket_path(nix::unistd::getuid().as_raw())
+    std::env::var_os(peer::SOCKET_ENV).map_or_else(
+        || peer::socket_path(nix::unistd::getuid().as_raw()),
+        std::path::PathBuf::from,
+    )
 }
 
 /// Reconnect pacing after the daemon goes away. A successor daemon binds
@@ -105,10 +90,9 @@ fn connect() -> Result<UnixStream> {
     unsafe {
         use std::os::unix::process::CommandExt;
         cmd.pre_exec(|| {
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
+            nix::unistd::setsid()
+                .map(|_| ())
+                .map_err(std::io::Error::from)
         });
     }
     cmd.spawn().context("spawn muxd")?;
@@ -136,39 +120,35 @@ fn winsize() -> (u16, u16) {
     if ok && ws.ws_col > 0 && ws.ws_row > 0 {
         (ws.ws_col, ws.ws_row)
     } else {
-        (
-            mux_proto::shell::DEFAULT_COLS,
-            mux_proto::shell::DEFAULT_ROWS,
-        )
+        (peer::DEFAULT_COLS, peer::DEFAULT_ROWS)
     }
 }
 
-/// Raw mode for the pane's PTY; restores termios on drop.
+/// Raw mode for the pane's PTY; restores termios on drop. `None` when
+/// stdin is not a terminal, which leaves nothing to restore.
 struct RawModeGuard {
-    original: Option<libc::termios>,
+    original: Option<termios::Termios>,
 }
 
 impl RawModeGuard {
     fn enable() -> Self {
-        unsafe {
-            let mut original: libc::termios = std::mem::zeroed();
-            if libc::tcgetattr(0, &raw mut original) != 0 {
-                return Self { original: None };
-            }
-            let mut raw = original;
-            libc::cfmakeraw(&raw mut raw);
-            libc::tcsetattr(0, libc::TCSANOW, &raw const raw);
-            Self {
-                original: Some(original),
-            }
+        let stdin = std::io::stdin();
+        let Ok(original) = termios::tcgetattr(&stdin) else {
+            return Self { original: None };
+        };
+        let mut raw = original.clone();
+        termios::cfmakeraw(&mut raw);
+        let _ = termios::tcsetattr(&stdin, termios::SetArg::TCSANOW, &raw);
+        Self {
+            original: Some(original),
         }
     }
 }
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        if let Some(original) = self.original {
-            unsafe { libc::tcsetattr(0, libc::TCSANOW, &raw const original) };
+        if let Some(original) = &self.original {
+            let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, original);
         }
     }
 }
@@ -190,32 +170,16 @@ fn main() -> Result<()> {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // A subcommand, not a flag: `probe` reports through its JSON line and
-    // its exit code, never through the flag parser's error path.
-    if args.first().map(String::as_str) == Some("probe") {
-        let alias = args.get(1).context("usage: mux-attach probe <alias>")?;
-        exit(probe(alias));
-    }
-
     let mut target: Option<String> = None;
     let mut cwd: Option<String> = None;
     let mut cwd_from: Option<String> = None;
     let mut command: Vec<String> = vec![];
-    let mut list = false;
-    let mut json = false;
     let mut expect_existing = false;
-    let mut kill: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--list" => list = true,
-            "--json" => json = true,
             "--expect-existing" => expect_existing = true,
-            "--kill" => {
-                i += 1;
-                kill = Some(args.get(i).context("--kill needs a target")?.clone());
-            }
             "--cwd" => {
                 i += 1;
                 cwd = Some(args.get(i).context("--cwd needs a dir")?.clone());
@@ -233,16 +197,6 @@ fn main() -> Result<()> {
         i += 1;
     }
 
-    if list {
-        // The positional argument is a bare host alias here ("spark"),
-        // not a [host]:<name> attach target; absent means local.
-        return run_control(target, OpenMode::List, json);
-    }
-    if let Some(kill_target) = kill {
-        let (kill_host, name) = parse_target(&kill_target)?;
-        return run_control(kill_host, OpenMode::Kill { name }, json);
-    }
-
     let (host, name) = parse_target(&target.context("usage: mux-attach [host|local]:<name>")?)?;
     run_attach(&Attach {
         target: host,
@@ -252,181 +206,6 @@ fn main() -> Result<()> {
         command,
         expect_existing,
     })
-}
-
-/// One line of `--list --json` output per pty, shaped for Mux.app's
-/// startup reconciliation.
-#[derive(serde::Serialize)]
-struct PtyLine<'a> {
-    name: &'a str,
-    command: &'a [String],
-    attached: bool,
-    exited: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cwd: Option<&'a str>,
-}
-
-/// One-shot request/reply (list, kill).
-fn run_control(target: Option<String>, mode: OpenMode, json: bool) -> Result<()> {
-    let mut stream = connect()?;
-    let (cols, rows) = winsize();
-    write_request(
-        &mut stream,
-        &OpenRequest {
-            version: mux_proto::peer::PROTOCOL_VERSION,
-            cols,
-            rows,
-            term: None,
-            token: None,
-            target,
-            mode,
-        },
-    )?;
-    let Some(frame) = read_lane_frame(&mut stream, FrameLimits::default())? else {
-        bail!("daemon closed without a reply");
-    };
-    let reply: OpenReply = peer::decode(&frame.payload)?;
-    match reply {
-        Ok(Opened::Listed { ptys }) => {
-            for p in ptys {
-                if json {
-                    let line = PtyLine {
-                        name: &p.name,
-                        command: &p.command,
-                        attached: p.attached,
-                        exited: p.exited,
-                        cwd: p.cwd.as_deref(),
-                    };
-                    // Plain data: encoding cannot fail.
-                    println!("{}", serde_json::to_string(&line).unwrap_or_default());
-                } else {
-                    println!(
-                        "{}\t{}\t{}{}{}",
-                        p.name,
-                        if p.command.is_empty() {
-                            "<shell>".to_string()
-                        } else {
-                            p.command.join(" ")
-                        },
-                        if p.attached { "attached" } else { "detached" },
-                        if p.exited { " exited" } else { "" },
-                        p.cwd.as_deref()
-                            .map(|c| format!("\t{c}"))
-                            .unwrap_or_default(),
-                    );
-                }
-            }
-        }
-        Ok(Opened::Killed { existed }) => {
-            if !existed {
-                eprintln!("no such pty");
-            }
-        }
-        Ok(other) => bail!("unexpected reply: {other:?}"),
-        Err(e) => bail!("daemon error: {e}"),
-    }
-    Ok(())
-}
-
-/// One line of `mux-attach probe` output. A struct, not a `json!`
-/// literal: serde writes the fields in declaration order, which is the
-/// order the module doc promises.
-#[derive(serde::Serialize)]
-struct Probe<'a> {
-    alias: &'a str,
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rtt_ms: Option<u128>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ptys: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    class: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<&'a str>,
-}
-
-/// Probe `alias` and print the result; returns the process exit code.
-fn probe(alias: &str) -> i32 {
-    let (listed, error) = match ask(alias) {
-        Ok(listed) => (Some(listed), None),
-        Err(e) => (None, Some(format!("{e:#}"))),
-    };
-    let result = Probe {
-        alias,
-        ok: error.is_none(),
-        rtt_ms: listed.as_ref().map(|l| l.rtt.as_millis()),
-        ptys: listed.as_ref().map(|l| l.ptys),
-        class: error.as_deref().map(classify),
-        error: error.as_deref(),
-    };
-    // The struct is plain data, so encoding cannot fail.
-    println!("{}", serde_json::to_string(&result).unwrap_or_default());
-    i32::from(error.is_some())
-}
-
-/// What a successful probe measured.
-struct Listed {
-    rtt: Duration,
-    ptys: usize,
-}
-
-/// Relay a `List` to `alias` and time the round trip. Connecting is
-/// outside the timing: it may spawn the local daemon, which says nothing
-/// about the host being probed.
-fn ask(alias: &str) -> Result<Listed> {
-    let mut stream = connect()?;
-    let (cols, rows) = winsize();
-    let started = Instant::now();
-    write_request(
-        &mut stream,
-        &OpenRequest {
-            version: mux_proto::peer::PROTOCOL_VERSION,
-            cols,
-            rows,
-            term: None,
-            token: None,
-            target: Some(alias.to_string()),
-            mode: OpenMode::List,
-        },
-    )?;
-    let Some(frame) = read_lane_frame(&mut stream, FrameLimits::default())? else {
-        bail!("daemon closed without a reply");
-    };
-    let rtt = started.elapsed();
-    match peer::decode::<OpenReply>(&frame.payload)? {
-        Ok(Opened::Listed { ptys }) => Ok(Listed {
-            rtt,
-            ptys: ptys.len(),
-        }),
-        Ok(other) => bail!("unexpected reply: {other:?}"),
-        // The daemon's own words, verbatim: `classify` reads them and the
-        // user sees them.
-        Err(message) => bail!(message),
-    }
-}
-
-/// Sort a failure into the `class` Mux.app switches on.
-///
-/// The markers are substrings of messages produced elsewhere: "cannot
-/// reach", "unknown host", "no host registry at" and "invalid host
-/// alias" by muxd's broker, "host key changed for" by its TOFU verifier,
-/// "authentication failed" and "protocol version mismatch" by the remote
-/// daemon's admission. Order matters - the broker wraps a pin failure in
-/// its own "cannot reach" context, so the specific marker has to win.
-fn classify(error: &str) -> &'static str {
-    const CLASSES: [(&str, &str); 7] = [
-        ("host key changed for ", "pin-mismatch"),
-        ("authentication failed", "token-rejected"),
-        ("protocol version mismatch", "version-mismatch"),
-        ("unknown host ", "no-host"),
-        ("no host registry at ", "no-host"),
-        ("invalid host alias ", "no-host"),
-        ("cannot reach ", "unreachable"),
-    ];
-    CLASSES
-        .iter()
-        .find(|(marker, _)| error.contains(marker))
-        .map_or("error", |(_, class)| class)
 }
 
 /// The socket the input threads currently write to. `None` between a
@@ -441,13 +220,13 @@ impl Uplink {
     }
 
     fn set(&self, stream: Option<UnixStream>) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = stream;
+        *self.0.lock() = stream;
     }
 
     /// Best effort: a failed write means this socket is already gone, and
     /// the main loop's EOF is what drives the reconnect.
     fn send(&self, lane: u8, payload: &[u8]) {
-        let mut guard = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut guard = self.0.lock();
         if let Some(stream) = guard.as_mut() {
             if write_lane(stream, lane, payload).is_err() || stream.flush().is_err() {
                 *guard = None;
@@ -456,7 +235,7 @@ impl Uplink {
     }
 
     fn shutdown_write(&self) {
-        let guard = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let guard = self.0.lock();
         if let Some(stream) = guard.as_ref() {
             let _ = stream.shutdown(std::net::Shutdown::Write);
         }
@@ -545,9 +324,6 @@ fn relay_loop(
     }
 }
 
-/// A recreated pty means the previous shell and its screen are gone.
-/// Written straight into the pane's terminal, so recovery into a blank
-/// fresh shell is never silent.
 fn print_recreated_notice() {
     print_notice("the daemon lost this pane's shell; this is a fresh one");
 }
@@ -562,42 +338,44 @@ fn print_notice(message: &str) {
 /// Handshake on an open socket and check the reply. The flag is the
 /// reply's `created`: true when the daemon had no pty by this name and
 /// made one, rather than attaching to a survivor.
-fn open_session(attach: &Attach, stream: UnixStream, size: (u16, u16)) -> Result<(UnixStream, bool)> {
+fn open_session(
+    attach: &Attach,
+    mut stream: UnixStream,
+    size: (u16, u16),
+) -> Result<(UnixStream, bool)> {
     let (cols, rows) = size;
-    let mut writer = stream.try_clone()?;
-    write_request(
-        &mut writer,
-        &OpenRequest {
-            version: mux_proto::peer::PROTOCOL_VERSION,
-            cols,
-            rows,
-            term: std::env::var("TERM").ok(),
-            token: None,
-            target: attach.target.clone(),
-            // Same name every time: the daemon attaches us to the
-            // existing pty and replays its screen.
-            mode: OpenMode::Open {
-                name: attach.name.clone(),
-                cwd: attach.cwd.clone(),
-                command: attach.command.clone(),
-                cwd_from: attach.cwd_from.clone(),
-            },
+    let request = OpenRequest {
+        version: peer::PROTOCOL_VERSION,
+        cols,
+        rows,
+        term: std::env::var("TERM").ok(),
+        token: None,
+        target: attach.target.clone(),
+        // Same name every time: the daemon attaches us to the existing
+        // pty and replays its screen.
+        mode: OpenMode::Open {
+            name: attach.name.clone(),
+            cwd: attach.cwd.clone(),
+            command: attach.command.clone(),
+            cwd_from: attach.cwd_from.clone(),
         },
-    )?;
+    };
+    match handshake(&mut stream, &request)? {
+        Opened::Attached { created, .. } => Ok((stream, created)),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
 
-    let mut reader = stream;
-    let Some(frame) = read_lane_frame(&mut reader, FrameLimits::default())? else {
+/// Write the request, read the reply off lane 0. The daemon's failure
+/// arrives typed; the kind is what the user needs to see first.
+fn handshake(stream: &mut UnixStream, request: &OpenRequest) -> Result<Opened> {
+    frame::write_message(stream, &peer::encode(request))?;
+    stream.flush()?;
+    let Some((lane, payload)) = frame::read_lane(stream)? else {
         bail!("daemon closed during handshake");
     };
-    if frame.lane != OUT_LANE_OPENED {
-        bail!("unexpected first lane {}", frame.lane);
-    }
-    let reply: OpenReply = peer::decode(&frame.payload)?;
-    match reply {
-        Ok(Opened::Attached { created, .. }) => Ok((reader, created)),
-        Ok(other) => bail!("unexpected reply: {other:?}"),
-        Err(e) => bail!("daemon error: {e}"),
-    }
+    ensure!(lane == OUT_LANE_OPENED, "unexpected first lane {lane}");
+    peer::decode_open_reply(&payload)?.map_err(|e| anyhow!("{e}"))
 }
 
 /// Wait out a daemon that went away and reattach by name. Waits forever:
@@ -675,110 +453,25 @@ fn spawn_input_threads(uplink: &Uplink, stdin_closed: &Arc<AtomicBool>, initial:
     });
 }
 
-/// Socket -> stdout for one connection.
 fn pump(reader: &mut UnixStream) -> Relay {
     let mut stdout = std::io::stdout().lock();
     loop {
         // A read error mid-frame is a daemon that vanished, not a
         // protocol failure worth killing the pane over.
-        let Ok(Some(frame)) = read_lane_frame(reader, FrameLimits::default()) else {
+        let Ok(Some((lane, payload))) = frame::read_lane(reader) else {
             return Relay::DaemonGone;
         };
-        match frame.lane {
+        match lane {
             OUT_LANE_OUTPUT => {
-                if stdout.write_all(&frame.payload).is_err() || stdout.flush().is_err() {
+                if stdout.write_all(&payload).is_err() || stdout.flush().is_err() {
                     return Relay::Exited(0);
                 }
             }
-            OUT_LANE_EVENTS => match peer::decode::<ServerEvent>(&frame.payload) {
+            OUT_LANE_EVENTS => match peer::decode::<ServerEvent>(&payload) {
                 Ok(ServerEvent::Exit { code }) => return Relay::Exited(code),
-                Ok(ServerEvent::Detached) => return Relay::Exited(0),
                 Err(_) => {}
             },
             _ => {}
         }
-    }
-}
-
-fn write_request(stream: &mut UnixStream, request: &OpenRequest) -> Result<()> {
-    let bytes = peer::encode(request);
-    let len = u32::try_from(bytes.len()).context("request too large")?;
-    stream.write_all(&len.to_le_bytes())?;
-    stream.write_all(&bytes)?;
-    stream.flush()?;
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The inputs are the messages muxd actually produces, copied from
-    /// the sites named in `classify`'s doc comment. If one of those is
-    /// reworded, this test is where it shows up.
-    #[test]
-    fn failures_are_classified() {
-        let cases = [
-            (
-                "spark: cannot reach spark at spark.lan:4433: resolve spark.lan:4433",
-                "unreachable",
-            ),
-            (
-                "spark: cannot reach spark at 10.0.0.1:4433: host key changed for spark: pinned sha256:A, presented sha256:B",
-                "pin-mismatch",
-            ),
-            ("daemon error: authentication failed", "token-rejected"),
-            (
-                "protocol version mismatch: daemon v4, client v3 - upgrade or restart the daemon (muxd --upgrade)",
-                "version-mismatch",
-            ),
-            (
-                "spark: unknown host \"spark\" in /home/me/.config/mux/hosts.json; known hosts: box",
-                "no-host",
-            ),
-            (
-                "spark: no host registry at /home/me/.config/mux/hosts.json; add {\"spark\": {\"addr\": \"<host>:4433\"}}",
-                "no-host",
-            ),
-            (
-                "sp ark: invalid host alias \"sp ark\": letters, digits, '.', '_' and '-' only",
-                "no-host",
-            ),
-            ("daemon closed without a reply", "error"),
-        ];
-        for (error, class) in cases {
-            assert_eq!(classify(error), class, "{error}");
-        }
-    }
-
-    /// The JSON shape is Mux.app's contract: both key sets exactly, in
-    /// the order the module doc prints them.
-    #[test]
-    fn probe_json_is_the_documented_shape() {
-        let ok = Probe {
-            alias: "spark",
-            ok: true,
-            rtt_ms: Some(12),
-            ptys: Some(2),
-            class: None,
-            error: None,
-        };
-        assert_eq!(
-            serde_json::to_string(&ok).unwrap(),
-            r#"{"alias":"spark","ok":true,"rtt_ms":12,"ptys":2}"#
-        );
-
-        let failed = Probe {
-            alias: "spark",
-            ok: false,
-            rtt_ms: None,
-            ptys: None,
-            class: Some("token-rejected"),
-            error: Some("authentication \"failed\""),
-        };
-        assert_eq!(
-            serde_json::to_string(&failed).unwrap(),
-            r#"{"alias":"spark","ok":false,"class":"token-rejected","error":"authentication \"failed\""}"#
-        );
     }
 }

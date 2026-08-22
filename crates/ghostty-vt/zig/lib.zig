@@ -140,13 +140,14 @@ export fn ghostty_vt_terminal_dump_viewport_row(
     return .{ .ptr = slice.ptr, .len = slice.len };
 }
 
-/// Return the cursor's pending wrap (Last Column Flag) state.
-export fn ghostty_vt_terminal_cursor_pending_wrap(
-    terminal_ptr: ?*anyopaque,
-) callconv(.c) bool {
-    if (terminal_ptr == null) return false;
+/// The title the program last set (OSC 0/2), empty when unset.
+export fn ghostty_vt_terminal_title(terminal_ptr: ?*anyopaque) callconv(.c) ghostty_vt_bytes_t {
+    if (terminal_ptr == null) return .{ .ptr = null, .len = 0 };
     const handle: *TerminalHandle = @ptrCast(@alignCast(terminal_ptr.?));
-    return handle.terminal.screens.active.cursor.pending_wrap;
+
+    const title = handle.terminal.getTitle() orelse return .{ .ptr = null, .len = 0 };
+    const slice = std.heap.c_allocator.dupe(u8, title) catch return .{ .ptr = null, .len = 0 };
+    return .{ .ptr = slice.ptr, .len = slice.len };
 }
 
 /// Render complete terminal state as VT escape sequences for reattach.

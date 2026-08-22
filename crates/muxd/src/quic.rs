@@ -20,9 +20,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use mux_proto::paths;
 use mux_proto::peer;
-use quinn::{Endpoint, Incoming, RecvStream, SendStream, ServerConfig};
+use quinn::{Endpoint, Incoming, ServerConfig};
 
 /// Explicit rather than inherited from quinn (whose default happens to
 /// match): 30 seconds of silence from a client that keep-alives every
@@ -34,17 +33,13 @@ const MAX_IDLE: Duration = Duration::from_secs(30);
 const MAX_STREAMS: u32 = 64;
 
 use crate::manager::Manager;
+use crate::paths;
 use crate::server::{self, Policy};
 use crate::tls::{self, Admitted, Identity};
 
 /// Load the daemon's identity and the tokens it admits, bind, and serve.
 /// Never returns `Ok`: while the listener was asked for, serving it is
 /// the daemon's job for as long as the daemon lives.
-///
-/// # Errors
-///
-/// Missing or unreadable TLS material, an unparseable authorized-tokens
-/// file, a failed bind, or a closed endpoint.
 pub async fn serve(manager: Manager, addr: SocketAddr, authorized: Option<&Path>) -> Result<()> {
     let identity = tls::load_or_generate_identity()?;
     let token = tls::load_or_generate_token(&paths::daemon_token())?;
@@ -61,10 +56,6 @@ pub async fn serve(manager: Manager, addr: SocketAddr, authorized: Option<&Path>
 /// Bind a QUIC endpoint presenting `identity`. Separate from [`accept`]
 /// so a caller can read `local_addr()` (an ephemeral port in tests)
 /// before serving.
-///
-/// # Errors
-///
-/// A rustls config the ring provider rejects, or a failed UDP bind.
 pub fn endpoint(addr: SocketAddr, identity: &Identity) -> Result<Endpoint> {
     // rustls 0.23 has no implicit provider: name ring (the feature the
     // workspace pins) rather than depending on process-wide install
@@ -112,7 +103,7 @@ async fn handle_connection(manager: Manager, incoming: Incoming, admitted: Admit
     loop {
         // Every close - graceful, idle timeout, peer gone - ends the
         // accept loop the same way: no more streams are coming.
-        let (send, recv) = match connection.accept_bi().await {
+        let (mut send, mut recv) = match connection.accept_bi().await {
             Ok(stream) => stream,
             Err(e) => {
                 tracing::info!(peer = %peer_addr, reason = %e, "quic client disconnected");
@@ -122,26 +113,14 @@ async fn handle_connection(manager: Manager, incoming: Incoming, admitted: Admit
         let manager = manager.clone();
         let admitted = admitted.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_stream(manager, send, recv, admitted).await {
+            let policy = Policy::Remote { admitted };
+            let served = server::handle_connection(manager, &mut recv, &mut send, &policy).await;
+            // A one-shot caller (list, kill, a rejection) reads until
+            // EOF, so finish even when the handler failed.
+            let _ = send.finish();
+            if let Err(e) = served {
                 tracing::debug!(error = %e, "quic stream ended with error");
             }
         });
     }
-}
-
-async fn handle_stream(
-    manager: Manager,
-    mut send: SendStream,
-    mut recv: RecvStream,
-    admitted: Admitted,
-) -> Result<()> {
-    // By reference: the handler owns the streams for its lifetime, and
-    // we still need `send` afterwards to close our half.
-    let result =
-        server::handle_connection(manager, &mut recv, &mut send, &Policy::Remote { admitted })
-            .await;
-    // A one-shot caller (list, kill, a rejection) reads until EOF, so
-    // finish even when the handler failed.
-    let _ = send.finish();
-    result
 }

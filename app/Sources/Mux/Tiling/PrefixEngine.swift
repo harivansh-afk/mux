@@ -1,33 +1,13 @@
 import AppKit
+import Tiling
 
 /// The multiplexer's interaction model: the prefix is a mode among modes,
 /// not a chord table. A local NSEvent monitor sees keys before any view,
 /// so prefix handling is independent of terminal focus.
 ///
-/// M1 bindings:
-///   ctrl+b        arm prefix mode
-///   prefix '      split right          prefix -      split down
-///   prefix arrows focus direction      prefix h/j/k/l focus left/down/up/right
-///   prefix z      zoom toggle          prefix x      close pane
-///   prefix c      new session          prefix 1..9   select session
-///   prefix n/p    next/prev session    prefix r      resize mode
-///   prefix t      hosts window         prefix space  canvas (f: alias)
-///   prefix ?      keybinds overlay     prefix ctrl+b send a literal ctrl+b
-///   prefix esc    cancel
-/// Held-ctrl aliasing: ctrl+<key> in prefix mode means <key> (the nvim-mux
-/// papercut fix: you rarely release ctrl between prefix and key).
-/// Resize mode: h/j/k/l nudge the enclosing split ratio, H/J/K/L move the
-/// pane through the layout, c breaks it into a new session, 1..9 moves it
-/// to that session, esc/enter/q exit. The pane being acted on wears the
-/// canvas selection stroke.
-/// Canvas mode: h/j/k/l walk every pane's live card grouped by session,
-/// enter or a click jumps to it.
-/// Hosts mode: j/k walk local, the hosts with their live probe status and
-/// the ix VMs; enter splits right into one and H/J/K/L split in a given
-/// direction, c opens a new session there, n creates a VM, t chooses the
-/// template new VMs are built from, y copies this client's identity digest.
 ///
-/// Mode changes drive the bottom mode bar on the active window.
+/// The mode is the whole story: it names the bar, the overlay that is up,
+/// and the keys that mean anything.
 final class PrefixEngine {
     enum Mode {
         case normal
@@ -36,62 +16,57 @@ final class PrefixEngine {
         case help
         case canvas
         case hosts
+        /// The hosts window's other list. A mode of its own, so the bar
+        /// follows it the way every other mode's bar does.
+        case hostsTemplate
     }
 
     private(set) var mode: Mode = .normal
     private var monitor: Any?
-    /// The controller currently showing our mode bar, so we always clear
-    /// the one we set even if key windows change mid-mode.
-    private weak var indicatorController: MuxWindowController?
 
     /// Overlay span grammar: badge, then key/description pairs. Bars stay
     /// clean: the full keybinding list lives in the keybinds overlay (?).
-    private static let prefixSegments: [ModeBarSegment] = [
-        .badge("PREFIX"),
-        .key("esc"), .dim(" cancel  "),
-        .key("ctrl+b"), .dim(" send prefix  "),
-        .key("?"), .dim(" keybinds"),
-    ]
-
-    private static let resizeSegments: [ModeBarSegment] = [
-        .badge("RESIZE"),
-        .key("h/j/k/l"), .dim(" resize  "),
-        .key("H/J/K/L"), .dim(" move  "),
-        .key("esc"), .dim(" done  "),
-        .key("?"), .dim(" keybinds"),
-    ]
-
-    private static let helpSegments: [ModeBarSegment] = [
-        .badge("KEYBINDS"),
-        .key("esc"), .dim(" close"),
-    ]
-
-    private static let canvasSegments: [ModeBarSegment] = [
-        .badge("CANVAS"),
-        .key("h/j/k/l"), .dim(" choose  "),
-        .key("enter"), .dim(" jump  "),
-        .key("esc"), .dim(" cancel"),
-    ]
-
-    /// The window has more keys than a bar should carry: they live in its
-    /// own footer and in the keybinds overlay.
-    private static let hostsSegments: [ModeBarSegment] = [
-        .badge("HOSTS"),
-        .key("j/k"), .dim(" choose  "),
-        .key("enter"), .dim(" split  "),
-        .key("?"), .dim(" keybinds"),
-    ]
-
-    private static let templateSegments: [ModeBarSegment] = [
-        .badge("TEMPLATE"),
-        .key("j/k"), .dim(" choose  "),
-        .key("enter"), .dim(" set default  "),
-        .key("esc"), .dim(" back"),
-    ]
+    private static func segments(for mode: Mode) -> [ModeBarSegment] {
+        switch mode {
+        case .normal:
+            []
+        case .prefix:
+            [.badge("PREFIX"),
+             .key("esc"), .dim(" cancel  "),
+             .key("ctrl+b"), .dim(" send prefix  "),
+             .key("?"), .dim(" keybinds")]
+        case .resize:
+            [.badge("RESIZE"),
+             .key("h/j/k/l"), .dim(" resize  "),
+             .key("H/J/K/L"), .dim(" move  "),
+             .key("esc"), .dim(" done  "),
+             .key("?"), .dim(" keybinds")]
+        case .help:
+            [.badge("KEYBINDS"),
+             .key("esc"), .dim(" close")]
+        case .canvas:
+            [.badge("CANVAS"),
+             .key("h/j/k/l"), .dim(" choose  "),
+             .key("enter"), .dim(" jump  "),
+             .key("esc"), .dim(" cancel")]
+        // The hosts window has more keys than a bar should carry: they
+        // live in its own footer and in the keybinds overlay.
+        case .hosts:
+            [.badge("HOSTS"),
+             .key("j/k"), .dim(" choose  "),
+             .key("enter"), .dim(" split  "),
+             .key("?"), .dim(" keybinds")]
+        case .hostsTemplate:
+            [.badge("TEMPLATE"),
+             .key("j/k"), .dim(" choose  "),
+             .key("enter"), .dim(" set default  "),
+             .key("esc"), .dim(" back")]
+        }
+    }
 
     /// The single window's controller.
     private var controller: MuxWindowController? {
-        (NSApp.delegate as? AppDelegate)?.controller
+        App.delegate.controller
     }
 
     func install() {
@@ -108,40 +83,37 @@ final class PrefixEngine {
         }
     }
 
+    /// Every mode change clears the chrome first, so nothing the old mode
+    /// put up outlives it; then this mode puts up its own.
     private func setMode(_ newMode: Mode) {
+        let previous = mode
         mode = newMode
-        indicatorController?.setModeIndicator(nil)
-        indicatorController?.hideHelp()
-        indicatorController?.hideCanvasOverlay()
-        indicatorController?.hideHostsWindow()
-        indicatorController?.hidePaneLabels()
-        indicatorController?.hideResizeOutline()
-        indicatorController = nil
+        controller?.dismissAllChrome()
+        guard let controller, newMode != .normal else { return }
+        controller.setModeIndicator(Self.segments(for: newMode))
         switch newMode {
         case .normal:
             break
         case .prefix:
-            indicatorController = controller
-            indicatorController?.setModeIndicator(Self.prefixSegments)
             // While the prefix is armed every pane names itself: bare
             // text at its corner, gone the instant the mode ends.
-            indicatorController?.showPaneLabels()
+            controller.showPaneTags()
         case .resize:
-            indicatorController = controller
-            indicatorController?.setModeIndicator(Self.resizeSegments)
-            indicatorController?.showResizeOutline()
+            controller.showResizeOutline()
         case .help:
-            indicatorController = controller
-            indicatorController?.setModeIndicator(Self.helpSegments)
-            indicatorController?.showHelp()
+            controller.present(controller.helpOverlay)
         case .canvas:
-            indicatorController = controller
-            indicatorController?.setModeIndicator(Self.canvasSegments)
-            indicatorController?.showCanvasOverlay()
+            controller.showCanvasOverlay()
+        // Swapping between the window's two lists must not re-probe the
+        // machines that have already answered.
+        case .hosts where previous == .hostsTemplate:
+            controller.hostsWindow.showHosts()
+            controller.present(controller.hostsWindow)
         case .hosts:
-            indicatorController = controller
-            indicatorController?.setModeIndicator(Self.hostsSegments)
-            indicatorController?.showHostsWindow()
+            controller.showHostsWindow()
+        case .hostsTemplate:
+            controller.hostsWindow.showTemplates()
+            controller.present(controller.hostsWindow)
         }
     }
 
@@ -166,19 +138,20 @@ final class PrefixEngine {
                 return event
             }
             setMode(.normal)
-            return runPrefixAction(key: key, event: event)
+            return runPrefixAction(key: key)
 
         case .resize:
+            let session = controller?.activeSession
             switch key {
-            case "h": controller?.resizeFocused(.left); return nil
-            case "j": controller?.resizeFocused(.down); return nil
-            case "k": controller?.resizeFocused(.up); return nil
-            case "l": controller?.resizeFocused(.right); return nil
+            case "h": session?.resizeFocused(.left); return nil
+            case "j": session?.resizeFocused(.down); return nil
+            case "k": session?.resizeFocused(.up); return nil
+            case "l": session?.resizeFocused(.right); return nil
             // Capitals move the pane itself through the layout.
-            case "H": controller?.moveFocusedPane(.left); return nil
-            case "J": controller?.moveFocusedPane(.down); return nil
-            case "K": controller?.moveFocusedPane(.up); return nil
-            case "L": controller?.moveFocusedPane(.right); return nil
+            case "H": session?.moveFocused(.left); return nil
+            case "J": session?.moveFocused(.down); return nil
+            case "K": session?.moveFocused(.up); return nil
+            case "L": session?.moveFocused(.right); return nil
             // Session moves commit and leave the mode, like hosts does:
             // the pane lands somewhere resize no longer describes.
             case "c":
@@ -198,16 +171,10 @@ final class PrefixEngine {
             }
 
         case .help:
-            // The overlay shows everything at once; any key closes it, so
-            // the momentary mode never swallows a keystroke you meant to type.
-            switch key {
-            case "\u{1b}", "q", "?", "\r":
-                setMode(.normal)
-                return nil
-            default:
-                setMode(.normal)
-                return nil
-            }
+            // The overlay shows everything at once, so any key closes it:
+            // the momentary mode never swallows a keystroke you meant.
+            setMode(.normal)
+            return nil
 
         case .canvas:
             // The zoom keys keep working inside the canvas, but the
@@ -226,10 +193,10 @@ final class PrefixEngine {
             }
             switch key {
             case "j", "l", "\u{F701}", "\u{F703}":
-                controller?.moveCanvasOverlay(by: 1)
+                controller?.canvasOverlay.move(by: 1)
                 return nil
             case "k", "h", "\u{F700}", "\u{F702}":
-                controller?.moveCanvasOverlay(by: -1)
+                controller?.canvasOverlay.move(by: -1)
                 return nil
             case "\r":
                 // Commit before the mode change tears the overlay down.
@@ -245,36 +212,19 @@ final class PrefixEngine {
 
         case .hosts:
             return handleHostsKey(key)
+
+        case .hostsTemplate:
+            return handleTemplateKey(key)
         }
     }
 
-    /// The hosts window holds two lists: the machines, and (under t) the ix
-    /// template new VMs are built from. Both are driven from here, so the
-    /// window itself never needs focus.
+    /// The machines list. The window never takes focus: every key it
+    /// answers to arrives here.
     private func handleHostsKey(_ key: String) -> NSEvent? {
         guard let controller else { return nil }
-
-        if controller.hostsWindowPickingTemplate {
-            switch key {
-            case "j", "\u{F701}": controller.moveHostsWindow(by: 1)
-            case "k", "\u{F700}": controller.moveHostsWindow(by: -1)
-            case "\r":
-                // Setting the default is not a pane action: it returns to
-                // the machines instead of closing the window.
-                controller.commitHostsTemplate()
-                indicatorController?.setModeIndicator(Self.hostsSegments)
-            case "\u{1b}", "q":
-                controller.showHostsMachines()
-                indicatorController?.setModeIndicator(Self.hostsSegments)
-            default:
-                break
-            }
-            return nil
-        }
-
         switch key {
-        case "j", "\u{F701}": controller.moveHostsWindow(by: 1)
-        case "k", "\u{F700}": controller.moveHostsWindow(by: -1)
+        case "j", "\u{F701}": controller.hostsWindow.move(by: 1)
+        case "k", "\u{F700}": controller.hostsWindow.move(by: -1)
         // Enter is the common case (split right); the capitals aim it. Every
         // one of them commits and leaves the mode, so the pane you asked for
         // is focused with nothing in front of it.
@@ -290,12 +240,28 @@ final class PrefixEngine {
             setMode(.normal)
         // Copying leaves the window up: the digest stays on screen as
         // confirmation of what landed on the clipboard.
-        case "y": controller.copyClientDigest()
-        case "t":
-            controller.showHostsTemplates()
-            indicatorController?.setModeIndicator(Self.templateSegments)
+        case "y": controller.hostsWindow.copyDigest()
+        case "t": setMode(.hostsTemplate)
         case "?": setMode(.help)
         case "\u{1b}", "q": setMode(.normal)
+        default:
+            break
+        }
+        return nil
+    }
+
+    /// The ix template new VMs are built from. Setting the default is not
+    /// a pane action, so both enter and esc land back on the machines
+    /// rather than closing the window.
+    private func handleTemplateKey(_ key: String) -> NSEvent? {
+        guard let controller else { return nil }
+        switch key {
+        case "j", "\u{F701}": controller.hostsWindow.move(by: 1)
+        case "k", "\u{F700}": controller.hostsWindow.move(by: -1)
+        case "\r":
+            controller.hostsWindow.commitTemplate()
+            setMode(.hosts)
+        case "\u{1b}", "q": setMode(.hosts)
         default:
             break
         }
@@ -315,18 +281,19 @@ final class PrefixEngine {
         setMode(.normal)
     }
 
-    private func runPrefixAction(key: String, event _: NSEvent) -> NSEvent? {
+    private func runPrefixAction(key: String) -> NSEvent? {
+        let session = controller?.activeSession
         switch key {
         // Splits: ' right, - down.
-        case "'": controller?.split(direction: .horizontal)
-        case "-": controller?.split(direction: .vertical)
+        case "'": session?.split(direction: .horizontal)
+        case "-": session?.split(direction: .vertical)
         // Focus movement: arrows and h/j/k/l both cover all four directions.
-        case "h", "\u{F702}": controller?.focusDirection(.left)
-        case "j", "\u{F701}": controller?.focusDirection(.down)
-        case "k", "\u{F700}": controller?.focusDirection(.up)
-        case "l", "\u{F703}": controller?.focusDirection(.right)
-        case "z": controller?.toggleZoom()
-        case "x": controller?.closeFocusedPane()
+        case "h", "\u{F702}": session?.focusDirection(.left)
+        case "j", "\u{F701}": session?.focusDirection(.down)
+        case "k", "\u{F700}": session?.focusDirection(.up)
+        case "l", "\u{F703}": session?.focusDirection(.right)
+        case "z": session?.toggleZoom()
+        case "x": session?.closeFocusedPane()
         case "r": setMode(.resize)
         case "t": setMode(.hosts)
         // Space: the canvas is the navigation surface, it gets the

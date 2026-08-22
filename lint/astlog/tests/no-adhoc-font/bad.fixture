@@ -1,0 +1,19 @@
+import AppKit
+
+func label() -> NSTextField {
+    let field = NSTextField()
+    field.font = NSFont(name: "BerkeleyMono-Regular", size: 12)
+    return field
+}
+
+func systemLabel() -> NSTextField {
+    let field = NSTextField()
+    field.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+    return field
+}
+
+func inferredLabel() -> NSTextField {
+    let field = NSTextField()
+    field.font = .systemFont(ofSize: 12)
+    return field
+}

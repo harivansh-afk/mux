@@ -1,0 +1,8 @@
+fn home() -> Option<std::path::PathBuf> {
+    let uid = nix::unistd::Uid::current();
+    nix::unistd::User::from_uid(uid).ok().flatten().map(|u| u.dir)
+}
+
+fn uid() -> u32 {
+    unsafe { libc::getuid() }
+}

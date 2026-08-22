@@ -8,20 +8,23 @@
 //! it writes nothing on its own (so a test can wedge a client without the
 //! read loop noticing first), and it exits on EOT.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mux_proto::peer::{self, OpenMode, OpenReply, OpenRequest, Opened};
-use mux_proto::shell::{IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
+use mux_proto::frame::{IN_LANE_INPUT, OUT_LANE_OPENED};
+use mux_proto::peer::{self, ErrorKind, OpenMode, OpenReply, Opened};
 use muxd::manager::{ClientMsg, Manager, PtySession};
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use muxd::migrate::MigratePty;
+use tokio::io::AsyncReadExt as _;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::Receiver;
 
-/// Long enough to be immune to a loaded box, short enough that a hang
-/// fails the run instead of stalling it.
-const PATIENCE: Duration = Duration::from_secs(10);
+mod common;
+use common::{
+    contains, read_dump, read_frame, read_output_until, read_reply, request, temp_socket,
+    write_frame, write_request, PATIENCE,
+};
 
 // ---------------------------------------------------------------- manager
 
@@ -43,11 +46,8 @@ async fn open_attach_and_exit_are_wired_end_to_end() {
     assert!(!info.exited);
 
     write_pty(&session, b"ping\n").await;
-    let seen = recv_output_until(&mut attached.rx, b"ping").await;
-    assert!(
-        seen.windows(4).any(|w| w == b"ping"),
-        "cat echoes what it is fed: {seen:?}"
-    );
+    // cat echoes what it is fed, or this never returns.
+    recv_output_until(&mut attached.rx, b"ping").await;
 
     // EOT: cat exits, the client is told, and the name comes free.
     write_pty(&session, b"\x04").await;
@@ -107,6 +107,49 @@ async fn a_wedged_client_cannot_hold_the_pty_name_hostage() {
     drop(attached);
 }
 
+/// The contract `Manager::insert_locked` enforces, and the reason it
+/// exists: `adopt` used to check the name with `get` and then insert
+/// under a separate lock, so a concurrent open of the same name replaced
+/// the map entry instead of being refused. The orphaned session keeps
+/// its read loop and its client, and nothing can reach it to kill it.
+/// `adopt` also skipped `MAX_PTYS` entirely.
+#[tokio::test]
+async fn adopting_a_taken_name_is_refused_and_the_original_keeps_its_client() {
+    let manager = Manager::default();
+    let session = open_cat(&manager, "taken");
+    let mut attached = muxd::manager::attach(&session, 80, 24);
+
+    // Stands in for a predecessor's inherited master: adopt must reject
+    // it on the name alone, before the fd matters.
+    let spare = nix::pty::openpty(None, None).expect("spare pty");
+    let _slave = spare.slave;
+    let inherited = MigratePty {
+        name: "taken".to_string(),
+        command: vec!["/bin/cat".to_string()],
+        child_pid: nix::unistd::getpid().as_raw(),
+        cols: 80,
+        rows: 24,
+        screen: Vec::new(),
+    };
+    assert!(
+        manager.adopt(inherited, spare.master).is_err(),
+        "a taken name is refused, not overwritten"
+    );
+
+    let still_here = manager.get("taken").expect("the original is still listed");
+    assert!(Arc::ptr_eq(&still_here, &session), "and it is the same pty");
+    assert!(
+        still_here.client.lock().is_some(),
+        "the original keeps its client"
+    );
+
+    // Still the live one: bytes go through the pty the client is on.
+    write_pty(&session, b"survivor\n").await;
+    recv_output_until(&mut attached.rx, b"survivor").await;
+
+    assert!(manager.kill("taken"));
+}
+
 // ----------------------------------------------------------------- server
 
 /// Regression: attaching a second client evicts the first, whose handler
@@ -134,12 +177,9 @@ async fn a_stolen_attach_leaves_the_new_client_wired() {
     // EOF lands, the clobber has not had its chance to happen.
     read_until_eof(&mut first).await;
 
+    // The surviving client still gets output, or this never returns.
     write_frame(&mut second, IN_LANE_INPUT, b"ping\n").await;
-    let seen = read_output_until(&mut second, b"ping").await;
-    assert!(
-        seen.windows(4).any(|w| w == b"ping"),
-        "the surviving client still gets output: {seen:?}"
-    );
+    read_output_until(&mut second, b"ping").await;
 
     let session = manager.get("p1").expect("pty still open");
     assert!(
@@ -148,6 +188,34 @@ async fn a_stolen_attach_leaves_the_new_client_wired() {
     );
 
     assert!(manager.kill("p1"));
+    let _ = std::fs::remove_file(&socket);
+}
+
+/// A client one protocol version behind gets a rejection it can read,
+/// not a dropped socket: typed for this version, and a bare string for
+/// the v5 shape (`Result<Opened, String>`), since `detail` is encoded
+/// first and postcard ignores what follows.
+#[tokio::test]
+async fn a_v5_client_is_told_to_upgrade_in_words_it_can_decode() {
+    let socket = temp_socket("skew");
+    let listener = muxd::server::bind(&socket).await.expect("bind");
+    tokio::spawn(muxd::server::serve(Manager::default(), listener));
+
+    let mut client = connect(&socket).await;
+    let mut stale = request(None, None, OpenMode::List);
+    stale.version = 5;
+    write_request(&mut client, &stale).await;
+    let (lane, payload) = read_frame(&mut client).await.expect("reply frame");
+    assert_eq!(lane, OUT_LANE_OPENED);
+
+    let reply: OpenReply = peer::decode(&payload).expect("decode as v6");
+    let error = reply.expect_err("a stale client is refused");
+    assert_eq!(error.kind, ErrorKind::VersionMismatch);
+    assert!(error.detail.contains("client v5"), "{}", error.detail);
+
+    let as_v5: Result<Opened, String> = peer::decode(&payload).expect("decode as v5");
+    assert_eq!(as_v5, Err(error.detail));
+
     let _ = std::fs::remove_file(&socket);
 }
 
@@ -284,10 +352,6 @@ async fn write_pty(session: &Arc<PtySession>, bytes: &[u8]) {
         .expect("write to pty");
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
-}
-
 /// Poll `ready` until it holds, or fail the test.
 async fn wait_until(mut ready: impl FnMut() -> bool, what: &str) {
     let deadline = std::time::Instant::now() + PATIENCE;
@@ -334,13 +398,6 @@ async fn recv_exit(rx: &mut Receiver<ClientMsg>) -> i32 {
         .expect("timed out waiting for the exit event")
 }
 
-/// Short /tmp path: `sun_path` is 104 bytes on darwin.
-fn temp_socket(what: &str) -> PathBuf {
-    let path = PathBuf::from(format!("/tmp/muxd-t-{}-{what}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    path
-}
-
 async fn connect(socket: &Path) -> UnixStream {
     UnixStream::connect(socket).await.expect("connect")
 }
@@ -354,76 +411,14 @@ fn attached(name: &str, created: bool) -> Opened {
 
 /// Handshake an attach-or-create of `name` running `/bin/cat`.
 async fn open_pane(stream: &mut UnixStream, name: &str) -> OpenReply {
-    let request = OpenRequest {
-        version: peer::PROTOCOL_VERSION,
-        cols: 80,
-        rows: 24,
-        term: Some("xterm-ghostty".into()),
-        token: None,
-        target: None,
-        mode: OpenMode::Open {
-            name: name.to_string(),
-            cwd: None,
-            command: vec!["/bin/cat".to_string()],
-            cwd_from: None,
-        },
+    let mode = OpenMode::Open {
+        name: name.to_string(),
+        cwd: None,
+        command: vec!["/bin/cat".to_string()],
+        cwd_from: None,
     };
-    let bytes = peer::encode(&request);
-    let len = u32::try_from(bytes.len()).expect("request length");
-    stream
-        .write_all(&len.to_le_bytes())
-        .await
-        .expect("write length");
-    stream.write_all(&bytes).await.expect("write request");
-
-    let (lane, payload) = read_frame(stream).await.expect("reply frame");
-    assert_eq!(lane, OUT_LANE_OPENED);
-    peer::decode(&payload).expect("decode reply")
-}
-
-/// The reattach replay always follows the reply, even when empty.
-async fn read_dump(stream: &mut UnixStream) -> Vec<u8> {
-    let (lane, payload) = read_frame(stream).await.expect("dump frame");
-    assert_eq!(lane, OUT_LANE_OUTPUT);
-    payload
-}
-
-async fn write_frame(stream: &mut UnixStream, lane: u8, payload: &[u8]) {
-    let len = u32::try_from(payload.len() + 1).expect("frame length");
-    stream
-        .write_all(&len.to_le_bytes())
-        .await
-        .expect("write length");
-    stream.write_all(&[lane]).await.expect("write lane");
-    stream.write_all(payload).await.expect("write payload");
-}
-
-async fn read_frame(stream: &mut UnixStream) -> Option<(u8, Vec<u8>)> {
-    let read = async {
-        let len = stream.read_u32_le().await.ok()?;
-        let lane = stream.read_u8().await.ok()?;
-        let mut payload = vec![0u8; (len - 1) as usize];
-        stream.read_exact(&mut payload).await.ok()?;
-        Some((lane, payload))
-    };
-    tokio::time::timeout(PATIENCE, read)
-        .await
-        .expect("frame timed out")
-}
-
-async fn read_output_until(stream: &mut UnixStream, needle: &[u8]) -> Vec<u8> {
-    let mut seen = Vec::new();
-    while !contains(&seen, needle) {
-        let Some((lane, payload)) = read_frame(stream).await else {
-            panic!("connection ended before {needle:?}");
-        };
-        match lane {
-            OUT_LANE_OUTPUT => seen.extend_from_slice(&payload),
-            OUT_LANE_EVENTS => panic!("unexpected event before {needle:?}"),
-            other => panic!("unexpected lane {other}"),
-        }
-    }
-    seen
+    write_request(stream, &request(None, None, mode)).await;
+    read_reply(stream).await
 }
 
 /// Read whatever is left until the daemon closes its half.

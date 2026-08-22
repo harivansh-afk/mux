@@ -12,13 +12,14 @@
 //!    never silently skipped.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use mux_proto::peer::{AgentInfo, PtyEvent, PtyInfo};
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::pty;
 
@@ -33,6 +34,15 @@ const CLIENT_CHANNEL_DEPTH: usize = 64;
 /// before the exit is reported anyway (see [`wait_adopted`]).
 const ADOPTED_EXIT_GRACE: Duration = Duration::from_secs(2);
 const ADOPTED_EXIT_POLL: Duration = Duration::from_millis(20);
+/// Output settles for this long before the agent detector looks at the
+/// pty: once per burst, never per byte, never on a clock.
+const AGENT_SETTLE: Duration = Duration::from_millis(200);
+/// The screen tail the manifests read; upstream's rules look at most
+/// this far up.
+const AGENT_TAIL_ROWS: usize = 24;
+/// Watch subscribers that fall this many events behind get a fresh
+/// snapshot instead of the gap.
+const EVENT_BACKLOG: usize = 256;
 
 pub enum ClientMsg {
     Output(Vec<u8>),
@@ -48,7 +58,6 @@ pub struct ClientId(u64);
 
 impl ClientId {
     /// The numeric identity, for correlating attach/detach log lines.
-    #[must_use]
     pub fn raw(self) -> u64 {
         self.0
     }
@@ -73,7 +82,11 @@ pub struct PtySession {
     /// instead of reaped. See [`wait_adopted`].
     pub adopted: bool,
     pub exited: AtomicBool,
-    pub exit_code: AtomicI32,
+    /// The detector's last reading, and the input it read, so a settled
+    /// pty that wrote nothing new costs nothing.
+    pub agent: Mutex<Option<AgentInfo>>,
+    /// An evaluation is scheduled; output that lands meanwhile rides it.
+    agent_pending: AtomicBool,
 }
 
 impl PtySession {
@@ -101,30 +114,126 @@ impl PtySession {
         }
     }
 
-    pub fn info(&self) -> mux_proto::peer::PtyInfo {
-        mux_proto::peer::PtyInfo {
+    pub fn info(&self) -> PtyInfo {
+        PtyInfo {
             name: self.name.clone(),
             command: self.command.clone(),
             attached: self.client.lock().is_some(),
             exited: self.exited.load(Ordering::SeqCst),
             cwd: self.current_cwd(),
+            agent: self.agent.lock().clone(),
+        }
+    }
+
+    /// The watch line for this pty as it is now.
+    pub fn event(&self) -> PtyEvent {
+        PtyEvent {
+            name: self.name.clone(),
+            agent: self.agent.lock().clone(),
+            cwd: self.current_cwd(),
+            exited: self.exited.load(Ordering::SeqCst),
+        }
+    }
+
+    /// The coding agent in the foreground, by what it was run as: the
+    /// foreground process group's leader (`tcgetpgrp`), else the child.
+    fn foreground_agent(&self) -> Option<agents::Agent> {
+        let pid = nix::unistd::tcgetpgrp(self.master.get_ref())
+            .map_or_else(|_| self.child.as_raw(), nix::unistd::Pid::as_raw);
+        process_name(pid).and_then(|name| agents::Agent::from_process_name(&name))
+    }
+
+    /// Read the pty once: who is in the foreground, and what the title
+    /// and the screen tail say it is doing. True when the reading moved.
+    fn refresh_agent(&self) -> bool {
+        let next = self.foreground_agent().map(|agent| {
+            let (title, screen) = {
+                let term = self.terminal.lock();
+                let rows = term.row_texts();
+                let tail = rows.len().saturating_sub(AGENT_TAIL_ROWS);
+                (term.title().unwrap_or_default(), rows[tail..].join("\n"))
+            };
+            let input = agents::DetectionInput {
+                screen: &screen,
+                osc_title: &title,
+                osc_progress: "",
+            };
+            let detection = agents::detect(agent, input);
+            let previous = self.agent.lock();
+            // A viewer over the live screen keeps the state it covers.
+            let state = match detection.state {
+                Some(state) => state.label(),
+                None => previous
+                    .as_ref()
+                    .map_or(agents::AgentState::Idle.label(), |info| info.state.as_str()),
+            };
+            AgentInfo {
+                agent: agent.label().to_string(),
+                state: state.to_string(),
+                topic: agents::topic(&title),
+            }
+        });
+        let mut current = self.agent.lock();
+        if *current == next {
+            return false;
+        }
+        *current = next;
+        true
+    }
+}
+
+#[derive(Clone)]
+pub struct Manager {
+    ptys: Arc<Mutex<HashMap<String, Arc<PtySession>>>>,
+    events: broadcast::Sender<PtyEvent>,
+}
+
+impl Default for Manager {
+    fn default() -> Self {
+        Self {
+            ptys: Arc::default(),
+            events: broadcast::channel(EVENT_BACKLOG).0,
         }
     }
 }
 
-#[derive(Default, Clone)]
-pub struct Manager {
-    ptys: Arc<Mutex<HashMap<String, Arc<PtySession>>>>,
-}
-
 impl Manager {
-    #[must_use]
+    /// Every pty as one event, for a watch that just opened or fell
+    /// behind, then the live feed.
+    pub fn watch(&self) -> (Vec<PtyEvent>, broadcast::Receiver<PtyEvent>) {
+        let rx = self.events.subscribe();
+        let snapshot = self.ptys.lock().values().map(|s| s.event()).collect();
+        (snapshot, rx)
+    }
+
+    fn emit(&self, session: &PtySession) {
+        // No receivers is the common case and not an error.
+        let _ = self.events.send(session.event());
+    }
+
+    /// Output landed: look at the pty once it settles. One evaluation
+    /// per burst; bytes that arrive during the wait are read by it.
+    fn schedule_agent(&self, session: &Arc<PtySession>) {
+        if session.agent_pending.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let manager = self.clone();
+        let session = Arc::clone(session);
+        tokio::spawn(async move {
+            tokio::time::sleep(AGENT_SETTLE).await;
+            session.agent_pending.store(false, Ordering::Release);
+            // A pty that exited meanwhile was reported by its reaper.
+            if !session.exited.load(Ordering::SeqCst) && session.refresh_agent() {
+                manager.emit(&session);
+            }
+        });
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<PtySession>> {
         self.ptys.lock().get(name).cloned()
     }
 
     /// Every pty that has not exited: what a self-upgrade hands over.
-    #[must_use]
     pub fn live_sessions(&self) -> Vec<Arc<PtySession>> {
         let mut sessions: Vec<_> = self
             .ptys
@@ -137,20 +246,56 @@ impl Manager {
         sessions
     }
 
-    #[must_use]
     pub fn list(&self) -> Vec<mux_proto::peer::PtyInfo> {
         let mut infos: Vec<_> = self.ptys.lock().values().map(|s| s.info()).collect();
         infos.sort_by(|a, b| a.name.cmp(&b.name));
         infos
     }
 
-    /// Attach-or-create: the pane id is the pty name, so restore is one
-    /// round trip and needs no id handoff.
+    /// Build the session and put it in the table. Takes the guard the
+    /// caller is already holding, never one of its own: one guard must
+    /// span lookup, capacity check, spawn and insert, or two racing
+    /// opens for the same name each spawn a shell and the loser is
+    /// evicted from the map, leaking a process that `kill` can no longer
+    /// reach. The same guard is what keeps the map inside `MAX_PTYS`.
     ///
     /// # Errors
     ///
-    /// The pty limit is reached, or the pty/terminal could not be
-    /// allocated.
+    /// The name is taken or the pty limit is reached.
+    fn insert_locked(
+        ptys: &mut HashMap<String, Arc<PtySession>>,
+        name: &str,
+        command: Vec<String>,
+        terminal: ghostty_vt::Terminal,
+        master: tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>,
+        child: nix::unistd::Pid,
+        adopted: bool,
+    ) -> Result<Arc<PtySession>> {
+        if ptys.contains_key(name) {
+            bail!("pty {name} already exists");
+        }
+        if ptys.len() >= MAX_PTYS {
+            bail!("pty limit reached ({MAX_PTYS})");
+        }
+        let session = Arc::new(PtySession {
+            name: name.to_string(),
+            command,
+            terminal: Mutex::new(terminal),
+            client: Mutex::new(None),
+            master,
+            child,
+            adopted,
+            exited: AtomicBool::new(false),
+            agent: Mutex::new(None),
+            agent_pending: AtomicBool::new(false),
+        });
+        ptys.insert(name.to_string(), session.clone());
+        Ok(session)
+    }
+
+    /// Attach-or-create: the pane id is the pty name, so restore is one
+    /// round trip and needs no id handoff. Fails once `MAX_PTYS` ptys
+    /// are already open.
     pub fn open(
         &self,
         name: &str,
@@ -160,14 +305,12 @@ impl Manager {
         cols: u16,
         rows: u16,
     ) -> Result<(Arc<PtySession>, bool)> {
-        // One guard across lookup, capacity check, and insert: two
-        // racing opens for the same name must not each spawn a shell
-        // (the loser would be evicted from the map and leak a process
-        // that kill can no longer reach), nor push the map past the cap.
         let mut ptys = self.ptys.lock();
         if let Some(existing) = ptys.get(name) {
             return Ok((existing.clone(), false));
         }
+        // Before the fork, not only in insert_locked: a full table must
+        // not cost a shell that is spawned and immediately hung up.
         if ptys.len() >= MAX_PTYS {
             bail!("pty limit reached ({MAX_PTYS})");
         }
@@ -181,18 +324,15 @@ impl Manager {
         })
         .context("spawn pty")?;
         let terminal = ghostty_vt::Terminal::new(rows, cols).context("terminal alloc")?;
-        let session = Arc::new(PtySession {
-            name: name.to_string(),
-            command: command.to_vec(),
-            terminal: Mutex::new(terminal),
-            client: Mutex::new(None),
-            master: pty.master,
-            child: pty.child,
-            adopted: false,
-            exited: AtomicBool::new(false),
-            exit_code: AtomicI32::new(0),
-        });
-        ptys.insert(name.to_string(), session.clone());
+        let session = Self::insert_locked(
+            &mut ptys,
+            name,
+            command.to_vec(),
+            terminal,
+            pty.master,
+            pty.child,
+            false,
+        )?;
         drop(ptys);
 
         tokio::spawn(read_loop(self.clone(), session.clone()));
@@ -204,35 +344,28 @@ impl Manager {
     /// Take over a pty from a predecessor daemon: the inherited master fd
     /// plus a fresh VT primed with the predecessor's screen snapshot, so
     /// a reattaching client repaints exactly what it had.
-    ///
-    /// # Errors
-    ///
-    /// A pty of that name already exists, or the fd/terminal could not be
-    /// prepared.
     pub fn adopt(
         &self,
-        pty: mux_proto::migrate::MigratePty,
+        pty: crate::migrate::MigratePty,
         master: std::os::fd::OwnedFd,
     ) -> Result<()> {
-        if self.get(&pty.name).is_some() {
-            bail!("pty {} already exists", pty.name);
-        }
         crate::pty::set_nonblocking(&master).context("nonblocking master")?;
         let mut terminal =
             ghostty_vt::Terminal::new(pty.rows, pty.cols).context("terminal alloc")?;
         terminal.feed(&pty.screen);
-        let session = Arc::new(PtySession {
-            name: pty.name.clone(),
-            command: pty.command,
-            terminal: Mutex::new(terminal),
-            client: Mutex::new(None),
-            master: tokio::io::unix::AsyncFd::new(master).context("AsyncFd")?,
-            child: nix::unistd::Pid::from_raw(pty.child_pid),
-            adopted: true,
-            exited: AtomicBool::new(false),
-            exit_code: AtomicI32::new(0),
-        });
-        self.ptys.lock().insert(pty.name.clone(), session.clone());
+        let master = tokio::io::unix::AsyncFd::new(master).context("AsyncFd")?;
+
+        let mut ptys = self.ptys.lock();
+        let session = Self::insert_locked(
+            &mut ptys,
+            &pty.name,
+            pty.command,
+            terminal,
+            master,
+            nix::unistd::Pid::from_raw(pty.child_pid),
+            true,
+        )?;
+        drop(ptys);
 
         tokio::spawn(read_loop(self.clone(), session));
 
@@ -251,6 +384,9 @@ impl Manager {
         let _ = nix::sys::signal::killpg(session.child, nix::sys::signal::Signal::SIGKILL);
         let _ = nix::sys::signal::kill(session.child, nix::sys::signal::Signal::SIGKILL);
         *session.client.lock() = None;
+        session.exited.store(true, Ordering::SeqCst);
+        *session.agent.lock() = None;
+        self.emit(&session);
         tracing::info!(name, "pty killed");
         true
     }
@@ -263,17 +399,6 @@ impl Manager {
             }
         }
     }
-}
-
-/// Outcome of one readiness turn of the read loop.
-enum Step {
-    /// `n` bytes were fed to the VT, and who to forward them to: the
-    /// client's id travels with its sender so a disconnect decided on
-    /// this chunk cannot land on a client that attached meanwhile.
-    Fed(usize, Option<(ClientId, mpsc::Sender<ClientMsg>)>),
-    Retry,
-    Eof,
-    Failed(std::io::Error),
 }
 
 /// PTY -> terminal + attached client. One task per pty for its lifetime;
@@ -290,44 +415,44 @@ async fn read_loop(manager: Manager, session: Arc<PtySession>) {
         // including the read is what makes a self-upgrade lossless: the
         // handoff snapshots every VT while holding these locks, so no
         // byte can leave the pty for a VT that is about to be discarded.
-        let step = {
+        // The client's id travels with its sender, so a disconnect
+        // decided on this chunk cannot land on a client that attached
+        // meanwhile.
+        let fed = {
             let mut term = session.terminal.lock();
             let read = guard.try_io(|fd| {
                 nix::unistd::read(std::os::fd::AsRawFd::as_raw_fd(fd.get_ref()), &mut buf)
                     .map_err(|e| std::io::Error::from_raw_os_error(e as i32))
             });
             match read {
-                Ok(Ok(0)) => Step::Eof, // child side gone
+                Ok(Ok(0)) => break, // child side gone
                 Ok(Ok(n)) => {
                     term.feed(&buf[..n]);
                     let client = session.client.lock();
-                    Step::Fed(n, client.as_ref().map(|c| (c.id, c.tx.clone())))
+                    Some((n, client.as_ref().map(|c| (c.id, c.tx.clone()))))
                 }
                 // EIO on darwin/linux when the child exits: treat as EOF.
-                Ok(Err(e)) if e.raw_os_error() == Some(libc::EIO) => Step::Eof,
-                Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => Step::Retry,
-                Ok(Err(e)) => Step::Failed(e),
-                Err(_would_block) => Step::Retry,
+                Ok(Err(e)) if e.raw_os_error() == Some(libc::EIO) => break,
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => None,
+                Ok(Err(e)) => {
+                    tracing::warn!(name = %session.name, error = %e, "pty read failed");
+                    break;
+                }
+                Err(_would_block) => None,
             }
         };
-        match step {
-            Step::Fed(n, Some((id, tx))) => {
-                let send =
-                    tx.send_timeout(ClientMsg::Output(buf[..n].to_vec()), CLIENT_SEND_TIMEOUT);
-                if send.await.is_err() {
-                    // Slow or gone: disconnect, never drop bytes silently.
-                    // By id: the timeout took 100ms, which is long enough
-                    // for another client to have stolen the slot.
-                    tracing::warn!(name = %session.name, "client too slow; detaching");
-                    session.detach(id);
-                }
-            }
-            Step::Fed(_, None) | Step::Retry => {}
-            Step::Eof => break,
-            Step::Failed(e) => {
-                tracing::warn!(name = %session.name, error = %e, "pty read failed");
-                break;
-            }
+        let Some((n, client)) = fed else { continue };
+        // Fed or not, the screen moved: the detector looks once it settles.
+        manager.schedule_agent(&session);
+        let Some((id, tx)) = client else { continue };
+
+        let send = tx.send_timeout(ClientMsg::Output(buf[..n].to_vec()), CLIENT_SEND_TIMEOUT);
+        if send.await.is_err() {
+            // Slow or gone: disconnect, never drop bytes silently.
+            // By id: the timeout took 100ms, which is long enough for
+            // another client to have stolen the slot.
+            tracing::warn!(name = %session.name, "client too slow; detaching");
+            session.detach(id);
         }
     }
     reap(manager, session).await;
@@ -343,8 +468,9 @@ async fn reap(manager: Manager, session: Arc<PtySession>) {
     } else {
         wait_child(pid).await
     };
-    session.exit_code.store(code, Ordering::SeqCst);
     session.exited.store(true, Ordering::SeqCst);
+    // Nothing is in the foreground of a dead pty.
+    *session.agent.lock() = None;
 
     // Take (not clone) the client so the last sender drops after Exit:
     // the forwarder drains remaining output, sees the channel close, and
@@ -363,6 +489,7 @@ async fn reap(manager: Manager, session: Arc<PtySession>) {
         }
     }
     manager.remove_if_same(&session);
+    manager.emit(&session);
     tracing::info!(name = %session.name, code, "pty exited");
 }
 
@@ -463,6 +590,60 @@ fn process_cwd(pid: i32) -> Option<String> {
     let path = unsafe { std::ffi::CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
     let path = path.to_str().ok()?;
     (!path.is_empty()).then(|| path.to_string())
+}
+
+/// What a live process was run as: its argv[0], from the kernel. The
+/// name the user typed (`claude`, a symlink, a wrapper script's name),
+/// where the executable path would say `node` or `cat`.
+#[cfg(target_os = "macos")]
+fn process_name(pid: i32) -> Option<String> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut size: libc::size_t = 0;
+    // SAFETY: a size query writes nothing but `size`.
+    let probed = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if probed != 0 || size == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    // SAFETY: the kernel writes at most `size` bytes into `buf` and
+    // updates `size` to what it wrote.
+    let read = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr().cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if read != 0 {
+        return None;
+    }
+    buf.truncate(size);
+    // Layout: argc (u32), the executable path, NUL padding, argv[0], NUL.
+    let rest = buf.get(4..)?;
+    let after_exec = &rest[rest.iter().position(|b| *b == 0)?..];
+    let argv0 = &after_exec[after_exec.iter().position(|b| *b != 0)?..];
+    let end = argv0.iter().position(|b| *b == 0).unwrap_or(argv0.len());
+    Some(String::from_utf8_lossy(&argv0[..end]).into_owned())
+}
+
+/// What a live process was run as: its argv[0], from procfs.
+#[cfg(target_os = "linux")]
+fn process_name(pid: i32) -> Option<String> {
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let argv0 = cmdline.split(|b| *b == 0).next()?;
+    (!argv0.is_empty()).then(|| String::from_utf8_lossy(argv0).into_owned())
 }
 
 /// The working directory of a live process, from procfs.

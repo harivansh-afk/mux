@@ -1,41 +1,96 @@
 import AppKit
+import Tiling
 
-/// The window's chrome: the floating mode bar, the session indicator, the
-/// keybinds overlay, and the canvas and hosts windows. All of them are
-/// overlays on the
-/// pane area - panes never reflow for them - and none of them ever takes
-/// focus: PrefixEngine owns the keys and drives them from the outside
-/// (the canvas additionally takes clicks, which also route through the
-/// engine to leave the mode).
+/// A chrome view the window puts up and takes down: the mode bar, the
+/// session indicator, the keybinds overlay, the hosts window, the canvas.
+/// All of them are overlays on the pane area - panes never reflow for
+/// them - and none of them ever takes focus: PrefixEngine owns the keys
+/// and drives them from the outside (the canvas additionally takes
+/// clicks, which also route through the engine to leave the mode).
+protocol ChromeOverlay: NSView {
+    func desiredSize(in bounds: NSRect) -> NSSize
+}
+
+extension PanelView: ChromeOverlay {}
+
 extension MuxWindowController {
-    /// Show or hide the mode overlay. nil hides it. The bar is an overlay
-    /// on the bottom row: panes never reflow for it.
-    func setModeIndicator(_ segments: [ModeBarSegment]?) {
-        if let segments {
-            modeBar.render(segments)
-            modeBar.isHidden = false
-            // Keep the overlay above any panes added since last time.
-            modeBar.removeFromSuperview()
-            container.addSubview(modeBar)
-            positionModeBar()
+    // MARK: - Presenting
+
+    /// Presence is `superview != nil` for every overlay, and `presented`
+    /// is the list layout walks.
+    func present(_ overlay: ChromeOverlay) {
+        if overlay.superview == nil {
+            container.addSubview(overlay)
+            presented.append(overlay)
+        }
+        // Adding a subview puts it on top, so the bars are lifted back:
+        // the mode bar above the canvas overlay, and the session
+        // indicator with it (it tracks the canvas selection live).
+        for bar in [modeBar, sessionIndicator]
+            where bar !== overlay && bar.superview != nil
+        {
+            container.addSubview(bar, positioned: .above, relativeTo: nil)
+        }
+        position(overlay)
+    }
+
+    func dismiss(_ overlay: ChromeOverlay) {
+        overlay.removeFromSuperview()
+        presented.removeAll { $0 === overlay }
+    }
+
+    /// Every mode change starts here, so nothing the previous mode put
+    /// up survives it.
+    func dismissAllChrome() {
+        // The canvas leaves on its own fade; its teardown dismisses it.
+        hideCanvasOverlay()
+        // The session indicator is not mode chrome: it is always up.
+        for overlay in presented
+            where overlay !== sessionIndicator && overlay !== canvasOverlay
+        {
+            dismiss(overlay)
+        }
+        hidePaneTags()
+        hideResizeOutline()
+    }
+
+    /// The two bars sit on a bottom corner; everything else is centred.
+    func position(_ overlay: ChromeOverlay) {
+        if overlay === modeBar {
+            positionBar(modeBar, edge: .minX)
+        } else if overlay === sessionIndicator {
+            positionBar(sessionIndicator, edge: .maxX)
         } else {
-            modeBar.isHidden = true
+            let bounds = container.bounds
+            let size = overlay.desiredSize(in: bounds)
+            overlay.frame = NSRect(
+                x: (bounds.width - size.width) / 2,
+                y: (bounds.height - size.height) / 2,
+                width: size.width,
+                height: size.height
+            )
         }
     }
 
-    /// Content-sized box floating at the bottom-left, inset by the same
-    /// margin from the left and bottom edges (container is flipped, so
-    /// the bottom is at maxY).
-    func positionModeBar() {
+    /// Content-sized box flush with a bottom corner of the pane area
+    /// (the container is flipped, so the bottom is at maxY).
+    func positionBar(_ bar: ModeBarView, edge: NSRectEdge) {
         let bounds = container.bounds
-        let margin = ModeBarView.margin
-        let width = min(modeBar.desiredWidth, bounds.width - margin * 2)
-        modeBar.frame = NSRect(
-            x: margin,
-            y: bounds.height - ModeBarView.height - margin,
-            width: width,
-            height: ModeBarView.height
+        let size = bar.desiredSize(in: bounds)
+        bar.frame = NSRect(
+            x: edge == .minX ? 0 : bounds.width - size.width,
+            y: bounds.height - size.height,
+            width: size.width,
+            height: size.height
         )
+    }
+
+    // MARK: - Mode bar
+
+    /// The bar is an overlay on the bottom row: panes never reflow for it.
+    func setModeIndicator(_ segments: [ModeBarSegment]) {
+        modeBar.render(segments)
+        present(modeBar)
     }
 
     // MARK: - Session indicator
@@ -43,7 +98,7 @@ extension MuxWindowController {
     /// `1 2 3` with the active number highlighted - or, while the canvas
     /// is up, the session of the selected card, so the numbers follow
     /// the scroll live. Mirrors the mode bar across the bottom edge with
-    /// the same concentric insets.
+    /// the same flush corners.
     private var sessionSegments: [ModeBarSegment] {
         let highlighted = canvasSessionHighlight ?? activeSessionIndex
         var segments: [ModeBarSegment] = []
@@ -63,133 +118,41 @@ extension MuxWindowController {
     /// are created, closed, switched or restored.
     func updateSessionIndicator() {
         sessionIndicator.render(sessionSegments)
-        positionSessionIndicator()
-    }
-
-    /// Bottom-right corner (the container is flipped, so the bottom is
-    /// maxY), level with the mode bar in the opposite corner.
-    func positionSessionIndicator() {
-        let bounds = container.bounds
-        let margin = ModeBarView.margin
-        let width = min(sessionIndicator.desiredWidth, bounds.width - margin * 2)
-        sessionIndicator.frame = NSRect(
-            x: bounds.width - margin - width,
-            y: bounds.height - ModeBarView.height - margin,
-            width: width,
-            height: ModeBarView.height
-        )
-    }
-
-    // MARK: - Keybinds overlay
-
-    func showHelp() {
-        // Keep the overlay above any panes added since last time.
-        helpOverlay.removeFromSuperview()
-        container.addSubview(helpOverlay)
-        positionHelpOverlay()
-    }
-
-    func hideHelp() {
-        helpOverlay.removeFromSuperview()
-    }
-
-    func positionHelpOverlay() {
-        center(helpOverlay, size: helpOverlay.desiredSize(in: container.bounds))
+        present(sessionIndicator)
     }
 
     // MARK: - Hosts window
 
-    /// prefix t: where a pane can live - local, the aliases with a live
-    /// probe, the ix VMs. Every query fires on open, so the box fills in as
-    /// answers arrive; the view's sticky sizing keeps the box from moving
-    /// while they land.
     func showHostsWindow() {
-        hostsWindow.onContentChange = { [weak self] in self?.positionHostsWindow() }
         hostsWindow.reload()
-        hostsWindow.removeFromSuperview()
-        container.addSubview(hostsWindow)
-        positionHostsWindow()
+        present(hostsWindow)
     }
 
-    func hideHostsWindow() {
-        hostsWindow.removeFromSuperview()
-    }
-
-    func moveHostsWindow(by delta: Int) {
-        hostsWindow.move(by: delta)
-        positionHostsWindow()
-    }
-
-    /// True while the template list is up, so esc backs out of it rather
-    /// than closing the window.
-    var hostsWindowPickingTemplate: Bool {
-        hostsWindow.pickingTemplate
-    }
-
-    /// t / esc: swap between the machines and the templates a new VM would
-    /// be built from. Coming back does not re-probe: the answers the hosts
-    /// already gave are still on screen.
-    func showHostsTemplates() {
-        hostsWindow.showTemplates()
-        positionHostsWindow()
-    }
-
-    func showHostsMachines() {
-        hostsWindow.showHosts()
-        positionHostsWindow()
-    }
-
-    /// Enter in the template list: persist the highlighted `ix new` target
-    /// as the default for new VMs.
-    func commitHostsTemplate() {
-        hostsWindow.commitTemplate()
-        positionHostsWindow()
-    }
-
-    /// y: the client identity digest onto the clipboard, for pasting into a
-    /// host's authorized list.
-    func copyClientDigest() {
-        hostsWindow.copyDigest()
-        positionHostsWindow()
-    }
-
-    /// Enter / H J K L: split the focused pane into the highlighted machine.
     /// Rows that cannot host a pane are not selectable, so a nil selection
     /// means there is nothing to open (which is not the same as `local`,
     /// hence NewPaneTarget rather than a bare string).
     func commitHostsWindow(direction: SplitDirection, before: Bool = false) {
         guard let target = hostsWindow.selectedHost else { return }
-        split(direction: direction, before: before, target: target)
+        activeSession?.split(direction: direction, before: before, target: target)
     }
 
-    /// c: a whole new session on the highlighted machine, rather than a
-    /// split beside the pane you were in.
     func newSessionOnHostsSelection() {
         guard let target = hostsWindow.selectedHost else { return }
         newSession(target: target)
     }
 
-    /// n: create a VM and open a pane on it. mux names the machine up front,
-    /// so the pane's target is `ix:<name>` from the first frame: the pane is
-    /// the creation progress and then the shell, and a restore later derives
-    /// `ix shell <name>` from that target - by which time the VM exists.
     func createIXVM() {
         let name = IX.newVMName()
-        split(
+        activeSession?.split(
             direction: .horizontal,
             target: .explicit(IX.prefix + name),
             ptyCommand: [IX.binary, "new", "-n", name, IXConfig.template()]
         )
     }
 
-    func positionHostsWindow() {
-        center(hostsWindow, size: hostsWindow.desiredSize(in: container.bounds))
-    }
-
     // MARK: - Canvas picker
 
-    /// The canvas comes and goes as one quick fade - fast enough to
-    /// read as a keystroke. The workspace never moves for it.
+    /// The canvas comes and goes as one quick fade - fast enough to read as a keystroke.
     private static let canvasFade: CFTimeInterval = 0.14
 
     /// Retargetable: reopening mid-close bends the fade from wherever
@@ -212,8 +175,25 @@ extension MuxWindowController {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.canvasFade + 0.02) { [weak self] in
             guard let self, !canvasOpen, canvasClosing else { return }
             canvasClosing = false
-            canvasOverlay.removeFromSuperview()
+            dismiss(canvasOverlay)
             applyCanvasOcclusion()
+        }
+    }
+
+    /// The canvas takes clicks (a card, the stage, the scrim), and each
+    /// of them ends the mode through the engine that owns the keys.
+    /// Wired once, at init: the overlay outlives every open.
+    func wireCanvasCallbacks() {
+        canvasOverlay.onSelectionChange = { [weak self] entry in
+            self?.canvasSessionHighlight = entry?.sessionIndex
+            self?.updateSessionIndicator()
+        }
+        canvasOverlay.onJump = { [weak self] entry in
+            self?.commitCanvas(entry)
+            App.delegate.prefixEngine.endCanvas()
+        }
+        canvasOverlay.onCancel = {
+            App.delegate.prefixEngine.endCanvas()
         }
     }
 
@@ -226,39 +206,20 @@ extension MuxWindowController {
     /// hide restores the normal rule.
     func showCanvasOverlay() {
         refreshPaneDirectories()
-        // Wired before reload: reload fires the first selection, and the
-        // indicator should track it from the first frame.
-        canvasOverlay.onSelectionChange = { [weak self] entry in
-            self?.canvasSessionHighlight = entry?.sessionIndex
-            self?.updateSessionIndicator()
-        }
-        canvasOverlay.reload(groups: canvasGroups(), selected: focusedPane?.id)
-        canvasOverlay.onJump = { [weak self] entry in
-            self?.commitCanvas(entry)
-            (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
-        }
-        canvasOverlay.onCancel = {
-            (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
-        }
+        canvasOverlay.reload(entries: canvasEntries(), selected: activeSession?.focusedPane?.id)
         if canvasOverlay.superview == nil {
             canvasOverlay.layer?.opacity = 0
-            container.addSubview(canvasOverlay)
-            positionCanvasOverlay()
-            canvasOverlay.layoutSubtreeIfNeeded()
-        }
-        // The floating badges stay above the overlay; layoutPanes
-        // re-lifts the session indicator, the mode bar needs it here.
-        if !modeBar.isHidden {
-            modeBar.removeFromSuperview()
-            container.addSubview(modeBar)
-            positionModeBar()
+            present(canvasOverlay)
         }
         // Reopening mid-close: the pending teardown sees canvasOpen and
         // stands down; the fade retargets from wherever it is.
         canvasClosing = false
         canvasOpen = true
-        applyCanvasOcclusion()
+        // One pass positions the overlay and un-occludes every pane.
         layoutPanes()
+        // The mirrors carry the first frame of the fade, so lay them out
+        // before it starts.
+        canvasOverlay.layoutSubtreeIfNeeded()
         fadeCanvas(to: 1)
     }
 
@@ -270,10 +231,6 @@ extension MuxWindowController {
         updateSessionIndicator()
         fadeCanvas(to: 0)
         scheduleCanvasTeardown()
-    }
-
-    func moveCanvasOverlay(by delta: Int) {
-        canvasOverlay.move(by: delta)
     }
 
     /// Canvas open: every pane renders (the thumbnails are live).
@@ -288,10 +245,7 @@ extension MuxWindowController {
         }
     }
 
-    /// Enter / click: jump to the selected pane, switching session if
-    /// needed and unzooming whatever covers it. The jump is exactly the
-    /// close motion, with focus landing on the chosen pane immediately.
-    /// No extra theater.
+    /// Switches session if needed and unzooms whatever covers the pane.
     func commitCanvas() {
         guard let entry = canvasOverlay.selection else { return }
         commitCanvas(entry)
@@ -302,66 +256,43 @@ extension MuxWindowController {
         let session = sessions[entry.sessionIndex]
         guard let pane = session.panes[entry.paneID] else { return }
         guard canvasOverlay.superview != nil, !canvasClosing else { return }
-        canvasClosing = true
-        canvasOpen = false
-        canvasSessionHighlight = nil
         selectSession(entry.sessionIndex)
-        updateSessionIndicator()
         session.reveal(pane)
-        layoutPanes()
-        fadeCanvas(to: 0)
-        scheduleCanvasTeardown()
-    }
-
-    /// The overlay covers the whole container; its own layout puts the
-    /// air, the stage and the wheel inside.
-    func positionCanvasOverlay() {
-        canvasOverlay.frame = container.bounds
+        hideCanvasOverlay()
     }
 
     /// Wheel rows: sessions in order, panes in tree (visual) order.
-    private func canvasGroups() -> [CanvasOverlayView.Group] {
-        sessions.enumerated().map { sessionIndex, session in
-            var entries: [CanvasOverlayView.Entry] = []
-            for paneID in session.tree?.leaves ?? [] {
-                guard let pane = session.panes[paneID] else { continue }
-                entries.append(CanvasOverlayView.Entry(
+    private func canvasEntries() -> [CanvasOverlayView.Entry] {
+        sessions.enumerated().flatMap { sessionIndex, session in
+            (session.tree?.leaves ?? []).compactMap { paneID in
+                guard let pane = session.panes[paneID] else { return nil }
+                return CanvasOverlayView.Entry(
                     sessionIndex: sessionIndex,
                     paneID: paneID,
                     pane: pane
-                ))
+                )
             }
-            return CanvasOverlayView.Group(entries: entries)
         }
     }
 
-    /// The directory a pane shows must not depend on shell integration:
-    /// most shells never report OSC 7, and reattach replays screen
-    /// bytes, not escapes. The daemons resolve every pty's cwd from its
-    /// live process, so each canvas open asks them once (a discrete
-    /// user action, not a poll) and fills in whatever OSC 7 has not.
+    /// Ask every daemon holding a pane for its directories and agents.
+    /// Once per canvas open: a discrete user action, not a poll.
     func refreshPaneDirectories() {
-        var hosts: Set<String?> = []
-        var panesByID: [UUID: PaneView] = [:]
-        for session in sessions {
-            for (id, pane) in session.panes {
-                // ix panes excluded: their local pty cwd is where `ix
-                // shell` started, not where the shell in the VM is.
-                guard IX.vm(of: pane.target) == nil else { continue }
-                hosts.insert(pane.target)
-                panesByID[id] = pane
+        let hosts = Set(sessions.flatMap { $0.panes.values.map(\.daemon) })
+        for host in hosts {
+            Muxd.list(host: host) { [weak self] listings in
+                guard let self, let listings else { return }
+                applyListings(listings, host: host)
             }
         }
-        for host in hosts {
-            Muxd.list(host: host) { listings in
-                for listing in listings ?? [] {
-                    guard let id = UUID(uuidString: listing.name),
-                          let pane = panesByID[id], pane.target == host,
-                          let cwd = listing.cwd
-                    else { continue }
-                    pane.pwd = cwd
-                }
-            }
+    }
+
+    /// One daemon's answer, applied to the panes it speaks for. A listing
+    /// names its pane by UUID; what it carries is the pane's to apply.
+    func applyListings(_ listings: [Muxd.PtyListing], host: String?) {
+        for listing in listings {
+            guard let id = UUID(uuidString: listing.name), let pane = pane(id, on: host) else { continue }
+            pane.apply(agent: listing.agent, cwd: listing.cwd)
         }
     }
 
@@ -373,7 +304,7 @@ extension MuxWindowController {
     /// layout the mode causes for free.
     func showResizeOutline() {
         hideResizeOutline()
-        guard let host = focusedPane?.scrollHost else { return }
+        guard let host = activeSession?.focusedPane?.scrollHost else { return }
         host.wantsLayer = true
         host.layer?.borderColor = ThemeManager.shared.palette.accent.cgColor
         host.layer?.borderWidth = 1 / window.backingScaleFactor
@@ -385,63 +316,50 @@ extension MuxWindowController {
         resizeOutlineHost = nil
     }
 
-    // MARK: - Pane labels (prefix)
+    // MARK: - Pane tags (prefix)
 
-    /// Bare per-pane labels while the prefix is armed: every visible
-    /// pane of the active session names itself (title · host · dir).
-    /// Text only - no boxes, no borders, nothing persistent grows on
-    /// the panes.
-    func showPaneLabels() {
-        hidePaneLabels()
+    /// While the prefix is armed, every visible pane of the active
+    /// session wears its host in a corner tag.
+    func showPaneTags() {
+        hidePaneTags()
         guard let session = activeSession else { return }
         for id in session.tree?.leaves ?? [] {
             guard let pane = session.panes[id] else { continue }
             if let zoomed = session.zoomedID, zoomed != id {
                 continue
             }
-            let label = PaneLabelView(pane: pane)
-            container.addSubview(label)
-            paneLabels.append(label)
+            let tag = PaneTagView(pane: pane)
+            container.addSubview(tag)
+            paneTags.append(tag)
         }
-        positionPaneLabels()
+        positionPaneTags()
     }
 
-    func hidePaneLabels() {
-        for label in paneLabels {
-            label.removeFromSuperview()
+    func hidePaneTags() {
+        for tag in paneTags {
+            tag.removeFromSuperview()
         }
-        paneLabels.removeAll()
+        paneTags.removeAll()
     }
 
     /// Flush with each pane's top-right corner, mirroring the bottom
-    /// bars on their window corners; wide labels truncate rather than
+    /// bars on their window corners; wide tags truncate rather than
     /// cross a divider.
-    func positionPaneLabels() {
-        for label in paneLabels {
-            guard let frame = label.paneFrame else {
-                label.isHidden = true
+    func positionPaneTags() {
+        for tag in paneTags {
+            guard let frame = tag.paneFrame else {
+                tag.isHidden = true
                 continue
             }
-            label.isHidden = false
-            label.fit()
-            let width = min(label.frame.width, frame.width)
-            label.frame = NSRect(
+            tag.isHidden = false
+            tag.fit()
+            let width = min(tag.frame.width, frame.width)
+            tag.frame = NSRect(
                 x: frame.maxX - width,
                 y: frame.minY,
                 width: width,
-                height: label.frame.height
+                height: tag.frame.height
             )
         }
-    }
-
-    /// Centered boxes (keybinds, picker) share one placement rule.
-    private func center(_ view: NSView, size: NSSize) {
-        let bounds = container.bounds
-        view.frame = NSRect(
-            x: (bounds.width - size.width) / 2,
-            y: (bounds.height - size.height) / 2,
-            width: size.width,
-            height: size.height
-        )
     }
 }

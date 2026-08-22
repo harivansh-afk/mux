@@ -11,11 +11,6 @@ import GhosttyKit
 // `theme = light:...,dark:...` ghostty config live and keeps OSC 10/11
 // luminance detection correct for programs running inside the panes.
 
-enum Appearance {
-    case light
-    case dark
-}
-
 /// The single knob for every piece of text outside the terminal panes:
 /// overlays, mode bar, hosts window, session indicator.
 /// One face (Berkeley Mono, falling back to the system monospaced font
@@ -23,30 +18,26 @@ enum Appearance {
 enum Chrome {
     static let fontSize: CGFloat = 22
 
-    static let font =
-        NSFont(name: "BerkeleyMono-Regular", size: fontSize)
-            ?? .monospacedSystemFont(ofSize: fontSize, weight: .regular)
-    static let boldFont =
-        NSFont(name: "BerkeleyMono-Bold", size: fontSize)
-            ?? .monospacedSystemFont(ofSize: fontSize, weight: .bold)
+    static let font = mono("BerkeleyMono-Regular", size: fontSize, weight: .regular)
+    static let boldFont = mono("BerkeleyMono-Bold", size: fontSize, weight: .bold)
 
-    /// The product voice: SF for labels ABOUT content (titles, session
-    /// names, counts). The mono face above stays the machine voice for
+    /// The product voice: SF for labels ABOUT content (the canvas stage's
+    /// agent topic). The mono face above stays the machine voice for
     /// content itself (commands, paths, hosts, keys). Same size knob.
-    static let uiFont = NSFont.systemFont(
-        ofSize: (fontSize * 0.86).rounded(), weight: .medium
-    )
-    static let uiTitleFont = NSFont.systemFont(
+    static let uiTitleFont = NSFont.systemFont( // astlog-ignore: no-adhoc-font
         ofSize: (fontSize * 0.95).rounded(), weight: .semibold
     )
 
     /// Small mono for metadata lines (pane labels, canvas meta).
-    static let metaFont =
-        NSFont(name: "BerkeleyMono-Regular", size: (fontSize * 0.72).rounded())
-            ?? .monospacedSystemFont(ofSize: (fontSize * 0.72).rounded(), weight: .regular)
-    static let metaBoldFont =
-        NSFont(name: "BerkeleyMono-Bold", size: (fontSize * 0.72).rounded())
-            ?? .monospacedSystemFont(ofSize: (fontSize * 0.72).rounded(), weight: .bold)
+    static let metaFont = mono("BerkeleyMono-Regular", size: (fontSize * 0.72).rounded(), weight: .regular)
+    static let metaBoldFont = mono("BerkeleyMono-Bold", size: (fontSize * 0.72).rounded(), weight: .bold)
+
+    /// The one place a face is resolved: the named font, or the system mono
+    /// when it is not installed.
+    private static func mono(_ name: String, size: CGFloat, weight: NSFont.Weight) -> NSFont {
+        // astlog-ignore: no-adhoc-font
+        NSFont(name: name, size: size) ?? .monospacedSystemFont(ofSize: size, weight: weight)
+    }
 
     /// Row height for list-style overlays (help, panes, hosts).
     static let rowHeight: CGFloat = fontSize * 2
@@ -55,25 +46,29 @@ enum Chrome {
     static let barHeight: CGFloat = fontSize + 12
 }
 
+/// A run of text in the chrome's voice. Bars, tags and badges are all
+/// sequences of these; ModeBarView.render is the one place they become
+/// pixels.
+enum ModeBarSegment {
+    /// Bold accent-contrast text on the accent colour, plus a trailing
+    /// space: the mode name at the head of a bar.
+    case badge(String)
+    case key(String)
+    case dim(String)
+    /// Active-item highlight (bold pink): the current session number, a
+    /// pane's host on its prefix tag.
+    case highlight(String)
+}
+
 struct Palette {
-    /// Overlay/bar background (= terminal background).
     let panelBg: NSColor
-    /// Accent for keys and the mode badge background.
     let accent: NSColor
-    /// Badge text on accent (= panelBg for contrast).
     let accentContrast: NSColor
-    /// Dim descriptions.
     let dim: NSColor
-    /// Primary text.
     let text: NSColor
-    /// The active-item highlight (session indicator's current number).
     let pink: NSColor
-    /// Live status in the hosts overlay: a host that answered. Also the
-    /// agent-state done check.
     let ok: NSColor
-    /// Live status in the hosts overlay: a host that did not.
     let bad: NSColor
-    /// Agent-state working (the half-circle while an agent runs).
     let busy: NSColor
     /// Pane separator lines. Derived from the terminal background exactly
     /// like ghostty's default `split-divider-color` (Ghostty.Config.swift
@@ -146,7 +141,7 @@ extension NSColor {
         return NSColor(
             hue: h,
             saturation: s,
-            brightness: min(b * (1 - amount), 1),
+            brightness: b * (1 - amount),
             alpha: a
         )
     }
@@ -166,17 +161,17 @@ extension Notification.Name {
 final class ThemeManager {
     static let shared = ThemeManager()
 
-    private(set) var appearance: Appearance = .dark
+    private(set) var isDark = true
     private var observation: NSKeyValueObservation?
 
     var palette: Palette {
-        appearance == .dark ? .dark : .light
+        isDark ? .dark : .light
     }
 
     /// The current appearance as a libghostty color scheme, for the
     /// app-wide and per-surface conditional-theme state.
     var colorScheme: ghostty_color_scheme_e {
-        appearance == .dark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+        isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
     }
 
     /// Observe the system appearance for the app's lifetime and apply the
@@ -189,29 +184,16 @@ final class ThemeManager {
     }
 
     private func refresh(force: Bool = false) {
-        let isDark = NSApp.effectiveAppearance
+        let next = NSApp.effectiveAppearance
             .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let next: Appearance = isDark ? .dark : .light
-        guard force || next != appearance else { return }
-        appearance = next
+        guard force || next != isDark else { return }
+        isDark = next
 
-        // Tell libghostty so `theme = light:...,dark:...` configs switch
-        // and OSC 10/11 background reports match the visible theme. Each
-        // surface also carries its own conditional state; PaneView pushes
-        // the scheme per surface on .muxThemeDidChange below.
         if let app = GhosttyRuntime.shared?.app {
             ghostty_app_set_color_scheme(app, colorScheme)
-            // Synchronously re-derive the app config under the new state
-            // before anything else runs. The call above only marks the
-            // state and requests an async soft reload; a surface created
-            // before that lands clones a config whose conditional state
-            // disagrees with the app's, and the core then replays the
-            // config file for that surface - dropping everything set
-            // per-surface, above all the attach command: the pane
-            // silently becomes a bare local shell and nothing reaches
-            // the daemon. refresh runs on the main thread, where panes
-            // are born, so after this line no surface can ever see the
-            // mismatch.
+            // Conditional-theme invariant (CLAUDE.md): this reload must stay
+            // synchronous and run before any surface is created, or a
+            // surface born mid-transition silently loses its attach command.
             GhosttyRuntime.shared?.reloadConfig(soft: true)
         }
 

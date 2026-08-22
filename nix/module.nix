@@ -109,8 +109,8 @@ in {
 
       serviceConfig = {
         # muxd reads and writes cert.pem, key.pem, and token under
-        # $HOME/.local/state/muxd, and logs the cert pin to the journal
-        # on first start (`muxd pin` prints the same line on demand).
+        # $HOME/.local/state/muxd. A client pins SHA-256 of cert.pem's DER
+        # on first contact, so nothing here has to publish it.
         # HOME is the user's real home: pane shells load their dotfiles,
         # and the token sits where the user can read it without sudo.
         ExecStart = lib.concatStringsSep " " ([
