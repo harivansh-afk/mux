@@ -23,17 +23,14 @@ extension MuxWindowController {
         }
     }
 
-    /// Content-sized box floating at the bottom-left, inset by the same
-    /// margin from the left and bottom edges (container is flipped, so
-    /// the bottom is at maxY).
+    /// Content-sized box flush with the bottom-left corner (the container
+    /// is flipped, so the bottom is at maxY).
     func positionModeBar() {
         let bounds = container.bounds
-        let margin = ModeBarView.margin
-        let width = min(modeBar.desiredWidth, bounds.width - margin * 2)
         modeBar.frame = NSRect(
-            x: margin,
-            y: bounds.height - ModeBarView.height - margin,
-            width: width,
+            x: 0,
+            y: bounds.height - ModeBarView.height,
+            width: min(modeBar.desiredWidth, bounds.width),
             height: ModeBarView.height
         )
     }
@@ -43,7 +40,7 @@ extension MuxWindowController {
     /// `1 2 3` with the active number highlighted - or, while the canvas
     /// is up, the session of the selected card, so the numbers follow
     /// the scroll live. Mirrors the mode bar across the bottom edge with
-    /// the same concentric insets.
+    /// the same flush corners.
     private var sessionSegments: [ModeBarSegment] {
         let highlighted = canvasSessionHighlight ?? activeSessionIndex
         var segments: [ModeBarSegment] = []
@@ -70,11 +67,10 @@ extension MuxWindowController {
     /// maxY), level with the mode bar in the opposite corner.
     func positionSessionIndicator() {
         let bounds = container.bounds
-        let margin = ModeBarView.margin
-        let width = min(sessionIndicator.desiredWidth, bounds.width - margin * 2)
+        let width = min(sessionIndicator.desiredWidth, bounds.width)
         sessionIndicator.frame = NSRect(
-            x: bounds.width - margin - width,
-            y: bounds.height - ModeBarView.height - margin,
+            x: bounds.width - width,
+            y: bounds.height - ModeBarView.height,
             width: width,
             height: ModeBarView.height
         )

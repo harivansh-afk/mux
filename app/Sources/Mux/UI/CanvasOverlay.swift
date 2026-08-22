@@ -42,7 +42,7 @@ final class CanvasOverlayView: NSView {
     private static let itemGap: CGFloat = 10
     private static let sectionGap: CGFloat = 22
     /// The floating badges keep their bottom strip.
-    private static let bottomReserve: CGFloat = ModeBarView.height + ModeBarView.margin * 2
+    private static let bottomReserve: CGFloat = ModeBarView.height
 
     /// A click on a card that is already selected - or on the stage -
     /// jumps; the controller commits and tells PrefixEngine to leave

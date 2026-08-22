@@ -25,13 +25,9 @@ enum Chrome {
     static let boldFont = NSFont(name: "BerkeleyMono-Bold", size: fontSize)
         ?? .monospacedSystemFont(ofSize: fontSize, weight: .bold)
 
-    /// The product voice: SF for labels ABOUT content (titles, session
-    /// names, counts). The mono face above stays the machine voice for
+    /// The product voice: SF for labels ABOUT content (the canvas stage's
+    /// agent topic). The mono face above stays the machine voice for
     /// content itself (commands, paths, hosts, keys). Same size knob.
-    // astlog-ignore: no-adhoc-font
-    static let uiFont = NSFont.systemFont(
-        ofSize: (fontSize * 0.86).rounded(), weight: .medium
-    )
     // astlog-ignore: no-adhoc-font
     static let uiTitleFont = NSFont.systemFont(
         ofSize: (fontSize * 0.95).rounded(), weight: .semibold

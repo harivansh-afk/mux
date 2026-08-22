@@ -7,14 +7,12 @@ import AppKit
 /// all on panel_bg.
 ///
 /// Unlike a full-width status strip, the bar is a content-sized box on
-/// panel_bg floating in a bottom corner (mode bar left, session indicator
-/// right), inset by the same margin from the nearest edges of the terminal
-/// area; everything outside the box stays transparent.
+/// panel_bg flush with a bottom corner of the terminal area (mode bar
+/// left, session indicator right); everything outside the box stays
+/// transparent.
 final class ModeBarView: NSView {
     /// One terminal-ish row.
     static let height = Chrome.barHeight
-    /// Flush with the window corners: the bars sit ON the edge, no air.
-    static let margin: CGFloat = 0
 
     /// The badge is the visual edge of the bar. Horizontal inset is half
     /// the vertical slack: the full slack read wider than the gap under
