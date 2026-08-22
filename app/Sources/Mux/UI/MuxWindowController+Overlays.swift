@@ -1,41 +1,94 @@
 import AppKit
 
-/// The window's chrome: the floating mode bar, the session indicator, the
-/// keybinds overlay, and the canvas and hosts windows. All of them are
-/// overlays on the
-/// pane area - panes never reflow for them - and none of them ever takes
-/// focus: PrefixEngine owns the keys and drives them from the outside
-/// (the canvas additionally takes clicks, which also route through the
-/// engine to leave the mode).
+/// A chrome view the window puts up and takes down: the mode bar, the
+/// session indicator, the keybinds overlay, the hosts window, the canvas.
+/// All of them are overlays on the pane area - panes never reflow for
+/// them - and none of them ever takes focus: PrefixEngine owns the keys
+/// and drives them from the outside (the canvas additionally takes
+/// clicks, which also route through the engine to leave the mode).
+protocol ChromeOverlay: NSView {
+    func desiredSize(in bounds: NSRect) -> NSSize
+}
+
 extension MuxWindowController {
-    /// Show or hide the mode overlay. nil hides it. The bar is an overlay
-    /// on the bottom row: panes never reflow for it.
-    func setModeIndicator(_ segments: [ModeBarSegment]?) {
-        if let segments {
-            modeBar.render(segments)
-            modeBar.isHidden = false
-            // Keep the overlay above any panes added since last time.
-            modeBar.removeFromSuperview()
-            container.addSubview(modeBar)
-            positionModeBar()
+    // MARK: - Presenting
+
+    /// Presence is `superview != nil` for every overlay, and `presented`
+    /// is the list layout walks.
+    func present(_ overlay: ChromeOverlay) {
+        if overlay.superview == nil {
+            container.addSubview(overlay)
+            presented.append(overlay)
+        }
+        // Adding a subview puts it on top, so the bars are lifted back:
+        // the mode bar above the canvas overlay, and the session
+        // indicator with it (it tracks the canvas selection live).
+        for bar in [modeBar, sessionIndicator]
+            where bar !== overlay && bar.superview != nil
+        {
+            container.addSubview(bar, positioned: .above, relativeTo: nil)
+        }
+        position(overlay)
+    }
+
+    func dismiss(_ overlay: ChromeOverlay) {
+        overlay.removeFromSuperview()
+        presented.removeAll { $0 === overlay }
+    }
+
+    /// Every mode change starts here, so nothing the previous mode put
+    /// up survives it.
+    func dismissAllChrome() {
+        // The canvas leaves on its own fade; its teardown dismisses it.
+        hideCanvasOverlay()
+        // The session indicator is not mode chrome: it is always up.
+        for overlay in presented
+            where overlay !== sessionIndicator && overlay !== canvasOverlay
+        {
+            dismiss(overlay)
+        }
+        hidePaneLabels()
+        hideResizeOutline()
+    }
+
+    /// The two bars sit on a bottom corner; everything else is centred.
+    func position(_ overlay: ChromeOverlay) {
+        if overlay === modeBar {
+            positionBar(modeBar, edge: .minX)
+        } else if overlay === sessionIndicator {
+            positionBar(sessionIndicator, edge: .maxX)
         } else {
-            modeBar.isHidden = true
+            let bounds = container.bounds
+            let size = overlay.desiredSize(in: bounds)
+            overlay.frame = NSRect(
+                x: (bounds.width - size.width) / 2,
+                y: (bounds.height - size.height) / 2,
+                width: size.width,
+                height: size.height
+            )
         }
     }
 
-    /// Content-sized box floating at the bottom-left, inset by the same
-    /// margin from the left and bottom edges (container is flipped, so
-    /// the bottom is at maxY).
-    func positionModeBar() {
+    /// Content-sized box flush with a bottom corner of the pane area
+    /// (the container is flipped, so the bottom is at maxY).
+    func positionBar(_ bar: ModeBarView, edge: NSRectEdge) {
         let bounds = container.bounds
         let margin = ModeBarView.margin
-        let width = min(modeBar.desiredWidth, bounds.width - margin * 2)
-        modeBar.frame = NSRect(
-            x: margin,
-            y: bounds.height - ModeBarView.height - margin,
-            width: width,
-            height: ModeBarView.height
+        let size = bar.desiredSize(in: bounds)
+        bar.frame = NSRect(
+            x: edge == .minX ? margin : bounds.width - margin - size.width,
+            y: bounds.height - size.height - margin,
+            width: size.width,
+            height: size.height
         )
+    }
+
+    // MARK: - Mode bar
+
+    /// The bar is an overlay on the bottom row: panes never reflow for it.
+    func setModeIndicator(_ segments: [ModeBarSegment]) {
+        modeBar.render(segments)
+        present(modeBar)
     }
 
     // MARK: - Session indicator
@@ -63,38 +116,7 @@ extension MuxWindowController {
     /// are created, closed, switched or restored.
     func updateSessionIndicator() {
         sessionIndicator.render(sessionSegments)
-        positionSessionIndicator()
-    }
-
-    /// Bottom-right corner (the container is flipped, so the bottom is
-    /// maxY), level with the mode bar in the opposite corner.
-    func positionSessionIndicator() {
-        let bounds = container.bounds
-        let margin = ModeBarView.margin
-        let width = min(sessionIndicator.desiredWidth, bounds.width - margin * 2)
-        sessionIndicator.frame = NSRect(
-            x: bounds.width - margin - width,
-            y: bounds.height - ModeBarView.height - margin,
-            width: width,
-            height: ModeBarView.height
-        )
-    }
-
-    // MARK: - Keybinds overlay
-
-    func showHelp() {
-        // Keep the overlay above any panes added since last time.
-        helpOverlay.removeFromSuperview()
-        container.addSubview(helpOverlay)
-        positionHelpOverlay()
-    }
-
-    func hideHelp() {
-        helpOverlay.removeFromSuperview()
-    }
-
-    func positionHelpOverlay() {
-        center(helpOverlay, size: helpOverlay.desiredSize(in: container.bounds))
+        present(sessionIndicator)
     }
 
     // MARK: - Hosts window
@@ -104,53 +126,8 @@ extension MuxWindowController {
     /// answers arrive; the view's sticky sizing keeps the box from moving
     /// while they land.
     func showHostsWindow() {
-        hostsWindow.onContentChange = { [weak self] in self?.positionHostsWindow() }
         hostsWindow.reload()
-        hostsWindow.removeFromSuperview()
-        container.addSubview(hostsWindow)
-        positionHostsWindow()
-    }
-
-    func hideHostsWindow() {
-        hostsWindow.removeFromSuperview()
-    }
-
-    func moveHostsWindow(by delta: Int) {
-        hostsWindow.move(by: delta)
-        positionHostsWindow()
-    }
-
-    /// True while the template list is up, so esc backs out of it rather
-    /// than closing the window.
-    var hostsWindowPickingTemplate: Bool {
-        hostsWindow.pickingTemplate
-    }
-
-    /// t / esc: swap between the machines and the templates a new VM would
-    /// be built from. Coming back does not re-probe: the answers the hosts
-    /// already gave are still on screen.
-    func showHostsTemplates() {
-        hostsWindow.showTemplates()
-        positionHostsWindow()
-    }
-
-    func showHostsMachines() {
-        hostsWindow.showHosts()
-        positionHostsWindow()
-    }
-
-    /// Enter in the template list: persist the highlighted `ix new` target
-    /// as the default for new VMs.
-    func commitHostsTemplate() {
-        hostsWindow.commitTemplate()
-        positionHostsWindow()
-    }
-
-    /// y: the client identity digest onto the clipboard, for pasting into a
-    /// host's authorized list.
-    func copyClientDigest() {
-        hostsWindow.copyDigest()
-        positionHostsWindow()
+        present(hostsWindow)
     }
 
     /// Enter / H J K L: split the focused pane into the highlighted machine.
@@ -182,10 +159,6 @@ extension MuxWindowController {
         )
     }
 
-    func positionHostsWindow() {
-        center(hostsWindow, size: hostsWindow.desiredSize(in: container.bounds))
-    }
-
     // MARK: - Canvas picker
 
     /// The canvas comes and goes as one quick fade - fast enough to
@@ -212,7 +185,7 @@ extension MuxWindowController {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.canvasFade + 0.02) { [weak self] in
             guard let self, !canvasOpen, canvasClosing else { return }
             canvasClosing = false
-            canvasOverlay.removeFromSuperview()
+            dismiss(canvasOverlay)
             applyCanvasOcclusion()
         }
     }
@@ -244,16 +217,8 @@ extension MuxWindowController {
         }
         if canvasOverlay.superview == nil {
             canvasOverlay.layer?.opacity = 0
-            container.addSubview(canvasOverlay)
-            positionCanvasOverlay()
+            present(canvasOverlay)
             canvasOverlay.layoutSubtreeIfNeeded()
-        }
-        // The floating badges stay above the overlay; layoutPanes
-        // re-lifts the session indicator, the mode bar needs it here.
-        if !modeBar.isHidden {
-            modeBar.removeFromSuperview()
-            container.addSubview(modeBar)
-            positionModeBar()
         }
         // Reopening mid-close: the pending teardown sees canvasOpen and
         // stands down; the fade retargets from wherever it is.
@@ -272,10 +237,6 @@ extension MuxWindowController {
         updateSessionIndicator()
         fadeCanvas(to: 0)
         scheduleCanvasTeardown()
-    }
-
-    func moveCanvasOverlay(by delta: Int) {
-        canvasOverlay.move(by: delta)
     }
 
     /// Canvas open: every pane renders (the thumbnails are live).
@@ -313,12 +274,6 @@ extension MuxWindowController {
         layoutPanes()
         fadeCanvas(to: 0)
         scheduleCanvasTeardown()
-    }
-
-    /// The overlay covers the whole container; its own layout puts the
-    /// air, the stage and the wheel inside.
-    func positionCanvasOverlay() {
-        canvasOverlay.frame = container.bounds
     }
 
     /// Wheel rows: sessions in order, panes in tree (visual) order.
@@ -434,16 +389,5 @@ extension MuxWindowController {
                 height: label.frame.height
             )
         }
-    }
-
-    /// Centered boxes (keybinds, picker) share one placement rule.
-    private func center(_ view: NSView, size: NSSize) {
-        let bounds = container.bounds
-        view.frame = NSRect(
-            x: (bounds.width - size.width) / 2,
-            y: (bounds.height - size.height) / 2,
-            width: size.width,
-            height: size.height
-        )
     }
 }

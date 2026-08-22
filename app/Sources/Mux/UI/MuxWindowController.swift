@@ -43,6 +43,10 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     let canvasOverlay = CanvasOverlayView()
     let hostsWindow = HostsWindowView()
 
+    /// The chrome that is currently up, in the order it was presented.
+    /// Managed by `present` / `dismiss`; layout walks it.
+    var presented: [ChromeOverlay] = []
+
     private(set) var sessions: [Session] = []
     private(set) var activeSessionIndex = 0
 
@@ -94,10 +98,15 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         window.contentView = container
         workspace.wantsLayer = true
         container.addSubview(workspace)
-        container.addSubview(modeBar)
-        modeBar.isHidden = true
-        container.addSubview(sessionIndicator)
         self.window = window
+
+        // Late rows and resolved probe statuses change the box's size;
+        // re-centre it where it stands rather than letting it grow off
+        // its corner.
+        hostsWindow.onContentChange = { [weak self] in
+            guard let self, hostsWindow.superview != nil else { return }
+            position(hostsWindow)
+        }
 
         sessions = [Session(runtime: runtime, controller: self)]
         updateSessionIndicator()
@@ -304,24 +313,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         let bounds = container.bounds
         guard bounds.width > 1, bounds.height > 1 else { return }
 
-        if !modeBar.isHidden {
-            positionModeBar()
-        }
-        // Always visible: keep it above panes added since the last layout
-        // and glued to the top-right through resizes.
-        if container.subviews.last !== sessionIndicator {
-            sessionIndicator.removeFromSuperview()
-            container.addSubview(sessionIndicator)
-        }
-        positionSessionIndicator()
-        if helpOverlay.superview != nil {
-            positionHelpOverlay()
-        }
-        if canvasOverlay.superview != nil {
-            positionCanvasOverlay()
-        }
-        if hostsWindow.superview != nil {
-            positionHostsWindow()
+        for overlay in presented {
+            position(overlay)
         }
         if !paneLabels.isEmpty {
             positionPaneLabels()

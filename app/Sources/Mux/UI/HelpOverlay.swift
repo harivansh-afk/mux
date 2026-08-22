@@ -6,7 +6,7 @@ import AppKit
 /// fits at once - no scrolling, no footer. Section headings are bare
 /// words; the key that enters a mode is that section's first row.
 /// PrefixEngine drives dismissal; the overlay never takes focus.
-final class HelpOverlayView: NSView {
+final class HelpOverlayView: NSView, ChromeOverlay {
     private struct Section {
         let title: String
         let rows: [(key: String, desc: String)]

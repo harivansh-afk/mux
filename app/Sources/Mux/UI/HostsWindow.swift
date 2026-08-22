@@ -17,7 +17,7 @@ import AppKit
 /// one open, and each open starts from the last open's final size (a
 /// shrunken fleet corrects itself on the next open). PrefixEngine owns the
 /// keys; the window never takes focus.
-final class HostsWindowView: NSView {
+final class HostsWindowView: NSView, ChromeOverlay {
     /// A host's live state as it reads on screen.
     private enum Status {
         case none
@@ -296,6 +296,9 @@ final class HostsWindowView: NSView {
         let position = selectable.firstIndex(of: index) ?? 0
         index = selectable[(position + delta + selectable.count) % selectable.count]
         render()
+        // The highlighted row renders bold, so the box can need a wider
+        // line than the one it is currently sized for.
+        onContentChange?()
     }
 
     /// y: the full digest onto the clipboard. The truncation on screen is

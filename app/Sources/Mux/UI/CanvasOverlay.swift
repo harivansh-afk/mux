@@ -21,7 +21,7 @@ import AppKit
 /// j/k (and arrows) move, click selects (click again jumps), enter
 /// jumps, esc or a click on the scrim cancels. PrefixEngine drives the
 /// keys; the overlay never takes focus.
-final class CanvasOverlayView: NSView {
+final class CanvasOverlayView: NSView, ChromeOverlay {
     struct Entry {
         let sessionIndex: Int
         let paneID: UUID
@@ -285,6 +285,12 @@ final class CanvasOverlayView: NSView {
     }
 
     // MARK: - Layout
+
+    /// The whole pane area: the scrim covers everything, and this
+    /// overlay's own layout puts the air, the stage and the wheel inside.
+    func desiredSize(in bounds: NSRect) -> NSSize {
+        bounds.size
+    }
 
     override func layout() {
         super.layout()
