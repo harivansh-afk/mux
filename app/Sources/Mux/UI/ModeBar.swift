@@ -10,36 +10,6 @@ import AppKit
 /// panel_bg floating in a bottom corner (mode bar left, session indicator
 /// right), inset by the same margin from the nearest edges of the terminal
 /// area; everything outside the box stays transparent.
-struct ModeBarSegment {
-    enum Kind {
-        case badge
-        case key
-        case dim
-        /// Active-item highlight (bold pink), e.g. the current session
-        /// number in the session indicator.
-        case highlight
-    }
-
-    let kind: Kind
-    let text: String
-
-    static func badge(_ t: String) -> ModeBarSegment {
-        .init(kind: .badge, text: t)
-    }
-
-    static func key(_ t: String) -> ModeBarSegment {
-        .init(kind: .key, text: t)
-    }
-
-    static func dim(_ t: String) -> ModeBarSegment {
-        .init(kind: .dim, text: t)
-    }
-
-    static func highlight(_ t: String) -> ModeBarSegment {
-        .init(kind: .highlight, text: t)
-    }
-}
-
 final class ModeBarView: NSView {
     /// One terminal-ish row.
     static let height = Chrome.barHeight
@@ -86,10 +56,10 @@ final class ModeBarView: NSView {
         let palette = ThemeManager.shared.palette
         let line = NSMutableAttributedString()
         for segment in segments {
-            switch segment.kind {
-            case .badge:
+            switch segment {
+            case let .badge(text):
                 line.append(NSAttributedString(
-                    string: " \(segment.text) ",
+                    string: " \(text) ",
                     attributes: [
                         .font: Self.boldFont,
                         .foregroundColor: palette.accentContrast,
@@ -97,25 +67,25 @@ final class ModeBarView: NSView {
                     ]
                 ))
                 line.append(NSAttributedString(string: " "))
-            case .key:
+            case let .key(text):
                 line.append(NSAttributedString(
-                    string: segment.text,
+                    string: text,
                     attributes: [
                         .font: Self.boldFont,
                         .foregroundColor: palette.accent,
                     ]
                 ))
-            case .dim:
+            case let .dim(text):
                 line.append(NSAttributedString(
-                    string: segment.text,
+                    string: text,
                     attributes: [
                         .font: Self.font,
                         .foregroundColor: palette.dim,
                     ]
                 ))
-            case .highlight:
+            case let .highlight(text):
                 line.append(NSAttributedString(
-                    string: segment.text,
+                    string: text,
                     attributes: [
                         .font: Self.boldFont,
                         .foregroundColor: palette.pink,

@@ -57,6 +57,20 @@ enum Chrome {
     static let barHeight: CGFloat = fontSize + 12
 }
 
+/// A run of text in the chrome's voice. Bars, tags and badges are all
+/// sequences of these; ModeBarView.render is the one place they become
+/// pixels.
+enum ModeBarSegment {
+    /// Bold accent-contrast text on the accent colour, plus a trailing
+    /// space: the mode name at the head of a bar.
+    case badge(String)
+    case key(String)
+    case dim(String)
+    /// Active-item highlight (bold pink): the current session number, a
+    /// pane's host on its prefix tag.
+    case highlight(String)
+}
+
 struct Palette {
     /// Overlay/bar background (= terminal background).
     let panelBg: NSColor
