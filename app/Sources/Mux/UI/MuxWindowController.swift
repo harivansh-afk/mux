@@ -246,22 +246,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         selectSession((activeSessionIndex + sessions.count - 1) % sessions.count)
     }
 
-    // MARK: - Tiling API (forwarded to the active session)
-
-    var focusedPane: PaneView? {
-        activeSession?.focusedPane
-    }
-
-    @discardableResult
-    func addInitialPane(
-        id: UUID = UUID(), workingDirectory: String? = nil, cwdFrom: UUID? = nil,
-        target: String? = nil
-    ) -> PaneView? {
-        activeSession?.addInitialPane(
-            id: id, workingDirectory: workingDirectory, cwdFrom: cwdFrom, target: target
-        )
-    }
-
     /// Rebuild all sessions from a snapshot. The active session is
     /// restored last so its focused pane ends up first responder.
     func restoreSessions(_ snapshots: [SessionSnapshot], active: Int) {
@@ -278,39 +262,10 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func split(
-        direction: SplitDirection,
-        before: Bool = false,
-        target: NewPaneTarget = .inherit,
-        ptyCommand: [String]? = nil
-    ) {
-        activeSession?.split(
-            direction: direction, before: before, target: target, ptyCommand: ptyCommand
-        )
-    }
-
-    func closeFocusedPane() {
-        activeSession?.closeFocusedPane()
-    }
-
+    /// A pane can die in an inactive session, so the owning session is
+    /// found before the active one is assumed.
     func removePane(_ pane: PaneView) {
         (session(owning: pane) ?? activeSession)?.removePane(pane)
-    }
-
-    func focusDirection(_ direction: FocusDirection) {
-        activeSession?.focusDirection(direction)
-    }
-
-    func toggleZoom() {
-        activeSession?.toggleZoom()
-    }
-
-    func resizeFocused(_ direction: FocusDirection, step: Double = 0.03) {
-        activeSession?.resizeFocused(direction, step: step)
-    }
-
-    func moveFocusedPane(_ direction: FocusDirection) {
-        activeSession?.moveFocused(direction)
     }
 
     // MARK: - Focus
@@ -391,7 +346,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     // MARK: - Window delegate
 
     func windowDidBecomeKey(_: Notification) {
-        if let pane = focusedPane {
+        if let pane = activeSession?.focusedPane {
             focus(pane)
         }
     }

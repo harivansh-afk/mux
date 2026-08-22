@@ -57,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             restore(snapshot)
         } else {
             AppLog.log("no restorable snapshot; starting fresh")
-            makeWindow()?.addInitialPane()
+            makeWindow()?.activeSession?.addInitialPane()
         }
 
         // The snapshot is a claim, not the truth: the daemons know which
@@ -247,11 +247,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func copyFromPane(_: Any?) {
-        controller?.focusedPane?.bindingAction("copy_to_clipboard")
+        controller?.activeSession?.focusedPane?.bindingAction("copy_to_clipboard")
     }
 
     @objc func pasteToPane(_: Any?) {
-        controller?.focusedPane?.bindingAction("paste_from_clipboard")
+        controller?.activeSession?.focusedPane?.bindingAction("paste_from_clipboard")
     }
 
     // MARK: - Menu
