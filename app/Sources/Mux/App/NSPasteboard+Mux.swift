@@ -30,7 +30,7 @@ extension NSPasteboard.PasteboardType {
 
 extension NSPasteboard {
     /// The private pasteboard for copy-on-select, so selecting text never
-    /// clobbers the system clipboard (ghostty does the same).
+    /// clobbers the system clipboard.
     static let muxSelection = NSPasteboard(name: .init("com.mux.selection"))
 
     /// The pasteboard for the Ghostty enum type.

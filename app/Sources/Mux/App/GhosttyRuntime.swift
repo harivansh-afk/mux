@@ -11,8 +11,7 @@ final class GhosttyRuntime {
     var app: ghostty_app_t?
     var config: ghostty_config_t?
 
-    /// Keyboard layout switches must reach libghostty so it reloads its
-    /// key mapping (ghostty does the same).
+    /// Keyboard layout switches must reach libghostty so it reloads its key mapping.
     private var keyboardObserver: NSObjectProtocol?
 
     init?() {
@@ -268,8 +267,8 @@ final class GhosttyRuntime {
         pasteboard: NSPasteboard?
     ) {
         // Complete a request that races an existing prompt instead of
-        // stacking sheets (ghostty does the same). confirmed=true only
-        // marks the request answered; the empty string denies it.
+        // stacking sheets. confirmed=true only marks the request
+        // answered; the empty string denies it.
         if view.clipboardConfirmationActive {
             if let surface = view.surface, request != GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE {
                 ghostty_surface_complete_clipboard_request(surface, "", state, true)
