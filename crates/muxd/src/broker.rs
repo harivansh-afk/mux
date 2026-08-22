@@ -23,7 +23,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
 use mux_proto::peer::{self, OpenReply, OpenRequest};
-use mux_proto::frame::OUT_LANE_OPENED;
+use mux_proto::frame;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -31,7 +31,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
-use crate::{paths, tls};
+use crate::{paths, server, tls};
 
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -131,7 +131,7 @@ impl Broker {
             Err(e) => {
                 tracing::warn!(host = %alias, error = %format!("{e:#}"), "relay failed");
                 let reply: OpenReply = Err(format!("{alias}: {e:#}"));
-                return write_reply(&mut writer, &reply).await;
+                return server::reply(&mut writer, &reply).await;
             }
         };
         splice(reader, &mut writer, stream).await
@@ -158,15 +158,11 @@ impl Broker {
             ..request
         };
         let payload = peer::encode(&request);
-        let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
-        if len > peer::MAX_REQUEST_BYTES {
-            bail!("request too large ({len} bytes)");
-        }
-
         let opened = tokio::time::timeout(OPEN_TIMEOUT, async {
             let (mut send, recv) = connection.open_bi().await.context("open QUIC stream")?;
-            send.write_u32_le(len).await.context("send handshake")?;
-            send.write_all(&payload).await.context("send handshake")?;
+            frame::aio::write_message(&mut send, &payload)
+                .await
+                .context("send handshake")?;
             Ok::<_, anyhow::Error>(Stream { send, recv })
         })
         .await
@@ -301,16 +297,6 @@ where
         r = up => r,
         r = down => r,
     }
-}
-
-async fn write_reply<W: AsyncWrite + Unpin>(writer: &mut W, reply: &OpenReply) -> Result<()> {
-    let payload = peer::encode(reply);
-    let len = 1 + u32::try_from(payload.len()).context("reply too large")?;
-    writer.write_u32_le(len).await?;
-    writer.write_u8(OUT_LANE_OPENED).await?;
-    writer.write_all(&payload).await?;
-    writer.flush().await?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------- registry
@@ -878,11 +864,11 @@ mod tests {
         assert_eq!(with_default_port("[::1]"), "[::1]:4433");
     }
 
-    fn error_reply(frame: &[u8]) -> String {
-        let len = usize::try_from(u32::from_le_bytes(frame[..4].try_into().unwrap())).unwrap();
-        assert_eq!(frame.len(), 4 + len);
-        assert_eq!(frame[4], OUT_LANE_OPENED);
-        match peer::decode::<OpenReply>(&frame[5..]).unwrap() {
+    fn error_reply(bytes: &[u8]) -> String {
+        let (lane, len) = frame::parse_header(bytes[..5].try_into().unwrap()).unwrap();
+        assert_eq!(lane, frame::OUT_LANE_OPENED);
+        assert_eq!(bytes.len(), 5 + len);
+        match peer::decode::<OpenReply>(&bytes[5..]).unwrap() {
             Err(message) => message,
             Ok(opened) => panic!("expected an error reply, got {opened:?}"),
         }
@@ -1016,7 +1002,6 @@ mod tests {
 
     #[tokio::test]
     async fn relays_the_rewritten_handshake_and_bytes() {
-        use tokio::io::AsyncReadExt as _;
 
         let dir = scratch("relay-quic");
         let key = cert();
@@ -1037,9 +1022,7 @@ mod tests {
             let mut relayed = Vec::new();
             for _ in 0..2 {
                 let (mut send, mut recv) = connection.accept_bi().await.unwrap();
-                let len = recv.read_u32_le().await.unwrap();
-                let mut buf = vec![0u8; usize::try_from(len).unwrap()];
-                recv.read_exact(&mut buf).await.unwrap();
+                let buf = frame::aio::read_message(&mut recv).await.unwrap();
                 let mut up = [0u8; 2];
                 recv.read_exact(&mut up).await.unwrap();
                 assert_eq!(&up, b"up");

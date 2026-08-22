@@ -11,10 +11,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use mux_proto::frame::{self, IN_LANE_INPUT, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
 use mux_proto::peer::{self, OpenMode, OpenReply, OpenRequest, Opened};
-use mux_proto::frame::{IN_LANE_INPUT, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
 use quinn::{Endpoint, RecvStream, SendStream};
-use tokio::io::AsyncReadExt as _;
 
 /// Long enough to be immune to a loaded CI box, short enough that a hang
 /// fails the run instead of stalling it.
@@ -122,7 +121,9 @@ async fn quic_listener_serves_authenticated_clients() {
     let (lane, _dump) = read_frame(&mut recv).await.expect("dump frame");
     assert_eq!(lane, OUT_LANE_OUTPUT);
 
-    write_frame(&mut send, IN_LANE_INPUT, b"ping\n").await;
+    frame::aio::write_lane(&mut send, IN_LANE_INPUT, b"ping\n")
+        .await
+        .expect("write input");
     let echoed = read_output_until(&mut recv, b"ping").await;
     assert!(
         echoed.windows(4).any(|w| w == b"ping"),
@@ -177,30 +178,17 @@ fn request(token: Option<&str>, target: Option<&str>, mode: OpenMode) -> OpenReq
 }
 
 async fn write_request(send: &mut SendStream, request: &OpenRequest) {
-    let bytes = peer::encode(request);
-    let len = u32::try_from(bytes.len()).expect("request length");
-    send.write_all(&len.to_le_bytes()).await.expect("write len");
-    send.write_all(&bytes).await.expect("write request");
-}
-
-async fn write_frame(send: &mut SendStream, lane: u8, payload: &[u8]) {
-    let len = u32::try_from(payload.len() + 1).expect("frame length");
-    send.write_all(&len.to_le_bytes()).await.expect("write len");
-    send.write_all(&[lane]).await.expect("write lane");
-    send.write_all(payload).await.expect("write payload");
+    frame::aio::write_message(send, &peer::encode(request))
+        .await
+        .expect("write request");
 }
 
 async fn read_frame(recv: &mut RecvStream) -> Option<(u8, Vec<u8>)> {
-    let read = async {
-        let len = recv.read_u32_le().await.ok()?;
-        let lane = recv.read_u8().await.ok()?;
-        let mut payload = vec![0u8; (len - 1) as usize];
-        recv.read_exact(&mut payload).await.ok()?;
-        Some((lane, payload))
-    };
-    tokio::time::timeout(PATIENCE, read)
+    tokio::time::timeout(PATIENCE, frame::aio::read_lane(recv))
         .await
         .expect("frame timed out")
+        .ok()
+        .flatten()
 }
 
 async fn read_reply(recv: &mut RecvStream) -> OpenReply {
