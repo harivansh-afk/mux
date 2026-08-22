@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import UserNotifications
 
 /// The app itself, reachable from anywhere. mux installs exactly one
 /// delegate in main.swift, before any of this code can run, so this is
@@ -40,6 +41,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         ThemeManager.shared.start()
         prefixEngine.install()
+
+        // Ask once, here, rather than on every OSC 9 a pane fires.
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound]) { granted, error in
+                if let error {
+                    AppLog.log("notification authorization failed: \(error)")
+                } else if !granted {
+                    AppLog.log("notification authorization denied")
+                }
+            }
 
         if let snapshot = SnapshotStore.load(), !snapshot.sessions.isEmpty {
             let panes = snapshot.sessions.flatMap { $0.panes.keys.map(\.uuidString) }
