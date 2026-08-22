@@ -17,16 +17,16 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use base64::Engine as _;
 use mux_proto::frame;
 use mux_proto::peer::{self, ErrorKind, OpenError, OpenRequest};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::WebPkiSupportedAlgorithms;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
+use rustls::{DigitallySignedStruct, PeerIncompatible, SignatureScheme};
 use serde::Deserialize;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
@@ -54,9 +54,10 @@ const KEEP_ALIVE: Duration = Duration::from_secs(5);
 /// and cheap, so err toward declaring death early.
 const MAX_IDLE: Duration = Duration::from_secs(15);
 
-/// SNI for aliases that are not legal DNS names. The pin decides trust, so
-/// the name we send is cosmetic.
-const SNI_FALLBACK: &str = "muxd";
+/// The SNI every dial sends. A host presents one certificate and the pin
+/// decides trust, so the name carries no meaning; a constant also spares
+/// aliases that are not legal DNS names a special case.
+const SNI: &str = "muxd";
 
 /// Why a dial failed. A changed host key is the one reason that is not
 /// "the host is not reachable", and rustls buries it under a generic TLS
@@ -116,15 +117,7 @@ struct Broker {
     client_token: PathBuf,
     /// The directory of per-alias overrides of that token.
     tokens: PathBuf,
-    links: tokio::sync::Mutex<HashMap<String, Link>>,
-}
-
-/// A live connection and the endpoint that owns its UDP socket. The
-/// endpoint is held so redialing a host drops the old socket with the old
-/// connection.
-struct Link {
-    _endpoint: quinn::Endpoint,
-    connection: quinn::Connection,
+    links: tokio::sync::Mutex<HashMap<String, quinn::Connection>>,
 }
 
 impl Broker {
@@ -133,9 +126,7 @@ impl Broker {
             hosts: paths::hosts_config(),
             known_hosts: paths::known_hosts(),
             client_token: paths::client_token(),
-            // `paths::host_token` is the contract; `token_dir_matches_paths`
-            // holds this equal to it.
-            tokens: paths::client_state_dir().join("tokens"),
+            tokens: paths::token_dir(),
             links: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -161,7 +152,7 @@ impl Broker {
     /// Dial (or reuse) the host's connection, open a stream on it and send
     /// the rewritten handshake. Everything that can fail with a message the
     /// user can act on happens here, before any byte reaches the pane.
-    async fn open_stream(&self, alias: &str, request: OpenRequest) -> Result<Stream, OpenError> {
+    async fn open_stream(&self, alias: &str, request: OpenRequest) -> Result<(quinn::SendStream, quinn::RecvStream), OpenError> {
         check_alias(alias).map_err(|e| failed(ErrorKind::NoHost, &e))?;
         let addr = host_addr(&self.hosts, alias).map_err(|e| failed(ErrorKind::NoHost, &e))?;
         let token = host_token(&self.tokens, &self.client_token, alias)
@@ -190,7 +181,7 @@ impl Broker {
             frame::aio::write_message(&mut send, &payload)
                 .await
                 .context("send handshake")?;
-            Ok::<_, anyhow::Error>(Stream { send, recv })
+            Ok::<_, anyhow::Error>((send, recv))
         })
         .await
         .unwrap_or_else(|_| bail!("open stream timed out after {OPEN_TIMEOUT:?}"));
@@ -207,8 +198,8 @@ impl Broker {
     }
 
     async fn evict(&self, alias: &str) {
-        if let Some(link) = self.links.lock().await.remove(alias) {
-            link.connection.close(0u32.into(), b"evicted");
+        if let Some(connection) = self.links.lock().await.remove(alias) {
+            connection.close(0u32.into(), b"evicted");
         }
     }
 
@@ -220,31 +211,30 @@ impl Broker {
         if let Some(connection) = self.live(alias).await {
             return Ok(connection);
         }
-        let link = self.dial(alias, addr).await?;
+        let connection = self.dial(alias, addr).await?;
         let mut links = self.links.lock().await;
         if let Some(existing) = links.get(alias) {
-            if existing.connection.close_reason().is_none() {
-                link.connection.close(0u32.into(), b"duplicate");
-                return Ok(existing.connection.clone());
+            if existing.close_reason().is_none() {
+                connection.close(0u32.into(), b"duplicate");
+                return Ok(existing.clone());
             }
         }
-        let connection = link.connection.clone();
-        links.insert(alias.to_string(), link);
+        links.insert(alias.to_string(), connection.clone());
         Ok(connection)
     }
 
     async fn live(&self, alias: &str) -> Option<quinn::Connection> {
         let mut links = self.links.lock().await;
-        let link = links.get(alias)?;
-        if let Some(reason) = link.connection.close_reason() {
+        let connection = links.get(alias)?;
+        if let Some(reason) = connection.close_reason() {
             tracing::debug!(host = %alias, %reason, "cached connection is dead, redialing");
             links.remove(alias);
             return None;
         }
-        Some(link.connection.clone())
+        Some(connection.clone())
     }
 
-    async fn dial(&self, alias: &str, addr: &str) -> Result<Link, OpenError> {
+    async fn dial(&self, alias: &str, addr: &str) -> Result<quinn::Connection, OpenError> {
         match self.try_dial(alias, addr).await {
             Ok(link) => Ok(link),
             // rustls only hands the caller a generic TLS alert, so a pin
@@ -254,18 +244,21 @@ impl Broker {
         }
     }
 
-    async fn try_dial(&self, alias: &str, addr: &str) -> Result<Link, DialError> {
+    async fn try_dial(&self, alias: &str, addr: &str) -> Result<quinn::Connection, DialError> {
         let remote = resolve(addr).await?;
-        let verifier = Arc::new(Tofu::new(alias, self.known_hosts.clone()));
+        let provider = rustls::crypto::ring::default_provider();
+        let verifier = Arc::new(Tofu::new(
+            alias,
+            self.known_hosts.clone(),
+            provider.signature_verification_algorithms,
+        ));
 
-        let mut crypto = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .context("TLS 1.3 unavailable")?
-        .dangerous()
-        .with_custom_certificate_verifier(verifier.clone())
-        .with_no_client_auth();
+        let mut crypto = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .context("TLS 1.3 unavailable")?
+            .dangerous()
+            .with_custom_certificate_verifier(verifier.clone())
+            .with_no_client_auth();
         crypto.alpn_protocols = vec![peer::ALPN.to_vec()];
         let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
             .context("QUIC-incompatible TLS config")?;
@@ -283,12 +276,7 @@ impl Broker {
         client.transport_config(Arc::new(transport));
         endpoint.set_default_client_config(client);
 
-        let sni = if ServerName::try_from(alias).is_ok() {
-            alias
-        } else {
-            SNI_FALLBACK
-        };
-        let connecting = endpoint.connect(remote, sni).context("start QUIC dial")?;
+        let connecting = endpoint.connect(remote, SNI).context("start QUIC dial")?;
         let connection = match tokio::time::timeout(DIAL_TIMEOUT, connecting).await {
             Err(_) => {
                 return Err(
@@ -306,26 +294,25 @@ impl Broker {
             Ok(Ok(connection)) => connection,
         };
         tracing::info!(host = %alias, %remote, "QUIC connection established");
-        Ok(Link {
-            _endpoint: endpoint,
-            connection,
-        })
+        // The endpoint keeps its UDP socket alive for as long as a
+        // connection made on it exists, so dropping this handle costs the
+        // connection nothing and redialing gets a fresh socket.
+        Ok(connection)
     }
-}
-
-struct Stream {
-    send: quinn::SendStream,
-    recv: quinn::RecvStream,
 }
 
 /// Pump bytes both ways until either side is done, then close the other
 /// half so the peer sees an EOF rather than a stall.
-async fn splice<R, W>(mut reader: R, writer: &mut W, stream: Stream) -> Result<()>
+async fn splice<R, W>(
+    mut reader: R,
+    writer: &mut W,
+    stream: (quinn::SendStream, quinn::RecvStream),
+) -> Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let Stream { mut send, mut recv } = stream;
+    let (mut send, mut recv) = stream;
     let up = async {
         tokio::io::copy(&mut reader, &mut send).await?;
         let _ = send.finish(); // pane detached: half-close the stream
@@ -448,26 +435,24 @@ fn with_default_port(addr: &str) -> String {
 struct Tofu {
     alias: String,
     known_hosts: PathBuf,
-    provider: Arc<rustls::crypto::CryptoProvider>,
+    algorithms: WebPkiSupportedAlgorithms,
     /// The pin failure, kept because rustls turns it into an opaque alert.
-    failure: Mutex<Option<String>>,
+    /// Written at most once, by the one handshake this verifier serves.
+    failure: OnceLock<String>,
 }
 
 impl Tofu {
-    fn new(alias: &str, known_hosts: PathBuf) -> Self {
+    fn new(alias: &str, known_hosts: PathBuf, algorithms: WebPkiSupportedAlgorithms) -> Self {
         Self {
             alias: alias.to_string(),
             known_hosts,
-            provider: Arc::new(rustls::crypto::ring::default_provider()),
-            failure: Mutex::new(None),
+            algorithms,
+            failure: OnceLock::new(),
         }
     }
 
     fn failure(&self) -> Option<String> {
-        self.failure
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.failure.get().cloned()
     }
 }
 
@@ -493,27 +478,24 @@ impl ServerCertVerifier for Tofu {
             }
             Err(e) => {
                 let message = format!("{e:#}");
-                *self
-                    .failure
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message.clone());
+                let _ = self.failure.set(message.clone());
                 Err(rustls::Error::General(message))
             }
         }
     }
 
+    /// Unreachable: `dial` offers TLS 1.3 only, and QUIC forbids anything
+    /// older. Refusing beats verifying a version this client never agreed
+    /// to speak.
     fn verify_tls12_signature(
         &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &self.provider.signature_verification_algorithms,
-        )
+        Err(rustls::Error::PeerIncompatible(
+            PeerIncompatible::Tls12NotOfferedOrEnabled,
+        ))
     }
 
     fn verify_tls13_signature(
@@ -522,18 +504,11 @@ impl ServerCertVerifier for Tofu {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &self.provider.signature_verification_algorithms,
-        )
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algorithms)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider
-            .signature_verification_algorithms
-            .supported_schemes()
+        self.algorithms.supported_schemes()
     }
 }
 
@@ -632,15 +607,6 @@ mod tests {
         }
     }
 
-    /// The token directory is spelled out here; `paths` owns the contract.
-    #[test]
-    fn token_dir_matches_paths() {
-        assert_eq!(
-            Broker::from_env().tokens.join("spark"),
-            paths::host_token("spark")
-        );
-    }
-
     /// With no `tokens/<alias>` override the broker presents this
     /// client's own identity, generating it on first use - that token's
     /// digest is what the host enrolled.
@@ -701,7 +667,10 @@ mod tests {
             std::fs::read_to_string(&known_hosts).unwrap(),
             format!("other sha256:AAAA\nspark {fingerprint}\n")
         );
-        assert_eq!(check_pin("spark", &known_hosts, key.cert.der()).unwrap(), None);
+        assert_eq!(
+            check_pin("spark", &known_hosts, key.cert.der()).unwrap(),
+            None
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

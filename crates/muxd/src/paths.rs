@@ -60,10 +60,14 @@ pub fn client_token() -> PathBuf {
     client_state_dir().join("token")
 }
 
-/// Per-host override of [`client_token`]:
-/// `~/.local/state/mux/tokens/<alias>`.
+/// Per-host overrides of [`client_token`]: `~/.local/state/mux/tokens/`.
+pub fn token_dir() -> PathBuf {
+    client_state_dir().join("tokens")
+}
+
+/// The override for one host: `~/.local/state/mux/tokens/<alias>`.
 pub fn host_token(alias: &str) -> PathBuf {
-    client_state_dir().join("tokens").join(alias)
+    token_dir().join(alias)
 }
 
 /// Daemon-side state: `~/.local/state/muxd/`.
@@ -103,7 +107,6 @@ pub fn daemon_log() -> PathBuf {
 /// The daemon's control socket. [`peer::SOCKET_ENV`] overrides the
 /// per-uid default for the daemon and for every client that reads it, so
 /// a test daemon and its clients cannot end up on different sockets.
-#[must_use]
 pub fn control_socket() -> PathBuf {
     std::env::var_os(peer::SOCKET_ENV).map_or_else(
         || peer::socket_path(nix::unistd::getuid().as_raw()),
@@ -114,7 +117,6 @@ pub fn control_socket() -> PathBuf {
 /// Self-upgrade rendezvous socket, a short /tmp path (`sun_path` is 104
 /// bytes on darwin). `MUXD_MIGRATE_SOCKET` overrides the per-uid default
 /// so a test daemon can never steal the user's ptys.
-#[must_use]
 pub fn migrate_socket() -> PathBuf {
     std::env::var_os("MUXD_MIGRATE_SOCKET").map_or_else(
         || {

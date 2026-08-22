@@ -148,7 +148,10 @@ fn parse_digests(text: &str) -> Result<Vec<[u8; 32]>> {
             .bytes()
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         {
-            bail!("line {}: expected lowercase hex digits, got {digits:?}", n + 1);
+            bail!(
+                "line {}: expected lowercase hex digits, got {digits:?}",
+                n + 1
+            );
         }
         let digest: [u8; 32] = hex::decode(digits)
             .with_context(|| format!("line {}: {digits:?} is not hex", n + 1))?
@@ -246,7 +249,10 @@ mod tests {
         let printed = fingerprint(key.cert.der());
         let encoded = printed.strip_prefix("sha256:").expect("prefix");
         assert_eq!(encoded.len(), 44, "base64 of 32 bytes, padded: {encoded}");
-        assert!(!encoded.contains(['-', '_']), "standard alphabet: {encoded}");
+        assert!(
+            !encoded.contains(['-', '_']),
+            "standard alphabet: {encoded}"
+        );
         assert_eq!(
             encoded,
             base64::engine::general_purpose::STANDARD
