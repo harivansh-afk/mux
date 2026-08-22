@@ -367,7 +367,7 @@ final class GhosttyRuntime {
         // mux is single-window: a new-window request means a new session.
         case GHOSTTY_ACTION_NEW_WINDOW:
             DispatchQueue.main.async {
-                (NSApp.delegate as? AppDelegate)?.controller?.newSession()
+                App.delegate.controller?.newSession()
             }
             return true
 

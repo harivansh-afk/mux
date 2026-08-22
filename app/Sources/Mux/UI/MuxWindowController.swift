@@ -437,13 +437,12 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         // the sessions are still alive, then detach - every pty survives
         // for the next launch. Killing ptys is only ever a per-pane act
         // (prefix x), never a side effect of the app going away.
-        let delegate = NSApp.delegate as? AppDelegate
-        delegate?.beginTermination(reason: "window closed")
+        App.delegate.beginTermination(reason: "window closed")
         for session in sessions {
             session.destroyAllSurfaces()
         }
         sessions.removeAll()
-        delegate?.windowControllerDidClose(self)
+        App.delegate.windowControllerDidClose(self)
     }
 
     /// Frame changes fire continuously during drags and live resizes;
@@ -457,10 +456,10 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     }
 
     func saveState() {
-        (NSApp.delegate as? AppDelegate)?.saveSnapshot()
+        App.delegate.saveSnapshot()
     }
 
     func saveStateSoon() {
-        (NSApp.delegate as? AppDelegate)?.saveSnapshotSoon()
+        App.delegate.saveSnapshotSoon()
     }
 }

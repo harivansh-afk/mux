@@ -235,10 +235,10 @@ extension MuxWindowController {
         canvasOverlay.reload(groups: canvasGroups(), selected: focusedPane?.id)
         canvasOverlay.onJump = { [weak self] entry in
             self?.commitCanvas(entry)
-            (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
+            App.delegate.prefixEngine.endCanvas()
         }
         canvasOverlay.onCancel = {
-            (NSApp.delegate as? AppDelegate)?.prefixEngine.endCanvas()
+            App.delegate.prefixEngine.endCanvas()
         }
         if canvasOverlay.superview == nil {
             canvasOverlay.layer?.opacity = 0
