@@ -152,7 +152,11 @@ impl Broker {
     /// Dial (or reuse) the host's connection, open a stream on it and send
     /// the rewritten handshake. Everything that can fail with a message the
     /// user can act on happens here, before any byte reaches the pane.
-    async fn open_stream(&self, alias: &str, request: OpenRequest) -> Result<(quinn::SendStream, quinn::RecvStream), OpenError> {
+    async fn open_stream(
+        &self,
+        alias: &str,
+        request: OpenRequest,
+    ) -> Result<(quinn::SendStream, quinn::RecvStream), OpenError> {
         check_alias(alias).map_err(|e| failed(ErrorKind::NoHost, &e))?;
         let addr = host_addr(&self.hosts, alias).map_err(|e| failed(ErrorKind::NoHost, &e))?;
         let token = host_token(&self.tokens, &self.client_token, alias)
@@ -770,7 +774,6 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::NoHost);
         assert!(error.detail.contains("ghost"), "{error}");
         assert!(error.detail.contains("known: spark"), "{error}");
-
     }
 
     /// A host that cannot be reached comes back as `Unreachable`.
@@ -794,7 +797,6 @@ mod tests {
         let error = error_reply(&written);
         assert_eq!(error.kind, ErrorKind::Unreachable);
         assert!(error.detail.contains("cannot reach spark"), "{error}");
-
     }
 
     /// A minimal QUIC listener presenting `key`: enough of a peer to prove
@@ -854,7 +856,6 @@ mod tests {
             "{error}"
         );
         assert!(error.detail.contains("sha256:stale"), "{error}");
-
     }
 
     /// One relayed connection: send `up`, collect what comes back. The
@@ -876,7 +877,6 @@ mod tests {
 
     #[tokio::test]
     async fn relays_the_rewritten_handshake_and_bytes() {
-
         let dir = TempDir::new().unwrap();
         let key = cert();
         let endpoint = quic_fixture(&dir, &key);

@@ -10,8 +10,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mux_proto::peer::{self, ErrorKind, OpenError, OpenMode, Opened};
 use mux_proto::frame::IN_LANE_INPUT;
+use mux_proto::peer::{self, ErrorKind, OpenError, OpenMode, Opened};
 use quinn::Endpoint;
 
 mod common;

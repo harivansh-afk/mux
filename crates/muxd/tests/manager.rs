@@ -12,10 +12,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mux_proto::peer::{OpenMode, OpenReply, Opened};
 use mux_proto::frame::IN_LANE_INPUT;
-use muxd::migrate::MigratePty;
+use mux_proto::peer::{OpenMode, OpenReply, Opened};
 use muxd::manager::{ClientMsg, Manager, PtySession};
+use muxd::migrate::MigratePty;
 use tokio::io::AsyncReadExt as _;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::Receiver;
