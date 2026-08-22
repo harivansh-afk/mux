@@ -1,10 +1,8 @@
 //! mux-attach: the stdio relay every pane runs.
 //!
 //! libghostty's only IO backend is `exec`, so Mux.app sets each pane's
-//! command to `mux-attach <target>`. libghostty forks us against a real
-//! PTY; we bridge raw-mode stdio to the lane-framed protocol. That gets
-//! correct key encoding, resize (winsize poll -> `ClientControl::Resize`),
-//! and rendering for free, with no ghostty fork.
+//! command to `mux-attach <target>`; it bridges raw-mode stdio to the
+//! lane-framed protocol.
 //!
 //! Usage:
 //!   mux-attach [host|local]:<name> [--cwd DIR] [-- cmd args...]
@@ -18,8 +16,8 @@
 //! a daemon EOF always print the notice when the pty came back `created`.
 //!
 //! Plain threads, no async: stdin pump, winsize poll (200ms - coalesces
-//! during drags, same policy as ix's shell client), and the main thread
-//! draining the socket to stdout. Exit code mirrors the remote process.
+//! during drags), and the main thread draining the socket to stdout.
+//! Exit code mirrors the remote process.
 //!
 //! Socket EOF is not the end: only `ServerEvent::Exit` is. A daemon that
 //! goes away mid-session (a `muxd --upgrade` handoff, or a crash) is
@@ -326,9 +324,6 @@ fn relay_loop(
     }
 }
 
-/// A recreated pty means the previous shell and its screen are gone.
-/// Written straight into the pane's terminal, so recovery into a blank
-/// fresh shell is never silent.
 fn print_recreated_notice() {
     print_notice("the daemon lost this pane's shell; this is a fresh one");
 }
@@ -458,7 +453,6 @@ fn spawn_input_threads(uplink: &Uplink, stdin_closed: &Arc<AtomicBool>, initial:
     });
 }
 
-/// Socket -> stdout for one connection.
 fn pump(reader: &mut UnixStream) -> Relay {
     let mut stdout = std::io::stdout().lock();
     loop {
