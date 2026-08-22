@@ -107,7 +107,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         sessions.first { $0.contains(pane) }
     }
 
-    /// Session hook: host a new pane view.
     func attach(_ pane: PaneView) {
         // Wrap the pane in its scroll view: the workspace slab owns the
         // host, the host owns the pane, and Session lays out the host.
@@ -116,13 +115,11 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         workspace.addSubview(host)
     }
 
-    /// Session hook: the rect sessions lay their trees out in.
     var paneBounds: CGRect {
         workspace.bounds
     }
 
-    /// Session hook: last pane in the session closed. The session closes;
-    /// the last session closing closes the window.
+    /// The last session closing closes the window.
     func sessionDidEmpty(_ session: Session) {
         guard let index = sessions.firstIndex(where: { $0 === session }) else { return }
         sessions.remove(at: index)
@@ -145,10 +142,9 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - Session switching
 
-    /// prefix c: a new session with one pane. It follows the focused pane's
-    /// host and working directory (resolved daemon-side from its live
-    /// process), or the machine the hosts window named - in which case
-    /// there is no directory to inherit.
+    /// Follows the focused pane's host and working directory, or the
+    /// machine the hosts window named - in which case there is no
+    /// directory to inherit.
     func newSession(target: NewPaneTarget = .inherit) {
         let seed = target.seed(from: activeSession?.focusedPane)
         let session = Session(controller: self)
@@ -192,8 +188,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         saveState()
     }
 
-    /// resize c: break the focused pane out into its own new session.
-    /// A sole pane already is one; no-op.
+    /// A sole pane already is its own session; no-op.
     func movePaneToNewSession() {
         guard let source = activeSession, let pane = source.focusedPane,
               source.panes.count > 1 else { return }
@@ -207,10 +202,9 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         saveState()
     }
 
-    /// resize 1..9: move the focused pane into that session, following
-    /// it. The pane splits at the target's focused pane; a source session
-    /// this empties closes (which is why the target is found again by
-    /// identity after the detach).
+    /// The pane splits at the target's focused pane; a source session this
+    /// empties closes (which is why the target is found again by identity
+    /// after the detach).
     func movePane(toSession index: Int) {
         guard sessions.indices.contains(index), index != activeSessionIndex,
               let source = activeSession, let pane = source.focusedPane else { return }
@@ -224,7 +218,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         saveState()
     }
 
-    /// prefix 1..9: select a session by position (0-based here).
     func selectSession(_ index: Int) {
         guard sessions.indices.contains(index), index != activeSessionIndex else { return }
         activeSessionIndex = index
@@ -274,7 +267,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         window.makeFirstResponder(pane)
     }
 
-    /// Called by the pane when it actually becomes first responder.
     func noteFocused(_ pane: PaneView) {
         session(owning: pane)?.noteFocused(pane)
         // A click can refocus mid-resize-mode; the outline follows.
@@ -334,9 +326,6 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Occluded surfaces stop rendering (ghostty renderer throttle).
-    /// A pane draws only if the window is visible AND its session active -
-    /// or the canvas overlay is up, whose thumbnails mirror every pane.
     func windowDidChangeOcclusionState(_: Notification) {
         applyCanvasOcclusion()
     }

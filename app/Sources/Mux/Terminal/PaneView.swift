@@ -318,8 +318,6 @@ final class PaneView: NSView {
     private func localEventHandler(_ event: NSEvent) -> NSEvent? {
         switch event.type {
         case .keyUp:
-            // We only care about events with "command" because all others
-            // trigger the normal responder chain.
             guard event.modifierFlags.contains(.command) else { return event }
             guard focused else { return event }
             keyUp(with: event)
@@ -336,7 +334,6 @@ final class PaneView: NSView {
     /// Ported from ghostty: clicking an unfocused pane transfers focus
     /// without also starting a selection in it.
     private func localEventLeftMouseDown(_ event: NSEvent) -> NSEvent? {
-        // We only want to process events that are on this window.
         guard let window,
               event.window != nil,
               window == event.window else { return event }
@@ -349,12 +346,8 @@ final class PaneView: NSView {
         // vertically and the wrong pane eats the click.
         guard window.contentView?.hitTest(event.locationInWindow) == self else { return event }
 
-        // We always assume that we're resetting our mouse suppression
-        // unless we see the specific scenario below to set it.
         suppressNextLeftMouseUp = false
 
-        // If we're already the first responder then no focus transfer is
-        // happening, so the click should continue as normal.
         guard window.firstResponder !== self else { return event }
 
         // If our window/app is already focused, then this click is only
@@ -366,7 +359,6 @@ final class PaneView: NSView {
             return nil
         }
 
-        // Make ourselves the first responder.
         window.makeFirstResponder(self)
 
         // We have to keep processing the event so that AppKit can properly

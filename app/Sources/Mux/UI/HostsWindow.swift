@@ -174,9 +174,7 @@ final class HostsWindowView: PanelView {
 
     // MARK: - Machines
 
-    /// Rebuild from hosts.json and kick off every live query. Local and the
-    /// aliases appear at once, with a pending status; the probes, the VM
-    /// list and the digest fill in as they answer.
+    /// Every live query fires on open; the probes, the VM list and the digest fill in as they answer.
     func reload() {
         generation += 1
         let generation = generation
@@ -237,9 +235,7 @@ final class HostsWindowView: PanelView {
 
     // MARK: - Templates
 
-    /// t: swap in the templates a new VM would be built from. `default` is
-    /// always offered - it needs no listing and always works - and the
-    /// current default is marked.
+    /// `default` is always offered - it needs no listing and always works - and the current default is marked.
     func showTemplates() {
         guard !pickingTemplate else { return }
         let generation = generation
@@ -281,8 +277,6 @@ final class HostsWindowView: PanelView {
         rowsChanged()
     }
 
-    /// Enter in the template list: persist the highlighted target as the
-    /// default for new VMs and return to the machines.
     func commitTemplate() {
         // Always return to the machines, even with nothing highlighted: the
         // caller has already put the machine list's mode bar back up.
@@ -307,8 +301,7 @@ final class HostsWindowView: PanelView {
         onContentChange?()
     }
 
-    /// y: the full digest onto the clipboard. The truncation on screen is
-    /// there to be recognized, never to be retyped.
+    /// The truncation on screen is there to be recognized, never to be retyped.
     func copyDigest() {
         guard let digest else { return NSSound.beep() }
         NSPasteboard.general.clearContents()

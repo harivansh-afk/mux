@@ -123,16 +123,11 @@ extension MuxWindowController {
 
     // MARK: - Hosts window
 
-    /// prefix t: where a pane can live - local, the aliases with a live
-    /// probe, the ix VMs. Every query fires on open, so the box fills in as
-    /// answers arrive; the view's sticky sizing keeps the box from moving
-    /// while they land.
     func showHostsWindow() {
         hostsWindow.reload()
         present(hostsWindow)
     }
 
-    /// Enter / H J K L: split the focused pane into the highlighted machine.
     /// Rows that cannot host a pane are not selectable, so a nil selection
     /// means there is nothing to open (which is not the same as `local`,
     /// hence NewPaneTarget rather than a bare string).
@@ -141,17 +136,11 @@ extension MuxWindowController {
         activeSession?.split(direction: direction, before: before, target: target)
     }
 
-    /// c: a whole new session on the highlighted machine, rather than a
-    /// split beside the pane you were in.
     func newSessionOnHostsSelection() {
         guard let target = hostsWindow.selectedHost else { return }
         newSession(target: target)
     }
 
-    /// n: create a VM and open a pane on it. mux names the machine up front,
-    /// so the pane's target is `ix:<name>` from the first frame: the pane is
-    /// the creation progress and then the shell, and a restore later derives
-    /// `ix shell <name>` from that target - by which time the VM exists.
     func createIXVM() {
         let name = IX.newVMName()
         activeSession?.split(
@@ -163,8 +152,7 @@ extension MuxWindowController {
 
     // MARK: - Canvas picker
 
-    /// The canvas comes and goes as one quick fade - fast enough to
-    /// read as a keystroke. The workspace never moves for it.
+    /// The canvas comes and goes as one quick fade - fast enough to read as a keystroke.
     private static let canvasFade: CFTimeInterval = 0.14
 
     /// Retargetable: reopening mid-close bends the fade from wherever
@@ -257,10 +245,7 @@ extension MuxWindowController {
         }
     }
 
-    /// Enter / click: jump to the selected pane, switching session if
-    /// needed and unzooming whatever covers it. The jump is exactly the
-    /// close motion, with focus landing on the chosen pane immediately.
-    /// No extra theater.
+    /// Switches session if needed and unzooms whatever covers the pane.
     func commitCanvas() {
         guard let entry = canvasOverlay.selection else { return }
         commitCanvas(entry)

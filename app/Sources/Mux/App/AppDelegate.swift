@@ -156,9 +156,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func windowControllerDidClose(_: MuxWindowController) {
-        // The window is the app: with it gone the app terminates
-        // (terminateAfterLastWindowClosed); the snapshot was saved by
-        // beginTermination before teardown.
         controller = nil
     }
 

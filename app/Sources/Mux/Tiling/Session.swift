@@ -202,8 +202,7 @@ final class Session {
 
     // MARK: - Moving panes
 
-    /// Move the focused pane one step through the layout (resize mode
-    /// H/J/K/L). Unzooms first: a move under a zoom is invisible.
+    /// Unzooms first: a move under a zoom is invisible.
     func moveFocused(_ direction: FocusDirection) {
         guard let tree, let focusedID, let bounds = controller?.paneBounds else { return }
         let moved = tree.moving(focusedID, direction: direction, in: bounds)
@@ -263,8 +262,6 @@ final class Session {
         controller?.focus(pane)
     }
 
-    /// Called (via the controller) when a pane actually becomes first
-    /// responder.
     func noteFocused(_ pane: PaneView) {
         guard focusedID != pane.id else { return }
         focusedID = pane.id
@@ -354,8 +351,6 @@ final class Session {
     }
 
     private func show(_ pane: PaneView, frame: CGRect) {
-        // The scroll host is the laid-out view; it keeps the pane filling
-        // its visible rect.
         let host = pane.scrollHost
         host?.isHidden = false
         host?.frame = frame
