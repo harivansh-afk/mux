@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
-use mux_proto::peer::{self, OpenReply, OpenRequest};
 use mux_proto::frame;
+use mux_proto::peer::{self, OpenReply, OpenRequest};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -1002,7 +1002,6 @@ mod tests {
 
     #[tokio::test]
     async fn relays_the_rewritten_handshake_and_bytes() {
-
         let dir = scratch("relay-quic");
         let key = cert();
         let endpoint = listener(&key);

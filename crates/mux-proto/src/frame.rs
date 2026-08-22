@@ -68,7 +68,9 @@ pub fn parse_header(bytes: [u8; HEADER_LEN]) -> io::Result<(u8, usize)> {
         return Err(invalid("zero-length frame (missing lane byte)".into()));
     }
     if len > MAX_FRAME_SIZE {
-        return Err(invalid(format!("frame length {len} exceeds {MAX_FRAME_SIZE}")));
+        return Err(invalid(format!(
+            "frame length {len} exceeds {MAX_FRAME_SIZE}"
+        )));
     }
     Ok((bytes[4], payload_len(len - 1)?))
 }

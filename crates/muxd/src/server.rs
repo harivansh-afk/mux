@@ -9,10 +9,10 @@
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
 use mux_proto::frame::{
     self, IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
 };
+use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -308,7 +308,8 @@ where
                 }
                 ClientMsg::Exit(code) => {
                     let event = ServerEvent::Exit { code };
-                    frame::aio::write_lane(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event)).await?;
+                    frame::aio::write_lane(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event))
+                        .await?;
                 }
             }
             writer.flush().await?;

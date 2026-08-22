@@ -25,8 +25,7 @@ async fn quic_listener_serves_authenticated_clients() {
     std::env::set_var("HOME", &home);
 
     let identity = muxd::tls::load_or_generate_identity().expect("identity");
-    let token =
-        muxd::tls::load_or_generate_token(&muxd::paths::daemon_token()).expect("token");
+    let token = muxd::tls::load_or_generate_token(&muxd::paths::daemon_token()).expect("token");
     assert_eq!(token.len(), 64, "32 random bytes, hex encoded");
     // The pin is copied verbatim into a client's known_hosts, so its
     // shape is a contract: sha256: plus padded standard base64 of a
