@@ -1,7 +1,3 @@
-//! Per-connection protocol handling and the unix-socket listener. Fork
-//! of ix-console's server.rs/session.rs dispatch skeleton: [u32 len]
-//! [request] handshake, then lane frames.
-//!
 //! The handler is transport-generic: a unix stream and one QUIC
 //! bidirectional stream run the identical protocol, and differ only in
 //! the [`Policy`] that decides who is let in.
@@ -30,7 +26,7 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 pub enum Policy {
     /// Unix socket: the 0600 socket file is the auth boundary, so no
     /// token. Requests may name a remote `target` for the broker to
-    /// relay (M3).
+    /// relay.
     Local,
     /// QUIC: every request carries a bearer token this daemon admits,
     /// and none relays onward - dialing peers is the *local* daemon's

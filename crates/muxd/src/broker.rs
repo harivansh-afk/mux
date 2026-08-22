@@ -1,18 +1,9 @@
-//! The local daemon's outbound half: one QUIC connection per remote host,
-//! one bidirectional stream per relayed pane.
-//!
-//! Panes never dial the network. A pane opens the local unix socket with
-//! `target = Some(alias)`; this module rewrites the handshake (target
-//! cleared, bearer token injected) onto a stream of the per-host QUIC
-//! connection and then splices raw bytes both ways. Nothing after the
-//! handshake is parsed here: the pane and the remote daemon speak the same
-//! lane protocol end to end, so the broker is a pipe.
-//!
-//! Trust is trust-on-first-use keyed by the host ALIAS, like ssh: the
-//! SHA-256 of the presented certificate's `SubjectPublicKeyInfo` is written
-//! to `known_hosts` on first contact and must match on every later one. The
-//! certificate is self-signed by design, so nothing else about it is
-//! checked - the pin, not a CA and not the name, is the whole decision.
+//! A pane opens the local unix socket with `target = Some(alias)`; this
+//! module rewrites the handshake (target cleared, bearer token injected)
+//! onto a stream of the per-host QUIC connection and then splices raw
+//! bytes both ways. Nothing after the handshake is parsed here: the pane
+//! and the remote daemon speak the same lane protocol end to end, so the
+//! broker is a pipe.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -37,32 +28,19 @@ use crate::tls;
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Opening a stream on a cached connection must not hang: a connection
-/// whose network path silently died looks live until the idle timeout,
-/// and `open_bi` on it would stall a new pane for that whole window.
+/// Opening a stream on a cached connection must not hang: a connection whose network path silently died looks live until the idle timeout, and `open_bi` on it would stall a new pane for that whole window.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A terminal connection is idle almost all the time, and quinn's
-/// defaults (no keep-alive, 30s idle timeout) tear it down under every
-/// quiet pane - each one paying a redial plus reattach on the next
-/// keystroke. PINGs keep the connection and the path (NAT bindings,
-/// overlay tunnels) warm.
+/// PINGs keep the connection and the path (NAT bindings, overlay tunnels) warm.
 const KEEP_ALIVE: Duration = Duration::from_secs(5);
 
-/// Also the ceiling on how long a pane freezes when the path dies
-/// without a `CONNECTION_CLOSE` (sleep/wake, network switch): silence
-/// this long despite keep-alives every [`KEEP_ALIVE`] means the peer
-/// or the path is genuinely gone, and reconnect + replay is automatic
-/// and cheap, so err toward declaring death early.
+/// Also the ceiling on how long a pane freezes when the path dies without a `CONNECTION_CLOSE` (sleep/wake, network switch): silence this long despite keep-alives every [`KEEP_ALIVE`] means the peer or the path is genuinely gone, and reconnect + replay is automatic and cheap, so err toward declaring death early.
 const MAX_IDLE: Duration = Duration::from_secs(15);
 
-/// SNI for aliases that are not legal DNS names. The pin decides trust, so
-/// the name we send is cosmetic.
+/// SNI for aliases that are not legal DNS names. The pin decides trust, so the name we send is cosmetic.
 const SNI_FALLBACK: &str = "muxd";
 
-/// Prefix on every failure to get bytes to the host - resolve, dial,
-/// open a stream. `mux-attach probe` classifies on it, so it is a
-/// contract, not just phrasing.
+/// Prefix on every failure to get bytes to the host - resolve, dial, open a stream. `mux-attach probe` classifies on it, so it is a contract, not just phrasing.
 const UNREACHABLE: &str = "cannot reach";
 
 /// Relay a targeted request over the per-host QUIC link.
@@ -91,14 +69,9 @@ fn global() -> &'static Broker {
 
 /// The host registry plus the live connections opened from it.
 struct Broker {
-    /// `hosts.json`: `{"alias": {"addr": "host:4433"}}`.
     hosts: PathBuf,
-    /// `known_hosts`: one `<alias> sha256:<b64>` line per pinned host.
     known_hosts: PathBuf,
-    /// This client's own bearer token, presented to every host that has
-    /// no per-alias override.
     client_token: PathBuf,
-    /// The directory of per-alias overrides of that token.
     tokens: PathBuf,
     links: tokio::sync::Mutex<HashMap<String, Link>>,
 }
@@ -117,8 +90,6 @@ impl Broker {
             hosts: paths::hosts_config(),
             known_hosts: paths::known_hosts(),
             client_token: paths::client_token(),
-            // `paths::host_token` is the contract; `token_dir_matches_paths`
-            // holds this equal to it.
             tokens: paths::client_state_dir().join("tokens"),
             links: tokio::sync::Mutex::new(HashMap::new()),
         }
@@ -943,8 +914,7 @@ mod tests {
     }
 
     /// A minimal QUIC listener: enough of a peer to prove the dial, the
-    /// pin, the rewritten handshake and the byte pump. The real daemon
-    /// listener is the other half of M3.
+    /// pin, the rewritten handshake and the byte pump.
     fn listener(key: &rcgen::CertifiedKey) -> quinn::Endpoint {
         let mut crypto = rustls::ServerConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),

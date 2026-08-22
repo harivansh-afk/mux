@@ -1,6 +1,3 @@
-//! Pty session manager. Fork of ix-console's manager.rs / pty/io.rs /
-//! session/attach.rs, with two upstream bugs fixed:
-//!
 //! 1. The attach race: upstream renders the reattach dump, releases the
 //!    terminal lock, and only later installs the client channel - bytes
 //!    fed in between are silently dropped for the client and the two VTs

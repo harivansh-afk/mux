@@ -1,18 +1,9 @@
-//! Bearer tokens and the daemon's QUIC identity: load-or-generate, on
-//! disk at the locations `mux_proto::paths` documents.
-//!
 //! There is no CA. The certificate is self-signed and clients pin the
-//! SHA-256 of its `SubjectPublicKeyInfo` (ssh-style trust-on-first-use;
-//! `known_hosts` in paths.rs), so the pin is logged once at startup for
-//! out-of-band copying. The token is the second factor: a certificate
-//! proves which daemon answered, the token proves the caller is allowed
-//! to talk to it.
-//!
-//! Tokens are the same recipe on both sides - 32 random bytes as hex,
-//! 0600 - because both sides hold one: the daemon its own, a client its
-//! single identity. Only digests travel, so enrolling a client is
-//! pasting the output of `muxd client-digest` into the daemon's
-//! `--authorized-tokens` file.
+//! SHA-256 of its `SubjectPublicKeyInfo`; the token is the second
+//! factor - a certificate proves which daemon answered, the token
+//! proves the caller is allowed to talk to it. Only digests travel, so
+//! enrolling a client is pasting the output of `muxd client-digest`
+//! into the daemon's `--authorized-tokens` file.
 
 use std::collections::HashSet;
 use std::fs;
@@ -34,8 +25,6 @@ use mux_proto::paths;
 /// hence the `Arc`.
 pub type Admitted = Arc<HashSet<[u8; 32]>>;
 
-/// A key is a secret; a certificate is not, but nothing else needs to
-/// read either, so both are owner-only.
 const SECRET_MODE: u32 = 0o600;
 
 /// What the QUIC listener needs to present itself.
@@ -85,13 +74,8 @@ pub fn load_or_generate_identity() -> Result<Identity> {
     };
     let (cert_pem, key_pem) = pair;
 
-    // rcgen re-derives the SPKI from the private key, which saves
-    // pulling in an X.509 parser just to reach one field.
     let key_pair = rcgen::KeyPair::from_pem(&key_pem)
         .with_context(|| format!("parse {}", key_path.display()))?;
-    // Exactly the `known_hosts` token: SHA-256 over the SPKI DER
-    // (tag+len+value, what public_key_der returns), standard base64
-    // alphabet, padded. A client comparing strings must get a match.
     let spki_pin = format!(
         "sha256:{}",
         base64::engine::general_purpose::STANDARD.encode(Sha256::digest(key_pair.public_key_der()))
@@ -179,8 +163,6 @@ fn parse_digests(text: &str) -> Result<Vec<[u8; 32]>> {
 }
 
 fn generate(cert_path: &Path, key_path: &Path) -> Result<(String, String)> {
-    // The names are cosmetic: clients pin the SPKI, they do not resolve
-    // a hostname back to this certificate.
     let certified = rcgen::generate_simple_self_signed(vec!["muxd".into(), "localhost".into()])
         .context("generate self-signed certificate")?;
     let cert_pem = certified.cert.pem();
@@ -204,8 +186,6 @@ fn write_secret(path: &Path, contents: &[u8]) -> Result<()> {
         .with_context(|| format!("create {}", path.display()))?;
     file.write_all(contents)
         .with_context(|| format!("write {}", path.display()))?;
-    // `.mode()` only applies when the file is created; a pre-existing
-    // file keeps its old, possibly wider, permissions.
     fs::set_permissions(path, fs::Permissions::from_mode(SECRET_MODE))
         .with_context(|| format!("chmod {}", path.display()))
 }

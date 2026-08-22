@@ -1,37 +1,18 @@
-//! Zero-downtime self-upgrade: a new muxd adopts the running one's live
-//! ptys, so replacing the binary never kills a shell.
-//!
 //! The wire contract is `mux_proto::migrate`: one
 //! `[u32 LE len][postcard MigratePayload]` message whose `SCM_RIGHTS`
-//! control data carries the PTY master fds in `ptys` order. Unlike
-//! upstream ix-console, the payload also carries each pty's
-//! `render_screen_bytes()` snapshot, so the successor's VT starts with
-//! the screen and scrollback the predecessor had instead of empty.
+//! control data carries the PTY master fds in `ptys` order, plus each
+//! pty's `render_screen_bytes()` snapshot, so the successor's VT starts
+//! with the screen and scrollback the predecessor had instead of empty.
 //!
-//! Sequence:
-//!
-//! 1. successor (`muxd --upgrade`) binds the migration socket (0600),
-//!    reads the pidfile, sends `SIGUSR1` to the predecessor;
-//! 2. predecessor snapshots every pty under its VT lock, connects, and
-//!    sends payload + fds - still holding those locks, so no read loop
-//!    can consume a byte that is not in the snapshot;
-//! 3. successor adopts each pty (fresh VT fed with the snapshot, the
-//!    inherited master fd, same name) and acknowledges;
-//! 4. only then does the predecessor exit(0), releasing the control
-//!    socket for the successor to bind and serve.
+//! The predecessor snapshots every pty under its VT lock, connects, and
+//! sends payload + fds - still holding those locks, so no read loop can
+//! consume a byte that is not in the snapshot.
 //!
 //! Step 4 is why the ack exists: `sendmsg` returning proves the kernel
 //! took the message, not that anything will ever adopt it. A predecessor
 //! that exits on `sendmsg` alone hands every session to a successor that
 //! may still die before its first `adopt` - and the process that could
 //! have kept serving them is already gone.
-//!
-//! Clients see the predecessor's EOF and reconnect (mux-attach), which
-//! reattaches by name and repaints from the migrated VT.
-//!
-//! `MUXD_MIGRATE_SOCKET` overrides the migration socket path; the pidfile
-//! follows `HOME` (`mux_proto::paths::daemon_pid`). Both exist so a test
-//! daemon can never signal, or steal the ptys of, the user's daemon.
 
 use std::io::{Read as _, Write as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
@@ -50,20 +31,14 @@ use tokio::net::{UnixListener, UnixStream};
 use crate::manager::Manager;
 use crate::pty;
 
-/// Predecessor signal to payload. Generous: the predecessor only has to
-/// render its screens and write one message.
+/// Predecessor signal to payload. Generous: the predecessor only has to render its screens and write one message.
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(10);
-/// After the payload lands, how long to wait for the predecessor to exit
-/// and release the control socket.
+/// After the payload lands, how long to wait for the predecessor to exit and release the control socket.
 const PREDECESSOR_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(20);
-/// A stalled successor must not freeze the predecessor's ptys (their VT
-/// locks are held across the send).
+/// A stalled successor must not freeze the predecessor's ptys (their VT locks are held across the send).
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
-/// Payload sent to ack received. The successor only has to decode the
-/// payload and build one VT per pty; the same VT locks are held across
-/// this wait, so it is the stall a dead successor costs before the
-/// predecessor gives up and goes back to serving.
+/// Payload sent to ack received. The same VT locks are held across this wait, so it is the stall a dead successor costs before the predecessor gives up and goes back to serving.
 const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Payload cap on receive; a screen snapshot per pty is well under this.
 const MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
@@ -155,12 +130,6 @@ struct Adopted {
     master: OwnedFd,
 }
 
-/// Successor side of the handoff (`muxd --upgrade`): adopt the
-/// predecessor's ptys into `manager`, and do not return until the
-/// predecessor has exited (it owns the control socket until then).
-///
-/// No predecessor, or a predecessor that never answers, is not fatal: the
-/// new daemon simply starts with no ptys.
 pub async fn adopt_from_predecessor(manager: &Manager) {
     let path = socket_path();
     let listener = match bind_listener(&path) {
@@ -212,9 +181,6 @@ pub async fn adopt_from_predecessor(manager: &Manager) {
 }
 
 /// Bind the migration rendezvous socket the predecessor will connect to.
-/// Public, with [`accept_handoff`] and [`hand_off`], so a test can drive
-/// both halves of the upgrade in one process; the daemon reaches them
-/// through [`adopt_from_predecessor`] and [`spawn_handoff_task`].
 ///
 /// # Errors
 ///
@@ -231,9 +197,6 @@ pub fn bind_listener(path: &Path) -> Result<UnixListener> {
     UnixListener::from_std(listener).context("migration listener")
 }
 
-/// Successor half: take one handoff, adopt every pty it carries, and
-/// acknowledge it.
-///
 /// # Errors
 ///
 /// The connection, the payload, or the ack write failed. An individual
@@ -308,8 +271,6 @@ async fn receive(stream: &mut UnixStream) -> Result<Vec<Adopted>> {
         .collect())
 }
 
-/// One non-blocking `recvmsg`, appending any `SCM_RIGHTS` descriptors to
-/// `fds` and returning the data bytes it carried.
 fn recv_with_fds(stream: &UnixStream, fds: &mut Vec<OwnedFd>) -> std::io::Result<Vec<u8>> {
     let mut buf = vec![0u8; 64 * 1024];
     let mut cmsg = nix::cmsg_space!([RawFd; MAX_MIGRATE_FDS]);
@@ -374,15 +335,6 @@ pub fn spawn_handoff_task(manager: Manager) {
     });
 }
 
-/// Predecessor half: snapshot + send + wait for the ack, synchronously
-/// and without a single `.await`. Every pty's VT lock is held from its
-/// snapshot until this returns, which is what makes the handoff lossless
-/// (a read loop cannot drain the pty into a VT nobody will ever see).
-///
-/// `Ok` means a successor has the ptys and the caller may exit. `Err`
-/// means it does not: the caller keeps serving, and the locks release
-/// with the guards below.
-///
 /// # Errors
 ///
 /// Too many ptys for one `SCM_RIGHTS` message, an unreachable successor,
@@ -445,9 +397,6 @@ pub fn hand_off(manager: &Manager, socket: &Path) -> Result<usize> {
     Ok(fds.len())
 }
 
-/// Block until the successor confirms it owns the ptys. `set_read_timeout`
-/// above bounds the wait, so a successor that died mid-adopt costs the
-/// predecessor `ACK_TIMEOUT` of frozen ptys instead of every session.
 fn await_ack(stream: &std::os::unix::net::UnixStream) -> Result<()> {
     let mut ack = [0u8; 1];
     let mut reader = stream;
@@ -460,9 +409,6 @@ fn await_ack(stream: &std::os::unix::net::UnixStream) -> Result<()> {
     Ok(())
 }
 
-/// `sendmsg` the whole message, with the fds on the first chunk. A stream
-/// socket may accept the message in pieces; the descriptors ride the
-/// first one, which is what the receiver's single `recvmsg` reads.
 fn send_with_fds(
     stream: &std::os::unix::net::UnixStream,
     message: &[u8],

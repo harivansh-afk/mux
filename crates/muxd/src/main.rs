@@ -1,29 +1,8 @@
-//! muxd's entry point: parse the listener flags, then run them. The
-//! daemon itself lives in the library next door (lib.rs).
-//!
 //! Usage:
 //!   muxd [--socket PATH] [--listen-quic ADDR] [--upgrade]
 //!        [--authorized-tokens PATH]
 //!   muxd pin              print this daemon's SPKI pin and exit
 //!   muxd client-digest    print this user's client token digest and exit
-//!
-//! The unix socket is always on; `--listen-quic` additionally exposes
-//! the same protocol to the network (`ADDR` is `<ip>:<port>` or a bare
-//! `<ip>`, which takes the default QUIC port).
-//!
-//! `--authorized-tokens` enrolls clients other than this machine's own:
-//! one `sha256:<64 hex>` digest per line. Digests are not secrets, so
-//! the file is deployable by configuration management (nix/module.nix)
-//! and no token ever crosses machines.
-//!
-//! The two subcommands are that enrollment, one printed line each so the
-//! app and shell scripts can read them: `muxd pin` on the host gives the
-//! client its `known_hosts` entry, `muxd client-digest` on the client
-//! gives the host its authorized-tokens entry.
-//!
-//! `--upgrade` replaces a running daemon without killing a shell: the
-//! new process inherits the live PTY fds plus a screen snapshot per pty
-//! over `SCM_RIGHTS` (migrate.rs), then takes the socket.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;

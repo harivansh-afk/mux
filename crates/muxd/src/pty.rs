@@ -1,7 +1,3 @@
-//! PTY spawn and async IO. Fork of ix-console's pty.rs / pty/exec.rs
-//! core: openpty, fork, setsid + `TIOCSCTTY`, dup2, execvp; the master fd
-//! becomes a tokio `AsyncFd` (no `spawn_blocking` reads).
-
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, OwnedFd};
 
