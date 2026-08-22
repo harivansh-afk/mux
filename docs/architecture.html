@@ -141,19 +141,11 @@ Framing from <code>ix/crates/rpc/transport/src/frame.rs</code> (~300 lines neede
 
 <span class="c">lanes in:</span>   0 <span class="g">input</span> (raw PTY bytes)   1 <span class="g">control</span> (codec values)
 <span class="c">lanes out:</span>  0 <span class="g">opened</span>                  1 <span class="g">output</span> (raw PTY bytes)   2 <span class="g">events</span>
-
-<span class="c">handshake/control types (7, tiny, hand-rolled encoder ~200 lines):</span>
-<span class="a">Request</span>       { vm_id, cols, rows, term, mode, env }
-<span class="a">Mode</span>          Create { command, default_shell } | Attach { session } | Peek { session } | List
-<span class="a">ClientControl</span> Resize { cols, rows } | Close
-<span class="a">OpenSuccess</span>   Attached { session } | Listed { sessions }
-<span class="a">ServerEvent</span>   Exit { code } | Detached
-<span class="a">SessionInfo</span>   { id, command, attached, exited }
 </pre>
 
 <p><b>PTY bytes travel only on raw byte lanes.</b> The encoded values are handshake, control and
 status metadata. That is why this protocol is so forkable: the bulk of the wire is opaque bytes,
-and the seven control types are trivial to encode without ix's 6,000-line nightly-only
+and the control types are trivial to encode without ix's 6,000-line nightly-only
 <code>codec</code> crate (append-only <code>#[wire(N)]</code> slot table - we reimplement just enough,
 keeping byte-for-byte wire compat).</p>
 

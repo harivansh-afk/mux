@@ -697,7 +697,6 @@ fn pump(reader: &mut UnixStream) -> Relay {
             }
             OUT_LANE_EVENTS => match peer::decode::<ServerEvent>(&frame.payload) {
                 Ok(ServerEvent::Exit { code }) => return Relay::Exited(code),
-                Ok(ServerEvent::Detached) => return Relay::Exited(0),
                 Err(_) => {}
             },
             _ => {}

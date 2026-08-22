@@ -96,7 +96,6 @@ pub enum ClientControl {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ServerEvent {
     Exit { code: i32 },
-    Detached,
 }
 
 pub fn encode<T: Serialize>(value: &T) -> Vec<u8> {
