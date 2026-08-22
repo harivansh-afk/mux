@@ -1,12 +1,14 @@
 // swift-tools-version: 5.10
 import PackageDescription
 
-// `Tiling` is the split-tree model: Foundation only, no AppKit, no
-// GhosttyKit. Keeping it a separate target is what lets `swift test` run on
-// any platform - the app target links a prebuilt xcframework and only
-// builds on macOS, so it is declared only there.
+// `Tiling` is the split-tree model (Foundation only) and `Agents` reads
+// coding agents' terminal titles (stdlib only). Neither touches AppKit or
+// GhosttyKit, so they and their tests build on any platform; the app
+// target links a prebuilt xcframework and is declared only on macOS.
 var targets: [Target] = [
     .target(name: "Tiling"),
+    .target(name: "Agents"),
+    .testTarget(name: "AgentsTests", dependencies: ["Agents"]),
 ]
 
 #if os(macOS)
@@ -19,7 +21,7 @@ var targets: [Target] = [
         ),
         .executableTarget(
             name: "Mux",
-            dependencies: ["GhosttyKit", "Tiling"],
+            dependencies: ["GhosttyKit", "Tiling", "Agents"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("Metal"),
