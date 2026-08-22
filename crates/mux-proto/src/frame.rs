@@ -8,7 +8,6 @@
 
 use std::io::{self, Read, Write};
 
-/// Public-peer frame cap (ix uses 64 MiB public, 512 MiB for mTLS peers).
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
 /// Handshake cap, matching ix's `MAX_LOCAL_REQUEST_BYTES`.
 pub const MAX_REQUEST_BYTES: u32 = 1024 * 1024;

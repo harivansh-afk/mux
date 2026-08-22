@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 /// v4: `cwd_from`; v5: `PtyInfo::cwd`; v6: typed `OpenError`).
 pub const PROTOCOL_VERSION: u32 = 6;
 
-/// ALPN for muxd's QUIC listener (M3). Each bidirectional stream carries
+/// ALPN for muxd's QUIC listener. Each bidirectional stream carries
 /// exactly one protocol run: the same handshake + lane frames as a unix
 /// socket connection.
 pub const ALPN: &[u8] = b"muxd/1";
