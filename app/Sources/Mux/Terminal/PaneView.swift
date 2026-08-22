@@ -45,54 +45,49 @@ final class PaneView: NSView {
     var title: String = ""
     var pwd: String?
 
-    /// The title as chrome shows it (canvas cards, the stage): the state
-    /// glyph coding agents prefix their titles with is dropped (claude:
-    /// U+2733 idle, a braille spinner <= 2.1.227 and the half-circle
-    /// spinner U+25D0-25D3 after while working).
-    var displayTitle: String {
-        var cleaned = title.trimmingCharacters(in: .whitespaces)
-        if let first = cleaned.unicodeScalars.first, Self.isStateGlyph(first) {
-            cleaned = String(cleaned.unicodeScalars.dropFirst())
-                .trimmingCharacters(in: .whitespaces)
-        }
-        return cleaned
-    }
-
-    private static func isStateGlyph(_ scalar: Unicode.Scalar) -> Bool {
-        scalar.value == 0x2733
-            || (0x2800 ... 0x28FF).contains(scalar.value)
-            || (0x25D0 ... 0x25D3).contains(scalar.value)
-    }
-
-    /// What a coding agent in the pane says it is doing, read from that
+    /// What a coding agent in the pane says it is doing, read from the
     /// leading glyph exactly as the title rules define it: a spinner
     /// (braille or half-circle) followed by a space is working, U+2733
     /// followed by a space is idle. Anything else announces nothing.
     enum AgentState {
         case working
         case idle
+
+        /// The glyph ranges, written once: a braille spinner (claude
+        /// <= 2.1.227) or a half-circle spinner is working, U+2733 is idle.
+        init?(glyph: Unicode.Scalar) {
+            switch glyph.value {
+            case 0x2800 ... 0x28FF, 0x25D0 ... 0x25D3: self = .working
+            case 0x2733: self = .idle
+            default: return nil
+            }
+        }
+    }
+
+    /// The one place the leading glyph is read: what it announces, and the
+    /// title with it taken off.
+    private var parsedTitle: (state: AgentState?, rest: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        let scalars = trimmed.unicodeScalars
+        guard let first = scalars.first, let state = AgentState(glyph: first) else {
+            return (nil, trimmed)
+        }
+        let rest = String(scalars.dropFirst()).trimmingCharacters(in: .whitespaces)
+        // Only a glyph followed by a space announces state. The space is
+        // looked for in the raw title, which is where the agent wrote it.
+        let announced = title.unicodeScalars.dropFirst().first == " "
+        return (announced ? state : nil, rest)
     }
 
     var agentState: AgentState? {
-        Self.agentState(of: title)
+        parsedTitle.state
     }
 
-    static func agentState(of title: String) -> AgentState? {
-        let scalars = title.unicodeScalars
-        guard let first = scalars.first,
-              scalars.dropFirst().first == " "
-        else { return nil }
-        if (0x2800 ... 0x28FF).contains(first.value)
-            || (0x25D0 ... 0x25D3).contains(first.value)
-        {
-            return .working
-        }
-        if first.value == 0x2733 {
-            return .idle
-        }
-        return nil
+    /// The title as chrome shows it (canvas cards, the stage), with the
+    /// state glyph dropped.
+    var displayTitle: String {
+        parsedTitle.rest
     }
-
 
     /// Points added to the config font size via cmd+= / cmd+- (font
     /// zoom). libghostty owns the actual value and exposes no getter,
