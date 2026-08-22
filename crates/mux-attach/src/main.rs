@@ -1,10 +1,8 @@
 //! mux-attach: the stdio relay every pane runs.
 //!
 //! libghostty's only IO backend is `exec`, so Mux.app sets each pane's
-//! command to `mux-attach <target>`. libghostty forks us against a real
-//! PTY; we bridge raw-mode stdio to the lane-framed protocol. That gets
-//! correct key encoding, resize (winsize poll -> `ClientControl::Resize`),
-//! and rendering for free, with no ghostty fork.
+//! command to `mux-attach <target>`; it bridges raw-mode stdio to the
+//! lane-framed protocol.
 //!
 //! Usage:
 //!   mux-attach local:<name> [--cwd DIR] [-- cmd args...]   attach or create
@@ -12,29 +10,9 @@
 //!   mux-attach --kill local:<name>                          kill a pty
 //!   mux-attach probe <alias>                                check a host
 //!
-//! `--expect-existing` marks an attach that restores a known pane: if the
-//! daemon had to create the pty, a notice is written into the terminal so
-//! a lost shell never masquerades as a healthy restore. Reconnects after
-//! a daemon EOF always print the notice when the pty came back `created`.
-//!
-//! `probe` is the health check Mux.app runs per host. It relays a `List`
-//! through the local daemon's broker, so one call exercises dial, pin,
-//! token and protocol version end to end, and prints exactly one line of
-//! JSON on stdout - exit 0 when the host answered, 1 otherwise:
-//!
-//! ```text
-//! {"alias":"spark","ok":true,"rtt_ms":12,"ptys":2}
-//! {"alias":"spark","ok":false,"class":"token-rejected","error":"..."}
-//! ```
-//!
-//! `class` is one of `unreachable`, `pin-mismatch`, `token-rejected`,
-//! `version-mismatch`, `no-host` (the alias is not in `hosts.json`) or
-//! `error`. `rtt_ms` covers request to reply only, never the daemon
-//! spawn that may precede it.
-//!
 //! Plain threads, no async: stdin pump, winsize poll (200ms - coalesces
-//! during drags, same policy as ix's shell client), and the main thread
-//! draining the socket to stdout. Exit code mirrors the remote process.
+//! during drags), and the main thread draining the socket to stdout.
+//! Exit code mirrors the remote process.
 //!
 //! Socket EOF is not the end: only `ServerEvent::Exit` is. A daemon that
 //! goes away mid-session (a `muxd --upgrade` handoff, or a crash) is
@@ -266,7 +244,6 @@ struct PtyLine<'a> {
     cwd: Option<&'a str>,
 }
 
-/// One-shot request/reply (list, kill).
 fn run_control(target: Option<String>, mode: OpenMode, json: bool) -> Result<()> {
     let mut stream = connect()?;
     let (cols, rows) = winsize();
@@ -297,7 +274,6 @@ fn run_control(target: Option<String>, mode: OpenMode, json: bool) -> Result<()>
                         exited: p.exited,
                         cwd: p.cwd.as_deref(),
                     };
-                    // Plain data: encoding cannot fail.
                     println!("{}", serde_json::to_string(&line).unwrap_or_default());
                 } else {
                     println!(
@@ -328,9 +304,6 @@ fn run_control(target: Option<String>, mode: OpenMode, json: bool) -> Result<()>
     Ok(())
 }
 
-/// One line of `mux-attach probe` output. A struct, not a `json!`
-/// literal: serde writes the fields in declaration order, which is the
-/// order the module doc promises.
 #[derive(serde::Serialize)]
 struct Probe<'a> {
     alias: &'a str,
@@ -359,7 +332,6 @@ fn probe(alias: &str) -> i32 {
         class: error.as_deref().map(classify),
         error: error.as_deref(),
     };
-    // The struct is plain data, so encoding cannot fail.
     println!("{}", serde_json::to_string(&result).unwrap_or_default());
     i32::from(error.is_some())
 }
@@ -545,9 +517,6 @@ fn relay_loop(
     }
 }
 
-/// A recreated pty means the previous shell and its screen are gone.
-/// Written straight into the pane's terminal, so recovery into a blank
-/// fresh shell is never silent.
 fn print_recreated_notice() {
     print_notice("the daemon lost this pane's shell; this is a fresh one");
 }
@@ -675,7 +644,6 @@ fn spawn_input_threads(uplink: &Uplink, stdin_closed: &Arc<AtomicBool>, initial:
     });
 }
 
-/// Socket -> stdout for one connection.
 fn pump(reader: &mut UnixStream) -> Relay {
     let mut stdout = std::io::stdout().lock();
     loop {
