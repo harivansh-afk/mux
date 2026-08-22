@@ -4,10 +4,11 @@
 
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use nix::pty::Winsize;
-use nix::unistd::{ForkResult, Pid};
+use nix::unistd::{ForkResult, Pid, User};
 use tokio::io::unix::AsyncFd;
 
 pub struct Pty {
@@ -60,53 +61,33 @@ fn winsize(cols: u16, rows: u16) -> Winsize {
     }
 }
 
+/// A daemon under a service manager has no $SHELL or $HOME: ask passwd,
+/// like login does. A service account's nologin surfaces verbatim rather
+/// than being masked, because the daemon must run as the human whose
+/// shells it spawns.
+fn passwd() -> Option<User> {
+    User::from_uid(nix::unistd::Uid::current()).ok().flatten()
+}
+
+fn env_or<F: FnOnce(&User) -> PathBuf>(var: &str, field: F, fallback: &str) -> String {
+    if let Ok(value) = std::env::var(var) {
+        if !value.is_empty() {
+            return value;
+        }
+    }
+    passwd()
+        .map(|user| field(&user))
+        .and_then(|path| path.into_os_string().into_string().ok())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 fn user_shell() -> String {
-    if let Ok(shell) = std::env::var("SHELL") {
-        if !shell.is_empty() {
-            return shell;
-        }
-    }
-    // Daemons have no $SHELL: ask passwd, like login does. A service
-    // account's nologin surfaces verbatim rather than being masked -
-    // the daemon must run as the human whose shells it spawns.
-    // SAFETY: getpwuid returns a pointer to a static record or null;
-    // pw_shell, when present, is a NUL-terminated string.
-    let entry = unsafe { libc::getpwuid(libc::getuid()) };
-    if !entry.is_null() {
-        let shell = unsafe { (*entry).pw_shell };
-        if !shell.is_null() {
-            if let Ok(shell) = unsafe { std::ffi::CStr::from_ptr(shell) }.to_str() {
-                if !shell.is_empty() {
-                    return shell.to_string();
-                }
-            }
-        }
-    }
-    "/bin/zsh".to_string()
+    env_or("SHELL", |user| user.shell.clone(), "/bin/zsh")
 }
 
 fn user_home() -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return home;
-        }
-    }
-    // Same reasoning as user_shell: a daemon under a service manager may
-    // have no $HOME; ask passwd, like login does.
-    // SAFETY: getpwuid returns a pointer to a static record or null;
-    // pw_dir, when present, is a NUL-terminated string.
-    let entry = unsafe { libc::getpwuid(libc::getuid()) };
-    if !entry.is_null() {
-        let dir = unsafe { (*entry).pw_dir };
-        if !dir.is_null() {
-            if let Ok(dir) = unsafe { std::ffi::CStr::from_ptr(dir) }.to_str() {
-                if !dir.is_empty() {
-                    return dir.to_string();
-                }
-            }
-        }
-    }
-    "/".to_string()
+    env_or("HOME", |user| user.dir.clone(), "/")
 }
 
 /// The tokio reactor requires it, and an inherited fd (migrate.rs) may
