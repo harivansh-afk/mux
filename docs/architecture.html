@@ -404,9 +404,9 @@ mux/
 │   └── ghostty-vt/                 <span class="c">headless VT + render_reattach (zig shim, vendored from ix)</span>
 ├── scripts/
 │   ├── make-app.sh                 <span class="c">swift build + cargo release + bundle all three binaries</span>
-│   ├── fetch-ghosttykit.sh         <span class="c">prebuilt xcframework (ReleaseFast REQUIRED - see comments)</span>
-│   └── lint/no-cargo-path-dep.sh
-├── .forgejo/workflows/ci.yml       <span class="c">fmt/clippy(pedantic)/test/audit + ast-grep + swift lints</span>
+│   └── fetch-ghosttykit.sh         <span class="c">prebuilt xcframework (ReleaseFast REQUIRED - see comments)</span>
+├── lint/astlog/                    <span class="c">rust/swift/cargo rules + a bad/good fixture per lint</span>
+├── .forgejo/workflows/ci.yml       <span class="c">fmt/clippy(pedantic)/test/audit + astlog + swift lints</span>
 └── justfile
 </pre>
 <p>Prebuilt GhosttyKit (the muxy pattern): a CI job builds <code>GhosttyKit.xcframework</code> +

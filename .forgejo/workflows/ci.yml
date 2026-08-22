@@ -16,7 +16,9 @@ concurrency:
 env:
   SWIFTLINT_VERSION: "0.65.0"
   SWIFTFORMAT_VERSION: "0.62.1"
-  ASTGREP_VERSION: "0.43.0"
+  # github.com/indexable-inc/index, the source of `astlog`. Keep in sync with
+  # ASTLOG_REV in the justfile so a rule that loads locally loads here.
+  ASTLOG_REV: "55b2f75e4e595314bc7441368ab19c346b152616"
   # ghostty-vt compiles ghostty's terminal package from source with Zig, so
   # the rust job needs both. Keep ZIG_VERSION in sync with
   # crates/ghostty-vt/zig/build.zig.zon (minimum_zig_version).
@@ -138,15 +140,28 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@v2
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          tool: ast-grep@${{ env.ASTGREP_VERSION }}
-      - run: ast-grep test
-      - run: ast-grep scan
-      - run: ./scripts/lint/no-cargo-path-dep.sh
+          toolchain: "1.96.1" # keep in sync with rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "astlog-src -> target"
+          key: astlog-${{ env.ASTLOG_REV }}
+      # astlog is a member of a virtual workspace, which `cargo install --git`
+      # cannot name, so the pinned revision is cloned and installed by path.
+      - name: Install astlog
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/indexable-inc/index astlog-src
+          git -C astlog-src checkout -q "$ASTLOG_REV"
+          cargo install --locked --path astlog-src/packages/astlog/cli
+      - run: astlog scan lint/astlog/rust.astlog crates
+      - run: astlog scan lint/astlog/swift.astlog app/Sources
+      - run: astlog scan lint/astlog/cargo.astlog Cargo.toml crates/*/Cargo.toml
+      - run: lint/astlog/check.sh
 
   swift:
     runs-on: ubuntu-latest

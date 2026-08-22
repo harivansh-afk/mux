@@ -1,5 +1,9 @@
 # mux workspace tasks
 
+# github.com/indexable-inc/index, the source of `astlog`. Bump deliberately:
+# a rule that loads here must load in CI.
+ASTLOG_REV := "55b2f75e4e595314bc7441368ab19c346b152616"
+
 default: test
 
 test:
@@ -23,9 +27,25 @@ upgrade-test:
 # Everything CI gates on (Swift steps need the toolchain; see .forgejo/workflows/ci.yml)
 lint: check
     cargo fmt --check
-    ast-grep test
-    ast-grep scan
-    ./scripts/lint/no-cargo-path-dep.sh
+    astlog scan lint/astlog/rust.astlog crates
+    astlog scan lint/astlog/swift.astlog app/Sources
+    astlog scan lint/astlog/cargo.astlog Cargo.toml crates/*/Cargo.toml
+    lint/astlog/check.sh
+
+# The lint engine: Datalog over tree-sitter, from the index monorepo. Pinned
+# by revision so a rule that passes here passes in CI. `cargo install --git`
+# cannot name a member of a virtual workspace, so this clones first.
+astlog:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src="${XDG_CACHE_HOME:-$HOME/.cache}/mux/astlog-{{ASTLOG_REV}}"
+    if [ ! -d "$src" ]; then
+        rm -rf "$src.tmp"
+        git clone -q https://github.com/indexable-inc/index "$src.tmp"
+        git -C "$src.tmp" checkout -q {{ASTLOG_REV}}
+        mv "$src.tmp" "$src"
+    fi
+    cargo install --locked --path "$src/packages/astlog/cli"
 
 # Fetch prebuilt GhosttyKit.xcframework + resources (run on the Mac)
 ghosttykit:
