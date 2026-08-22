@@ -1,19 +1,11 @@
-"""Shared harness for muxd's real-pty, real-binary e2e scripts.
-
-The three scripts beside this file each drive actual `muxd` and
-`mux-attach` binaries under a throwaway HOME and a private socket. That
-proves what nothing under crates/*/tests can: that the daemon really
-forks a pty, that a real mux-attach client really reconnects across a
-restart or an --upgrade, and that the QUIC broker really carries bytes
-between two real processes. The protocol-level behaviour underneath is
-already pinned in-process (muxd/tests/manager.rs, muxd/tests/quic.rs);
-keep new cases out of these scripts unless they need a real process tree.
-
+"""Shared harness for muxd's real-pty, real-binary e2e scripts: a
+throwaway HOME, a private socket, real `muxd`/`mux-attach` processes.
+Protocol-level behaviour is already pinned in-process
+(muxd/tests/manager.rs, muxd/tests/quic.rs); keep new cases out of the
+scripts beside this file unless they need a real process tree.
 Stdlib only, so this runs under `uv run` or plain `python3`.
 """
-
 from __future__ import annotations
-
 import fcntl
 import json
 import os
@@ -28,28 +20,21 @@ import subprocess
 import sys
 import termios
 import time
-
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROWS, COLS = 24, 80
 
-def find_binaries() -> tuple[str, str]:
-    """Resolve muxd/mux-attach: MUXD_BIN/MUX_ATTACH_BIN win, else
-    CARGO_TARGET_DIR/debug (default target/debug beside the repo)."""
+def find_binaries() -> tuple[str, str] | None:
+    """MUXD_BIN/MUX_ATTACH_BIN win, else CARGO_TARGET_DIR/debug (default
+    target/debug beside the repo). None, with a message on stderr, if
+    either isn't an executable file yet."""
     target_dir = os.environ.get("CARGO_TARGET_DIR") or os.path.join(REPO_ROOT, "target")
     muxd = os.environ.get("MUXD_BIN") or os.path.join(target_dir, "debug", "muxd")
     mux_attach = os.environ.get("MUX_ATTACH_BIN") or os.path.join(target_dir, "debug", "mux-attach")
-    return muxd, mux_attach
-
-def require_binaries(muxd_bin: str, mux_attach_bin: str) -> bool:
-    for name, path in (("MUXD_BIN", muxd_bin), ("MUX_ATTACH_BIN", mux_attach_bin)):
+    for name, path in (("MUXD_BIN", muxd), ("MUX_ATTACH_BIN", mux_attach)):
         if not os.path.isfile(path) or not os.access(path, os.X_OK):
-            print(
-                f"{name} is not an executable file: {path}\n"
-                "build first: cargo build -p muxd -p mux-attach",
-                file=sys.stderr,
-            )
-            return False
-    return True
+            print(f"{name} is not executable: {path}\nbuild first: cargo build -p muxd -p mux-attach", file=sys.stderr)
+            return None
+    return muxd, mux_attach
 
 def log(tag: str, message: str) -> None:
     print(f"[{tag}] {message}", flush=True)
@@ -58,18 +43,15 @@ def fail(message: str):
     raise AssertionError(message)
 
 def sandbox_env(home: str, socket_path: str, **overrides: str) -> dict:
-    """The environment every daemon and client runs under: a throwaway
-    HOME and a private socket, so this can never reach a developer's
-    live daemon."""
+    """What every daemon and client runs under: a throwaway HOME and a
+    private socket, so this can never reach a developer's live daemon."""
     env = dict(os.environ)
     env.update(
         HOME=home,
         MUXD_SOCKET=socket_path,
         TERM="xterm-256color",
         SHELL=shutil.which("bash") or shutil.which("sh") or "/bin/sh",
-        # A prompt of our own keeps replay assertions readable and stops
-        # a developer's rc files from bleeding in.
-        PS1="e2e$ ",
+        PS1="e2e$ ",  # a prompt of our own keeps replay assertions readable
     )
     for stale in ("MUXD_BIN", "MUX_ATTACH_BIN"):
         env.pop(stale, None)
@@ -97,8 +79,7 @@ def wait_until(predicate, what: str, timeout: float = 10.0, interval: float = 0.
     fail(f"timed out waiting for {what}")
 
 def kill_process_group(proc: subprocess.Popen, timeout: float = 10) -> int:
-    """SIGKILL the whole session a process was started with
-    (start_new_session=True) and reap it."""
+    """SIGKILL the session `proc` was started with (start_new_session=True) and reap it."""
     if proc.poll() is None:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -107,9 +88,7 @@ def kill_process_group(proc: subprocess.Popen, timeout: float = 10) -> int:
         proc.wait(timeout=timeout)
     return proc.returncode
 
-def spawn_daemon(
-    muxd_bin: str, socket_path: str, env: dict, log_path: str, extra_args: list[str] | None = None
-):
+def spawn_daemon(muxd_bin: str, socket_path: str, env: dict, log_path: str, extra_args: list[str] | None = None):
     """Start muxd without waiting for it to be ready; own session, so
     teardown never reaches this script's process group."""
     log_file = open(log_path, "wb")
@@ -129,42 +108,28 @@ class Daemon:
     two-daemon handoff in test-muxd-upgrade.py, use spawn_daemon and
     socket_answers directly instead."""
 
-    def __init__(
-        self,
-        muxd_bin: str,
-        home: str,
-        socket_path: str,
-        env: dict | None = None,
-        extra_args: list[str] | None = None,
-        log_path: str | None = None,
-        ready_timeout: float = 10.0,
-    ):
+    def __init__(self, muxd_bin: str, home: str, socket_path: str, env: dict | None = None, extra_args: list[str] | None = None):
         self.muxd_bin = muxd_bin
         self.socket_path = socket_path
         self.env = env if env is not None else sandbox_env(home, socket_path)
         self.extra_args = extra_args
-        self.log_path = log_path or os.path.join(home, "muxd.log")
-        self.ready_timeout = ready_timeout
+        self.log_path = os.path.join(home, "muxd.log")
         self.proc: subprocess.Popen | None = None
         self._log_file = None
 
     def __enter__(self) -> "Daemon":
-        self.proc, self._log_file = spawn_daemon(
-            self.muxd_bin, self.socket_path, self.env, self.log_path, self.extra_args
-        )
-        deadline = time.monotonic() + self.ready_timeout
-        while time.monotonic() < deadline:
+        self.proc, self._log_file = spawn_daemon(self.muxd_bin, self.socket_path, self.env, self.log_path, self.extra_args)
+
+        def ready() -> bool:
             if self.proc.poll() is not None:
                 fail(f"muxd exited early ({self.proc.returncode}):\n{self.log()}")
-            if socket_answers(self.socket_path):
-                return self
-            time.sleep(0.05)
-        fail(f"muxd never bound {self.socket_path}:\n{self.log()}")
+            return socket_answers(self.socket_path)
+        wait_until(ready, f"muxd to bind {self.socket_path}")
+        return self
 
     def log(self) -> str:
         try:
-            with open(self.log_path, "r", errors="replace") as handle:
-                return handle.read()
+            return open(self.log_path, "r", errors="replace").read()
         except OSError:
             return "<no log>"
 
@@ -183,52 +148,39 @@ class Pty:
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
         self.buffer = bytearray()
-        self.proc = subprocess.Popen(
-            cmd,
-            env=env,
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            start_new_session=True,
-        )
-        # Only the child needs the slave now; holding it open in the
-        # parent would hide the child's hangup from the master.
+        self.proc = subprocess.Popen(cmd, env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+        # Only the child needs the slave now; holding it open here would
+        # hide the child's hangup from the master.
         os.close(slave)
 
     def send(self, data: bytes) -> None:
         os.write(self.master, data)
 
-    def drain(self, timeout: float) -> None:
-        """Read whatever is available for up to `timeout` seconds."""
+    def _read(self, timeout: float) -> bytes:
+        if timeout <= 0 or not self._readable(timeout):
+            return b""
+        try:
+            return os.read(self.master, 65536)
+        except OSError:
+            return b""  # the slave side is gone
+
+    def _pump(self, timeout: float, needle: bytes | None = None) -> bool:
+        """Read until `needle` shows up (drain-only when None), or the
+        deadline or the pty closes. True means `needle` was found."""
         deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0 or not self._readable(remaining):
-                return
-            try:
-                chunk = os.read(self.master, 65536)
-            except OSError:
-                return  # EIO: the slave side is gone
+        while needle is None or needle not in self.buffer:
+            chunk = self._read(deadline - time.monotonic())
             if not chunk:
-                return
+                return needle is None
             self.buffer += chunk
+        return True
+
+    def drain(self, timeout: float) -> None:
+        self._pump(timeout)
 
     def expect(self, needle: bytes, timeout: float, what: str) -> None:
-        """Accumulate output until `needle` shows up, or fail."""
-        deadline = time.monotonic() + timeout
-        while needle not in self.buffer:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                fail(f"timed out waiting for {what}; got:\n{self.tail()}")
-            if not self._readable(remaining):
-                continue
-            try:
-                chunk = os.read(self.master, 65536)
-            except OSError:
-                fail(f"pty closed while waiting for {what}; got:\n{self.tail()}")
-            if not chunk:
-                fail(f"pty EOF while waiting for {what}; got:\n{self.tail()}")
-            self.buffer += chunk
+        if not self._pump(timeout, needle):
+            fail(f"timed out waiting for {what}; got:\n{self.tail()}")
 
     def wait_for_exit(self, timeout: float) -> int | None:
         """Wait out the process while still draining its pty: not
@@ -255,15 +207,12 @@ class Pty:
             pass
 
     def _readable(self, timeout: float) -> bool:
-        ready, _, _ = select.select([self.master], [], [], timeout)
+        ready, _, _ = select.select([self.master], [], [], max(timeout, 0))
         return bool(ready)
 
 def list_ptys(mux_attach_bin: str, env: dict) -> list[dict]:
-    """The pane list, as the daemon this `env` points at sees it.
-
-    Goes through `mux-attach --list --json`. Task 07 adds `muxd ls
-    --json`; when it lands, this is the only line these scripts need to
-    change.
-    """
+    """The pane list, as the daemon this `env` points at sees it, through
+    `mux-attach --list --json`. Task 07 adds `muxd ls --json`; when it
+    lands, this is the only line these scripts need to change."""
     result = run([mux_attach_bin, "--list", "--json"], env)
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
