@@ -11,11 +11,6 @@ import GhosttyKit
 // `theme = light:...,dark:...` ghostty config live and keeps OSC 10/11
 // luminance detection correct for programs running inside the panes.
 
-enum Appearance {
-    case light
-    case dark
-}
-
 /// The single knob for every piece of text outside the terminal panes:
 /// overlays, mode bar, hosts window, session indicator.
 /// One face (Berkeley Mono, falling back to the system monospaced font
@@ -160,7 +155,7 @@ extension NSColor {
         return NSColor(
             hue: h,
             saturation: s,
-            brightness: min(b * (1 - amount), 1),
+            brightness: b * (1 - amount),
             alpha: a
         )
     }
@@ -180,17 +175,17 @@ extension Notification.Name {
 final class ThemeManager {
     static let shared = ThemeManager()
 
-    private(set) var appearance: Appearance = .dark
+    private(set) var isDark = true
     private var observation: NSKeyValueObservation?
 
     var palette: Palette {
-        appearance == .dark ? .dark : .light
+        isDark ? .dark : .light
     }
 
     /// The current appearance as a libghostty color scheme, for the
     /// app-wide and per-surface conditional-theme state.
     var colorScheme: ghostty_color_scheme_e {
-        appearance == .dark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+        isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
     }
 
     /// Observe the system appearance for the app's lifetime and apply the
@@ -203,11 +198,10 @@ final class ThemeManager {
     }
 
     private func refresh(force: Bool = false) {
-        let isDark = NSApp.effectiveAppearance
+        let next = NSApp.effectiveAppearance
             .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let next: Appearance = isDark ? .dark : .light
-        guard force || next != appearance else { return }
-        appearance = next
+        guard force || next != isDark else { return }
+        isDark = next
 
         // Tell libghostty so `theme = light:...,dark:...` configs switch
         // and OSC 10/11 background reports match the visible theme. Each
