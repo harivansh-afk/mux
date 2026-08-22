@@ -138,7 +138,7 @@ final class PrefixEngine {
                 return event
             }
             setMode(.normal)
-            return runPrefixAction(key: key, event: event)
+            return runPrefixAction(key: key)
 
         case .resize:
             let session = controller?.activeSession
@@ -281,7 +281,7 @@ final class PrefixEngine {
         setMode(.normal)
     }
 
-    private func runPrefixAction(key: String, event _: NSEvent) -> NSEvent? {
+    private func runPrefixAction(key: String) -> NSEvent? {
         let session = controller?.activeSession
         switch key {
         // Splits: ' right, - down.
