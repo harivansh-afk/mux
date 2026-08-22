@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use mux_proto::paths;
 use mux_proto::peer;
 use quinn::{Endpoint, Incoming, RecvStream, SendStream, ServerConfig};
 
@@ -34,6 +33,7 @@ const MAX_IDLE: Duration = Duration::from_secs(30);
 const MAX_STREAMS: u32 = 64;
 
 use crate::manager::Manager;
+use crate::paths;
 use crate::server::{self, Policy};
 use crate::tls::{self, Admitted, Identity};
 

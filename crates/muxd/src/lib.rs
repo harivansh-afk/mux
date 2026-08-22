@@ -25,6 +25,7 @@
 pub mod broker;
 pub mod manager;
 pub mod migrate;
+pub mod paths;
 pub mod pty;
 pub mod quic;
 pub mod server;

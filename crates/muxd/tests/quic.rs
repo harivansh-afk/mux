@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mux_proto::peer::{self, OpenMode, OpenReply, OpenRequest, Opened};
-use mux_proto::shell::{IN_LANE_INPUT, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
+use mux_proto::frame::{IN_LANE_INPUT, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
 use quinn::{Endpoint, RecvStream, SendStream};
 use tokio::io::AsyncReadExt as _;
 
@@ -27,7 +27,7 @@ async fn quic_listener_serves_authenticated_clients() {
 
     let identity = muxd::tls::load_or_generate_identity().expect("identity");
     let token =
-        muxd::tls::load_or_generate_token(&mux_proto::paths::daemon_token()).expect("token");
+        muxd::tls::load_or_generate_token(&muxd::paths::daemon_token()).expect("token");
     assert_eq!(token.len(), 64, "32 random bytes, hex encoded");
     // The pin is copied verbatim into a client's known_hosts, so its
     // shape is a contract: sha256: plus padded standard base64 of a
@@ -49,7 +49,7 @@ async fn quic_listener_serves_authenticated_clients() {
     // under clients that already pinned.
     assert_eq!(
         token,
-        muxd::tls::load_or_generate_token(&mux_proto::paths::daemon_token()).expect("token")
+        muxd::tls::load_or_generate_token(&muxd::paths::daemon_token()).expect("token")
     );
 
     // A client enrolled by digest only: the daemon never sees "enrolled"

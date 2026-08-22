@@ -29,8 +29,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use mux_proto::paths;
-use muxd::{manager, migrate, quic, server, tls};
+use muxd::{manager, migrate, paths, quic, server, tls};
 
 struct Args {
     socket: PathBuf,
@@ -63,8 +62,7 @@ fn parse_args() -> Result<Args> {
         }
     }
     Ok(Args {
-        socket: socket
-            .unwrap_or_else(|| mux_proto::peer::socket_path(nix::unistd::getuid().as_raw())),
+        socket: socket.unwrap_or_else(paths::control_socket),
         listen_quic,
         authorized_tokens,
         upgrade,

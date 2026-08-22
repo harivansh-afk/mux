@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
-use mux_proto::shell::{
+use mux_proto::frame::{
     IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};

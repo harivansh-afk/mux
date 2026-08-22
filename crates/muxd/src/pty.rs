@@ -143,8 +143,8 @@ pub fn window_size(master: &AsyncFd<OwnedFd>) -> WindowSize {
         }
     } else {
         WindowSize {
-            cols: mux_proto::shell::DEFAULT_COLS,
-            rows: mux_proto::shell::DEFAULT_ROWS,
+            cols: mux_proto::peer::DEFAULT_COLS,
+            rows: mux_proto::peer::DEFAULT_ROWS,
         }
     }
 }

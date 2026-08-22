@@ -8,6 +8,15 @@ use std::io::{self, Read, Write};
 /// Public-peer frame cap (ix uses 64 MiB public, 512 MiB for mTLS peers).
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
 
+/// Lane ids, ingress then egress. The two directions number
+/// independently: lane 0 is `input` from a client and `opened` from the
+/// daemon.
+pub const IN_LANE_INPUT: u8 = 0;
+pub const IN_LANE_CONTROL: u8 = 1;
+pub const OUT_LANE_OPENED: u8 = 0;
+pub const OUT_LANE_OUTPUT: u8 = 1;
+pub const OUT_LANE_EVENTS: u8 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameLimits {
     pub max_frame_size: u32,

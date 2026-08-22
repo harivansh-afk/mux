@@ -53,15 +53,15 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use mux_proto::frame::{read_lane_frame, write_lane, FrameLimits};
 use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
-use mux_proto::shell::{
+use mux_proto::frame::{
     IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
 };
 
 fn socket_path() -> std::path::PathBuf {
-    if let Ok(path) = std::env::var("MUXD_SOCKET") {
-        return path.into();
-    }
-    peer::socket_path(nix::unistd::getuid().as_raw())
+    std::env::var_os(peer::SOCKET_ENV).map_or_else(
+        || peer::socket_path(nix::unistd::getuid().as_raw()),
+        std::path::PathBuf::from,
+    )
 }
 
 /// Reconnect pacing after the daemon goes away. A successor daemon binds
@@ -136,10 +136,7 @@ fn winsize() -> (u16, u16) {
     if ok && ws.ws_col > 0 && ws.ws_row > 0 {
         (ws.ws_col, ws.ws_row)
     } else {
-        (
-            mux_proto::shell::DEFAULT_COLS,
-            mux_proto::shell::DEFAULT_ROWS,
-        )
+        (peer::DEFAULT_COLS, peer::DEFAULT_ROWS)
     }
 }
 
