@@ -97,11 +97,12 @@ final class PaneView: NSView {
     private(set) var fontDelta: Int = 0
 
     /// Internal (not private): managed by updateTrackingAreas in
-    /// PaneView+Input.swift.
+    /// PaneView+Mouse.swift.
     var trackingArea: NSTrackingArea?
     private(set) var focused: Bool = false
 
-    // MARK: - Keyboard / IME state (used by PaneView+Input.swift)
+    // MARK: - Keyboard / IME state (used by PaneView+Key.swift and
+    // PaneView+TextInput.swift)
 
     /// In-progress IME composition (preedit) text.
     var markedText = NSMutableAttributedString()
@@ -123,7 +124,7 @@ final class PaneView: NSView {
     /// racing requests complete instead of stacking sheets.
     var clipboardConfirmationActive = false
 
-    // MARK: - Mouse state (used by PaneView+Input.swift)
+    // MARK: - Mouse state (used by PaneView+Mouse.swift)
 
     /// True when we've consumed a left mouse-down only to move focus and
     /// should suppress the matching mouse-up from being reported.
