@@ -12,7 +12,7 @@ enum Subprocess {
     /// outlived `timeout` and was killed; a nonzero exit still yields its
     /// stdout, because `muxd probe` reports failures as JSON on it.
     static func run(
-        _ path: String, _ arguments: [String], timeout: TimeInterval = defaultTimeout,
+        _ path: String, _ arguments: [String],
         then completion: @escaping (String?) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async {
@@ -26,7 +26,7 @@ enum Subprocess {
             var output: String?
             do {
                 try process.run()
-                let watchdog = watchdog(process, after: timeout)
+                let watchdog = watchdog(process, after: defaultTimeout)
                 // Read before waiting: the pipe buffer would block forever the other way.
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
