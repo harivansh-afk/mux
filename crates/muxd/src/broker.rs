@@ -23,7 +23,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
 use mux_proto::frame;
-use mux_proto::peer::{self, OpenReply, OpenRequest};
+use mux_proto::peer::{self, ErrorKind, OpenError, OpenRequest};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -59,10 +59,33 @@ const MAX_IDLE: Duration = Duration::from_secs(15);
 /// the name we send is cosmetic.
 const SNI_FALLBACK: &str = "muxd";
 
-/// Prefix on every failure to get bytes to the host - resolve, dial,
-/// open a stream. `mux-attach probe` classifies on it, so it is a
-/// contract, not just phrasing.
-const UNREACHABLE: &str = "cannot reach";
+/// Why a dial failed. A changed host key is the one reason that is not
+/// "the host is not reachable", and rustls buries it under a generic TLS
+/// alert, so it travels back separately.
+enum DialError {
+    Pin(String),
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for DialError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Other(e)
+    }
+}
+
+/// A broker-side failure, as the pane sees it.
+fn failed(kind: ErrorKind, e: &anyhow::Error) -> OpenError {
+    OpenError::new(kind, format!("{e:#}"))
+}
+
+/// Nothing got through to the host. The address is in the message
+/// because "spark is off" and "spark moved" read identically without it.
+fn unreachable(alias: &str, addr: &str, e: &anyhow::Error) -> OpenError {
+    OpenError::new(
+        ErrorKind::Unreachable,
+        format!("cannot reach {alias} at {addr}: {e:#}"),
+    )
+}
 
 /// Relay a targeted request over the per-host QUIC link.
 ///
@@ -128,10 +151,9 @@ impl Broker {
         };
         let stream = match self.open_stream(&alias, request).await {
             Ok(stream) => stream,
-            Err(e) => {
-                tracing::warn!(host = %alias, error = %format!("{e:#}"), "relay failed");
-                let reply: OpenReply = Err(format!("{alias}: {e:#}"));
-                return server::reply(&mut writer, &reply).await;
+            Err(error) => {
+                tracing::warn!(host = %alias, kind = %error.kind, detail = error.detail, "relay failed");
+                return server::reply(&mut writer, &Err(error)).await;
             }
         };
         splice(reader, &mut writer, stream).await
@@ -140,14 +162,12 @@ impl Broker {
     /// Dial (or reuse) the host's connection, open a stream on it and send
     /// the rewritten handshake. Everything that can fail with a message the
     /// user can act on happens here, before any byte reaches the pane.
-    async fn open_stream(&self, alias: &str, request: OpenRequest) -> Result<Stream> {
-        check_alias(alias)?;
-        let addr = host_addr(&self.hosts, alias)?;
-        let token = host_token(&self.tokens, &self.client_token, alias)?;
-        let connection = self
-            .connection(alias, &addr)
-            .await
-            .with_context(|| format!("{UNREACHABLE} {alias} at {addr}"))?;
+    async fn open_stream(&self, alias: &str, request: OpenRequest) -> Result<Stream, OpenError> {
+        check_alias(alias).map_err(|e| failed(ErrorKind::NoHost, &e))?;
+        let addr = host_addr(&self.hosts, alias).map_err(|e| failed(ErrorKind::NoHost, &e))?;
+        let token = host_token(&self.tokens, &self.client_token, alias)
+            .map_err(|e| failed(ErrorKind::Other, &e))?;
+        let connection = self.connection(alias, &addr).await?;
 
         let request = OpenRequest {
             version: mux_proto::peer::PROTOCOL_VERSION,
@@ -158,6 +178,14 @@ impl Broker {
             ..request
         };
         let payload = peer::encode(&request);
+        if payload.len() > frame::MAX_REQUEST_BYTES as usize {
+            let len = payload.len();
+            return Err(OpenError::new(
+                ErrorKind::Other,
+                format!("request too large ({len} bytes)"),
+            ));
+        }
+
         let opened = tokio::time::timeout(OPEN_TIMEOUT, async {
             let (mut send, recv) = connection.open_bi().await.context("open QUIC stream")?;
             frame::aio::write_message(&mut send, &payload)
@@ -174,7 +202,7 @@ impl Broker {
             // instead of hitting the same corpse.
             Err(e) => {
                 self.evict(alias).await;
-                Err(e).with_context(|| format!("{UNREACHABLE} {alias} at {addr}"))
+                Err(unreachable(alias, &addr, &e))
             }
         }
     }
@@ -189,7 +217,7 @@ impl Broker {
     /// the cached one is closed. The cache lock is not held across the dial,
     /// so an unreachable host cannot stall relays to other hosts; a lost
     /// race just closes the loser's connection.
-    async fn connection(&self, alias: &str, addr: &str) -> Result<quinn::Connection> {
+    async fn connection(&self, alias: &str, addr: &str) -> Result<quinn::Connection, OpenError> {
         if let Some(connection) = self.live(alias).await {
             return Ok(connection);
         }
@@ -217,7 +245,17 @@ impl Broker {
         Some(link.connection.clone())
     }
 
-    async fn dial(&self, alias: &str, addr: &str) -> Result<Link> {
+    async fn dial(&self, alias: &str, addr: &str) -> Result<Link, OpenError> {
+        match self.try_dial(alias, addr).await {
+            Ok(link) => Ok(link),
+            // rustls only hands the caller a generic TLS alert, so a pin
+            // failure recorded by the verifier is the real reason.
+            Err(DialError::Pin(failure)) => Err(OpenError::new(ErrorKind::PinMismatch, failure)),
+            Err(DialError::Other(e)) => Err(unreachable(alias, addr, &e)),
+        }
+    }
+
+    async fn try_dial(&self, alias: &str, addr: &str) -> Result<Link, DialError> {
         let remote = resolve(addr).await?;
         let verifier = Arc::new(Tofu::new(alias, self.known_hosts.clone()));
 
@@ -253,12 +291,12 @@ impl Broker {
         };
         let connecting = endpoint.connect(remote, sni).context("start QUIC dial")?;
         let connection = match tokio::time::timeout(DIAL_TIMEOUT, connecting).await {
-            Err(_) => bail!("dial {remote} timed out after {DIAL_TIMEOUT:?}"),
-            // rustls only hands the caller a generic TLS alert, so a pin
-            // failure recorded by the verifier wins over quinn's error.
+            Err(_) => {
+                return Err(anyhow::anyhow!("dial {remote} timed out after {DIAL_TIMEOUT:?}").into())
+            }
             Ok(Err(e)) => match verifier.failure() {
-                Some(failure) => bail!(failure),
-                None => return Err(e).with_context(|| format!("dial {remote}")),
+                Some(failure) => return Err(DialError::Pin(failure)),
+                None => return Err(anyhow::Error::from(e).context(format!("dial {remote}")).into()),
             },
             Ok(Ok(connection)) => connection,
         };
@@ -323,31 +361,30 @@ struct HostEntry {
     addr: String,
 }
 
-/// The `addr` of `alias` in `hosts.json`. Sorted map, so the "known
-/// hosts" hint on a miss is in a stable order.
+/// The `addr` of `alias` in `hosts.json`. A missing file is an empty
+/// registry: "not in there" is the same answer either way, and the
+/// listing of what *is* there says which case it was. Sorted map, so
+/// that listing is in a stable order.
 fn host_addr(hosts: &Path, alias: &str) -> Result<String> {
-    let bytes = std::fs::read(hosts).with_context(|| {
-        format!(
-            "no host registry at {}; add {{\"{alias}\": {{\"addr\": \"<host>:{}\"}}}}",
-            hosts.display(),
-            peer::DEFAULT_QUIC_PORT,
-        )
-    })?;
-    let table: BTreeMap<String, HostEntry> =
-        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", hosts.display()))?;
-    let host = table.get(alias).with_context(|| {
-        let known: Vec<&str> = table.keys().map(String::as_str).collect();
-        format!(
-            "unknown host {alias:?} in {}; known hosts: {}",
-            hosts.display(),
-            if known.is_empty() {
+    let table: BTreeMap<String, HostEntry> = match std::fs::read(hosts) {
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).with_context(|| format!("parse {}", hosts.display()))?
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(e) => return Err(e).with_context(|| format!("read {}", hosts.display())),
+    };
+    match table.get(alias) {
+        Some(host) => Ok(host.addr.clone()),
+        None => {
+            let known: Vec<&str> = table.keys().map(String::as_str).collect();
+            let known = if known.is_empty() {
                 "none".to_string()
             } else {
                 known.join(", ")
-            }
-        )
-    })?;
-    Ok(host.addr.clone())
+            };
+            bail!("unknown host {alias:?} in {}; known: {known}", hosts.display())
+        }
+    }
 }
 
 /// The bearer token to present to `alias`, injected into the relayed
@@ -817,14 +854,14 @@ mod tests {
 
         let unknown = format!("{:#}", host_addr(&hosts, "nope").unwrap_err());
         // serde_json keeps the object in a sorted map, so the hint is stable.
-        assert!(unknown.contains("known hosts: box, spark"), "{unknown}");
+        assert!(unknown.contains("known: box, spark"), "{unknown}");
         assert!(unknown.contains("unknown host \"nope\""), "{unknown}");
 
         let missing = format!(
             "{:#}",
             host_addr(&dir.join("absent.json"), "spark").unwrap_err()
         );
-        assert!(missing.contains("no host registry at"), "{missing}");
+        assert!(missing.contains("known: none"), "{missing}");
 
         std::fs::write(&hosts, "not json").unwrap();
         assert!(host_addr(&hosts, "spark").is_err());
@@ -864,12 +901,12 @@ mod tests {
         assert_eq!(with_default_port("[::1]"), "[::1]:4433");
     }
 
-    fn error_reply(bytes: &[u8]) -> String {
+    fn error_reply(bytes: &[u8]) -> OpenError {
         let (lane, len) = frame::parse_header(bytes[..5].try_into().unwrap()).unwrap();
         assert_eq!(lane, frame::OUT_LANE_OPENED);
         assert_eq!(bytes.len(), 5 + len);
-        match peer::decode::<OpenReply>(&bytes[5..]).unwrap() {
-            Err(message) => message,
+        match peer::decode::<peer::OpenReply>(&bytes[5..]).unwrap() {
+            Err(error) => error,
             Ok(opened) => panic!("expected an error reply, got {opened:?}"),
         }
     }
@@ -891,16 +928,17 @@ mod tests {
             .await
             .unwrap();
 
-        let message = error_reply(&written);
-        assert!(message.contains("ghost"), "{message}");
-        assert!(message.contains("known hosts: spark"), "{message}");
+        let error = error_reply(&written);
+        assert_eq!(error.kind, ErrorKind::NoHost);
+        assert!(error.detail.contains("ghost"), "{error}");
+        assert!(error.detail.contains("known: spark"), "{error}");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A host that cannot be reached carries the prefix `mux-attach
-    /// probe` classifies as "unreachable". `.invalid` never resolves
-    /// (RFC 2606), so this fails at the first network step.
+    /// A host that cannot be reached comes back as `Unreachable`.
+    /// `.invalid` never resolves (RFC 2606), so this fails at the first
+    /// network step.
     #[tokio::test]
     async fn relay_reports_an_unreachable_host() {
         let dir = scratch("relay-unreachable");
@@ -916,8 +954,9 @@ mod tests {
             .await
             .unwrap();
 
-        let message = error_reply(&written);
-        assert!(message.contains("cannot reach spark"), "{message}");
+        let error = error_reply(&written);
+        assert_eq!(error.kind, ErrorKind::Unreachable);
+        assert!(error.detail.contains("cannot reach spark"), "{error}");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -976,9 +1015,10 @@ mod tests {
         .unwrap();
         remote.abort();
 
-        let message = error_reply(&written);
-        assert!(message.contains("host key changed for spark"), "{message}");
-        assert!(message.contains("sha256:stale"), "{message}");
+        let error = error_reply(&written);
+        assert_eq!(error.kind, ErrorKind::PinMismatch);
+        assert!(error.detail.contains("host key changed for spark"), "{error}");
+        assert!(error.detail.contains("sha256:stale"), "{error}");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

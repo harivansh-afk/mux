@@ -12,7 +12,9 @@ use anyhow::{bail, Context, Result};
 use mux_proto::frame::{
     self, IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
 };
-use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
+use mux_proto::peer::{
+    self, ClientControl, ErrorKind, OpenError, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent,
+};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -39,9 +41,8 @@ pub enum Policy {
 }
 
 impl Policy {
-    /// `Err(message)` goes back to the client verbatim as the failed
-    /// `OpenReply`.
-    fn admit(&self, request: &OpenRequest) -> Result<(), String> {
+    /// The error goes back to the client as the failed `OpenReply`.
+    fn admit(&self, request: &OpenRequest) -> Result<(), OpenError> {
         match self {
             // The 0600 socket is the auth boundary, and requests naming a
             // remote target were handed to the broker before admission.
@@ -49,15 +50,17 @@ impl Policy {
             Self::Remote { admitted } => {
                 // Digests, not the secrets: fixed-size and preimage
                 // resistant, so a short circuit leaks nothing useful.
-                // `mux-attach probe` classifies this message, so its
-                // wording is a contract.
                 let presented = request.token.as_deref().map(tls::digest);
                 if !presented.is_some_and(|d| admitted.contains(&d)) {
-                    return Err("authentication failed".into());
+                    return Err(OpenError::new(
+                        ErrorKind::TokenRejected,
+                        "authentication failed",
+                    ));
                 }
                 if let Some(host) = &request.target {
-                    return Err(format!(
-                        "target {host:?} rejected: a remote daemon does not relay"
+                    return Err(OpenError::new(
+                        ErrorKind::Other,
+                        format!("target {host:?} rejected: a remote daemon does not relay"),
                     ));
                 }
                 Ok(())
@@ -155,22 +158,22 @@ where
     // a dropped socket. A pre-v3 request has no version field, so the
     // first varint decodes as something else entirely - decode failure or
     // a wrong version both land here or in read_request's error path.
-    // The leading phrase is what `mux-attach probe` classifies on.
     if request.version != peer::PROTOCOL_VERSION {
-        let message = format!(
+        let detail = format!(
             "protocol version mismatch: daemon v{}, client v{} - upgrade or restart the daemon (muxd --upgrade)",
             peer::PROTOCOL_VERSION,
             request.version,
         );
-        tracing::warn!(message, "handshake rejected");
-        return reply(&mut writer, &Err(message)).await;
+        tracing::warn!(detail, "handshake rejected");
+        let error = OpenError::new(ErrorKind::VersionMismatch, detail);
+        return reply(&mut writer, &Err(error)).await;
     }
 
     // Admission first, unconditionally: relayed requests must never skip
     // a future Policy::Local check by taking the broker branch early.
-    if let Err(message) = policy.admit(&request) {
-        tracing::debug!(message, "request rejected");
-        return reply(&mut writer, &Err(message)).await;
+    if let Err(error) = policy.admit(&request) {
+        tracing::debug!(detail = error.detail, "request rejected");
+        return reply(&mut writer, &Err(error)).await;
     }
     // target = Some(host) on the unix socket: this daemon is the broker,
     // not the server - the whole connection goes out over the per-host
@@ -265,7 +268,10 @@ where
     let opened = manager.open(&name, &command, cwd.as_deref(), term.as_deref(), cols, rows);
     let (session, created) = match opened {
         Ok(v) => v,
-        Err(e) => return reply(&mut writer, &Err(format!("{e:#}"))).await,
+        Err(e) => {
+            let error = OpenError::new(ErrorKind::Other, format!("{e:#}"));
+            return reply(&mut writer, &Err(error)).await;
+        }
     };
 
     let attachment = manager::attach(&session, cols, rows);
