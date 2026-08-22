@@ -74,9 +74,14 @@ final class HostsWindowView: PanelView {
     /// whose last character is a letter wraps onto a second line.
     private static let columnWidth = (" " as NSString).size(withAttributes: [.font: font]).width
     private static let cellInset: CGFloat = {
-        let cell = NSTextField(labelWithString: "").cell ?? NSTextFieldCell()
-        let bounds = NSRect(x: 0, y: 0, width: 100, height: rowHeight)
-        return bounds.width - cell.titleRect(forBounds: bounds).width
+        // Measured, not read from the cell: a borderless cell reports no
+        // title inset and pads the text anyway. The widest face sets it.
+        let line = String(repeating: "M", count: columns)
+        let field = NSTextField(labelWithString: "")
+        return [font, boldFont].map { face in
+            field.attributedStringValue = NSAttributedString(string: line, attributes: [.font: face])
+            return field.fittingSize.width - columnWidth * CGFloat(columns)
+        }.max() ?? 0
     }()
 
     /// Every line of the list is exactly one row high, so the selection bar
