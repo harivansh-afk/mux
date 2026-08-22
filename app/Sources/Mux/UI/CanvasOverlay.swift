@@ -1,26 +1,9 @@
 import AppKit
 
-/// The canvas (prefix f): a pane picker floating over the dimmed live
-/// workspace, with air on all sides - not a docked panel.
-///
-/// Right: the wheel - every pane as a card at its TRUE frame aspect,
-/// grouped under small session headers. The selection is always held at
-/// the wheel's vertical center: moving translates the whole track (one
-/// retargetable spring), the previous pane peeks above, the next below,
-/// and distance fades the rest. Left: the stage - the selected pane
-/// previewed large at its true aspect, scaled uniformly, never
-/// stretched.
-///
-/// Thumbnails and the stage are mirror CALayers: ghostty publishes each
-/// frame as an IOSurface in the pane layer's `contents`; the mirrors
-/// assign the same object (zero copy, GPU-scaled) and re-read the
-/// pointer at 30Hz while the overlay is up. No screen state is copied or
-/// stored, and a pane's frame is NEVER touched to preview it - the pty
-/// cannot observe the canvas.
-///
-/// j/k (and arrows) move, click selects (click again jumps), enter
-/// jumps, esc or a click on the scrim cancels. PrefixEngine drives the
-/// keys; the overlay never takes focus.
+/// The canvas (prefix f): a pane picker floating over the dimmed live workspace.
+/// Thumbnails and the stage are mirror CALayers, re-read at 30Hz while the overlay is up.
+/// A pane's frame is NEVER touched to preview it - the pty cannot observe the canvas.
+/// PrefixEngine drives the keys; the overlay never takes focus.
 final class CanvasOverlayView: NSView {
     struct Entry {
         let sessionIndex: Int
@@ -41,7 +24,6 @@ final class CanvasOverlayView: NSView {
     private static let wheelWidth: CGFloat = Chrome.fontSize * 12
     private static let itemGap: CGFloat = 10
     private static let sectionGap: CGFloat = 22
-    /// The floating badges keep their bottom strip.
     private static let bottomReserve: CGFloat = ModeBarView.height + ModeBarView.margin * 2
 
     /// A click on a card that is already selected - or on the stage -
@@ -50,9 +32,6 @@ final class CanvasOverlayView: NSView {
     var onJump: ((Entry) -> Void)?
     /// A click on the scrim leaves the mode, like esc.
     var onCancel: (() -> Void)?
-    /// Fires whenever the selection lands somewhere (reload, j/k, click):
-    /// the session indicator follows it live, so the numbers tell you
-    /// which session you are scrolling through as you scroll.
     var onSelectionChange: ((Entry?) -> Void)?
 
     private let scrim = ScrimView()
@@ -86,14 +65,6 @@ final class CanvasOverlayView: NSView {
         addSubview(scrim)
 
         stage.wantsLayer = true
-        // Square hairline, like every other piece of mux chrome: the
-        // border sits exactly on the rectangular terminal content, no
-        // rounded corners clipping cells or fuzzing the edge. Width is
-        // one device pixel, set in render() where the backing scale is
-        // known.
-        // Depth is what separates the stage from the wall behind it:
-        // one wide soft shadow, path-backed so it costs a blit, not a
-        // mask pass.
         stage.layer?.shadowColor = NSColor.black.cgColor
         stage.layer?.shadowOpacity = 0.55
         stage.layer?.shadowRadius = 28
@@ -195,8 +166,6 @@ final class CanvasOverlayView: NSView {
     private var scrollMonitor: Any?
     private var tick = 0
 
-    /// Mirrors and the scroll monitor run exactly while the overlay is
-    /// on screen.
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
         mirrorTimer?.invalidate()
@@ -213,29 +182,15 @@ final class CanvasOverlayView: NSView {
         RunLoop.main.add(timer, forMode: .common)
         mirrorTimer = timer
 
-        // Wheel events over the stage scroll the previewed pane for
-        // real. This is a local monitor, not a view override, because
-        // every pane sits in an NSScrollView and responsive scrolling
-        // latches wheel gestures onto the scroll view under the cursor
-        // at the window level - the overlay is never hit-tested for
-        // them. The monitor claims the event first; anything not over
-        // the stage is swallowed, so the workspace under the scrim
-        // never moves.
+        // Delivery is a local .scrollWheel NSEvent monitor, not a view
+        // override; see CLAUDE.md's stage-scroll invariants.
         scrollMonitor = NSEvent.addLocalMonitorForEvents(
             matching: .scrollWheel
         ) { [weak self] event in
             guard let self, event.window === window else { return event }
             if let pane = selection?.pane, !stage.isHidden,
                stage.frame.contains(convert(event.locationInWindow, from: nil)) {
-                // Hovering the stage IS hovering the pane. libghostty
-                // gives a wheel event meaning only at the surface's
-                // stored mouse position (mouse-reporting programs
-                // receive the scroll AT it; it parks at -1/-1 =
-                // outside), so place the mouse first - the same
-                // mouseMoved-then-scrollWheel pair a real hover
-                // produces. The stage box is the pane's exact aspect,
-                // so the point maps by pure proportion; repeated
-                // identical positions are deduped surface-side.
+                // Position before scroll; see CLAUDE.md's stage-scroll invariants.
                 if hoverPane !== pane {
                     hoverPane?.clearMousePos()
                     hoverPane = pane
@@ -255,10 +210,6 @@ final class CanvasOverlayView: NSView {
         refreshMirrors()
     }
 
-    /// The pane last given a synthetic hover by the stage. When the
-    /// preview moves off it (selection change, canvas close), it gets
-    /// the same -1/-1 "left the viewport" report mouseExited sends, so
-    /// no pane keeps a phantom mouse.
     private weak var hoverPane: PaneView?
 
     private func clearHover() {
@@ -266,10 +217,6 @@ final class CanvasOverlayView: NSView {
         hoverPane = nil
     }
 
-    /// One pointer read and one assignment per mirror: the pane's layer
-    /// holds the IOSurface of its latest frame, the mirrors show the
-    /// same object. Titles drift slower, so they refresh on a coarser
-    /// beat.
     private func refreshMirrors() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -299,10 +246,6 @@ final class CanvasOverlayView: NSView {
         layoutStage()
     }
 
-    /// Stack headers and cards top-down, then translate the whole track
-    /// so the selected card's center sits at the wheel's center. The
-    /// translate is the wheel's only motion: one spring, retargetable
-    /// mid-flight.
     private func positionTrack(animated: Bool) {
         var y: CGFloat = 0
         var itemIndex = 0
@@ -334,9 +277,6 @@ final class CanvasOverlayView: NSView {
         layer.add(spring, forKey: "wheel")
     }
 
-    /// The stage box takes the pane's true frame aspect and fits it into
-    /// the space left of the wheel - scaled uniformly, never stretched,
-    /// never resizing anything.
     private func layoutStage() {
         guard let pane = selection?.pane else {
             stage.isHidden = true
@@ -351,8 +291,6 @@ final class CanvasOverlayView: NSView {
         let areaX = Self.margin
         let areaY = Self.margin
         let areaW = max(1, wheel.frame.minX - Self.gap - areaX)
-        // Two stacked descriptor lines under the stage: title, then
-        // directory + host.
         let labelBlock = (Chrome.fontSize * 2.7).rounded()
         let areaH = max(1, bounds.height - Self.bottomReserve - areaY - Self.margin - labelBlock)
 
@@ -400,9 +338,6 @@ final class CanvasOverlayView: NSView {
 
     @objc private func render() {
         let palette = ThemeManager.shared.palette
-        // The scrim drops the workspace well back - Mission Control
-        // dark, not a light mist - so the live mirrors carry all the
-        // brightness in the room.
         let dark = !palette.panelBg.isLightColor
         scrim.layer?.backgroundColor = NSColor.black
             .withAlphaComponent(dark ? 0.95 : 0.72).cgColor
@@ -413,8 +348,6 @@ final class CanvasOverlayView: NSView {
         needsLayout = true
     }
 
-    /// Everything that follows the selection or the live panes: card
-    /// labels and borders, distance fades, the stage labels.
     private func renderSelection() {
         let palette = ThemeManager.shared.palette
         for (i, item) in items.enumerated() {
@@ -427,16 +360,6 @@ final class CanvasOverlayView: NSView {
         }
 
         guard let entry = selection, let pane = entry.pane else { return }
-        // The stage descriptor, two stacked lines and nothing else:
-        //   <state glyph> <agent topic>
-        //   <directory> [<host>]
-        // No session number - the session indicator highlights the
-        // selection's session live instead.
-        // The first line exists only when the pane announces an agent
-        // (the state glyph is the proof); a bare shell gets no first
-        // line at all, whatever it titled itself - shells love titling
-        // themselves after their directory, which the second line
-        // already says.
         let title = NSMutableAttributedString()
         if let glyph = Self.stateGlyph(for: pane, palette: palette, font: Chrome.uiTitleFont) {
             title.append(glyph)
@@ -465,9 +388,6 @@ final class CanvasOverlayView: NSView {
         needsLayout = true
     }
 
-    /// The agent-state indicator shared by the stage and the cards.
-    /// Exactly two states: ◐ working (busy yellow), ✓ done (ok green).
-    /// Nothing for panes that announce no state.
     static func stateGlyph(
         for pane: PaneView, palette: Palette, font: NSFont
     ) -> NSAttributedString? {
@@ -563,9 +483,6 @@ private final class WheelItemView: NSView {
                 attributes: [.font: Chrome.metaFont, .foregroundColor: palette.accent]
             ))
         }
-        // Cards carry only the state glyph and the host - topics and
-        // directories live on the stage, where there is room to read
-        // them.
         if let pane = entry.pane {
             if let glyph = CanvasOverlayView.stateGlyph(
                 for: pane, palette: palette, font: Chrome.metaFont
