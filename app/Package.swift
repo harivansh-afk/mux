@@ -30,5 +30,6 @@ let package = Package(
                 .linkedLibrary("z"),
             ]
         ),
+        .testTarget(name: "MuxTests", dependencies: ["Mux"]),
     ]
 )

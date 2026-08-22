@@ -22,41 +22,47 @@ struct SessionSnapshot: Codable {
     var zoomed: UUID?
 }
 
-struct WindowSnapshot: Codable {
+/// The whole app: one window's frame and its ordered sessions.
+struct AppSnapshot: Codable {
+    static let currentVersion = 3
+    var version: Int = AppSnapshot.currentVersion
     var frame: [Double] // x, y, w, h
     var sessions: [SessionSnapshot]
     var activeSession: Int
 }
 
-struct AppSnapshot: Codable {
-    static let currentVersion = 2
-    var version: Int = AppSnapshot.currentVersion
-    var windows: [WindowSnapshot]
-}
-
-/// v1: one implicit session per window, its fields inline on the window.
-private struct AppSnapshotV1: Decodable {
+/// v2: an array of windows, each with its own sessions. mux is
+/// single-window, so every window's sessions fold into the one window
+/// and nothing is dropped on the way through; the frame and the active
+/// index come from the first window.
+private struct AppSnapshotV2: Decodable {
     struct Window: Decodable {
         var frame: [Double]
-        var tree: SplitNode
-        var panes: [UUID: PaneSnapshot]
-        var focused: UUID?
-        var zoomed: UUID?
+        var sessions: [SessionSnapshot]
+        var activeSession: Int
     }
 
     var windows: [Window]
 
-    var migrated: AppSnapshot {
-        AppSnapshot(windows: windows.map { w in
-            WindowSnapshot(
-                frame: w.frame,
-                sessions: [SessionSnapshot(
-                    tree: w.tree, panes: w.panes,
-                    focused: w.focused, zoomed: w.zoomed
-                )],
-                activeSession: 0
-            )
-        })
+    var folded: AppSnapshot {
+        AppSnapshot(
+            frame: windows.first?.frame ?? [],
+            sessions: windows.flatMap(\.sessions),
+            activeSession: windows.first?.activeSession ?? 0
+        )
+    }
+}
+
+extension CGRect {
+    /// The frame as the snapshot stores it.
+    var values: [Double] {
+        [origin.x, origin.y, size.width, size.height]
+    }
+
+    /// nil for a frame the snapshot never wrote (or wrote short).
+    init?(values: [Double]) {
+        guard values.count == 4 else { return nil }
+        self.init(x: values[0], y: values[1], width: values[2], height: values[3])
     }
 }
 
@@ -117,22 +123,18 @@ enum SnapshotStore {
         return load(from: backupURL, quarantineOnFailure: false)
     }
 
-    private static func load(from source: URL, quarantineOnFailure: Bool) -> AppSnapshot? {
-        struct Versioned: Decodable { var version: Int }
-        guard let data = try? Data(contentsOf: source) else { return nil }
+    /// Every format this build reads: the current one, else a v2 file
+    /// folded into the single window. Anything older or damaged is
+    /// undecodable both ways and is quarantined by the caller.
+    static func decode(_ data: Data) -> AppSnapshot? {
         let decoder = JSONDecoder()
-        let snapshot: AppSnapshot? = if let versioned = try? decoder.decode(Versioned.self, from: data) {
-            switch versioned.version {
-            case AppSnapshot.currentVersion:
-                try? decoder.decode(AppSnapshot.self, from: data)
-            case 1:
-                (try? decoder.decode(AppSnapshotV1.self, from: data))?.migrated
-            default:
-                nil
-            }
-        } else {
-            nil
-        }
+        return (try? decoder.decode(AppSnapshot.self, from: data))
+            ?? (try? decoder.decode(AppSnapshotV2.self, from: data))?.folded
+    }
+
+    private static func load(from source: URL, quarantineOnFailure: Bool) -> AppSnapshot? {
+        guard let data = try? Data(contentsOf: source) else { return nil }
+        let snapshot = decode(data)
         if snapshot == nil, quarantineOnFailure {
             let fm = FileManager.default
             try? fm.removeItem(at: quarantineURL)

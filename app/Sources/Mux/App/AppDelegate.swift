@@ -34,9 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ThemeManager.shared.start()
         prefixEngine.install()
 
-        if let snapshot = SnapshotStore.load(), !snapshot.windows.isEmpty {
-            let panes = snapshot.windows.flatMap(\.sessions).flatMap { $0.panes.keys.map(\.uuidString) }
-            AppLog.log("restoring windows=\(snapshot.windows.count) panes=\(panes.joined(separator: ","))")
+        if let snapshot = SnapshotStore.load(), !snapshot.sessions.isEmpty {
+            let panes = snapshot.sessions.flatMap { $0.panes.keys.map(\.uuidString) }
+            AppLog.log("restoring sessions=\(snapshot.sessions.count) panes=\(panes.joined(separator: ","))")
             restore(snapshot)
         } else {
             AppLog.log("no restorable snapshot; starting fresh")
@@ -192,49 +192,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A direct save supersedes any pending debounced one.
         pendingSave?.cancel()
         pendingSave = nil
-        let windows: [WindowSnapshot] = controller.flatMap { c in
-            let sessions: [SessionSnapshot] = c.sessions.compactMap { s in
-                guard let tree = s.tree else { return nil }
-                var paneMeta: [UUID: PaneSnapshot] = [:]
-                for (id, pane) in s.panes {
-                    paneMeta[id] = PaneSnapshot(
-                        cwd: pane.pwd, target: pane.target,
-                        fontDelta: pane.fontDelta == 0 ? nil : pane.fontDelta
-                    )
-                }
-                return SessionSnapshot(
-                    tree: tree, panes: paneMeta,
-                    focused: s.focusedID, zoomed: s.zoomedID
+        guard let controller else { return }
+        let sessions: [SessionSnapshot] = controller.sessions.compactMap { s in
+            guard let tree = s.tree else { return nil }
+            var paneMeta: [UUID: PaneSnapshot] = [:]
+            for (id, pane) in s.panes {
+                paneMeta[id] = PaneSnapshot(
+                    cwd: pane.pwd, target: pane.target,
+                    fontDelta: pane.fontDelta == 0 ? nil : pane.fontDelta
                 )
             }
-            guard !sessions.isEmpty else { return nil }
-            let f = c.window.frame
-            return WindowSnapshot(
-                frame: [f.origin.x, f.origin.y, f.size.width, f.size.height],
-                sessions: sessions,
-                activeSession: c.activeSessionIndex
-            )
-        }.map { [$0] } ?? []
-        let panes = windows.flatMap(\.sessions).map(\.panes.count).reduce(0, +)
-        AppLog.log("save windows=\(windows.count) panes=\(panes)")
-        SnapshotStore.save(AppSnapshot(windows: windows))
-    }
-
-    /// Rebuild the single window from a snapshot. Files written by
-    /// multi-window builds fold every window's sessions into it, so
-    /// nothing is dropped on the way through.
-    private func restore(_ snapshot: AppSnapshot) {
-        guard let controller = makeWindow() else { return }
-        let first = snapshot.windows[0]
-        if first.frame.count == 4 {
-            restoreFrame(
-                NSRect(x: first.frame[0], y: first.frame[1], width: first.frame[2], height: first.frame[3]),
-                on: controller.window
+            return SessionSnapshot(
+                tree: tree, panes: paneMeta,
+                focused: s.focusedID, zoomed: s.zoomedID
             )
         }
-        controller.restoreSessions(
-            snapshot.windows.flatMap(\.sessions), active: first.activeSession
-        )
+        AppLog.log("save sessions=\(sessions.count) panes=\(sessions.map(\.panes.count).reduce(0, +))")
+        SnapshotStore.save(AppSnapshot(
+            frame: controller.window.frame.values,
+            sessions: sessions,
+            activeSession: controller.activeSessionIndex
+        ))
+    }
+
+    /// Rebuild the single window from a snapshot.
+    private func restore(_ snapshot: AppSnapshot) {
+        guard let controller = makeWindow() else { return }
+        if let frame = NSRect(values: snapshot.frame) {
+            restoreFrame(frame, on: controller.window)
+        }
+        controller.restoreSessions(snapshot.sessions, active: snapshot.activeSession)
     }
 
     /// Frames saved under a different display arrangement can land
