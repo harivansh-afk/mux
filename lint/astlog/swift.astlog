@@ -8,7 +8,7 @@
 (rule (no-raw-process n)
   (match swift "(call_expression (simple_identifier) @n)")
   (text n "Process"))
-(lint no-raw-process warning
+(lint no-raw-process error
   "launch helpers through Subprocess.run")
 
 ;; no-nslog: NSLog writes to the system log with no level, no subsystem and a
@@ -16,7 +16,7 @@
 (rule (no-nslog n)
   (match swift "(call_expression (simple_identifier) @n)")
   (text n "NSLog"))
-(lint no-nslog warning
+(lint no-nslog error
   "use AppLog.log")
 
 ;; no-adhoc-font: every glyph outside a terminal pane is chrome, and chrome has
@@ -30,7 +30,7 @@
 (rule (no-adhoc-font n)
   (match swift "(navigation_expression target: (simple_identifier) @n suffix: (navigation_suffix))")
   (text n "NSFont"))
-(lint no-adhoc-font warning
+(lint no-adhoc-font error
   "all chrome text comes from Chrome in UI/Theme.swift")
 
 ;; no-delegate-cast: `NSApp.delegate as? AppDelegate` is a downcast that can
@@ -46,5 +46,5 @@
   (text n "NSApp")
   (text s "delegate")
   (text ty "AppDelegate"))
-(lint no-delegate-cast warning
+(lint no-delegate-cast error
   "use App.delegate")
