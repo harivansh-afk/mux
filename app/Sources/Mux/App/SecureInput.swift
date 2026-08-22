@@ -95,7 +95,7 @@ final class SecureInput: NSObject {
             return
         }
 
-        NSLog("secure input apply failed err=\(err)")
+        AppLog.log("secure input apply failed err=\(err)")
     }
 
     // MARK: - Notifications
@@ -109,7 +109,7 @@ final class SecureInput: NSObject {
             return
         }
 
-        NSLog("secure input apply failed err=\(err)")
+        AppLog.log("secure input apply failed err=\(err)")
     }
 
     @objc private func onDidResignActive(notification _: NSNotification) {
@@ -121,6 +121,6 @@ final class SecureInput: NSObject {
             return
         }
 
-        NSLog("secure input apply failed err=\(err)")
+        AppLog.log("secure input apply failed err=\(err)")
     }
 }

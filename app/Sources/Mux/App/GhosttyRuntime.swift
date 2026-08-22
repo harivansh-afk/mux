@@ -17,7 +17,7 @@ final class GhosttyRuntime {
 
     init?() {
         if ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) != GHOSTTY_SUCCESS {
-            NSLog("ghostty_init failed")
+            AppLog.log("ghostty_init failed")
             return nil
         }
 
@@ -38,7 +38,7 @@ final class GhosttyRuntime {
         )
 
         guard let app = ghostty_app_new(&runtime, config) else {
-            NSLog("ghostty_app_new failed")
+            AppLog.log("ghostty_app_new failed")
             return nil
         }
         self.app = app
@@ -78,7 +78,7 @@ final class GhosttyRuntime {
         let count = ghostty_config_diagnostics_count(config)
         for i in 0 ..< count {
             let diag = ghostty_config_get_diagnostic(config, i)
-            NSLog("ghostty config diagnostic: \(String(cString: diag.message))")
+            AppLog.log("ghostty config diagnostic: \(String(cString: diag.message))")
         }
 
         return config
@@ -98,7 +98,7 @@ final class GhosttyRuntime {
         }
 
         guard let newConfig = Self.loadConfig() else {
-            NSLog("failed to reload ghostty configuration")
+            AppLog.log("failed to reload ghostty configuration")
             return
         }
         ghostty_app_update_config(app, newConfig)

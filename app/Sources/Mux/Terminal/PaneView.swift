@@ -545,7 +545,7 @@ final class PaneView: NSView {
             let request = UNNotificationRequest(identifier: uuid, content: content, trigger: nil)
             center.add(request) { error in
                 if let error {
-                    NSLog("error scheduling user notification: \(error)")
+                    AppLog.log("error scheduling user notification: \(error)")
                     return
                 }
 

@@ -137,7 +137,7 @@ enum SnapshotStore {
             let fm = FileManager.default
             try? fm.removeItem(at: quarantineURL)
             try? fm.moveItem(at: source, to: quarantineURL)
-            NSLog("snapshot undecodable; moved aside to \(quarantineURL.lastPathComponent)")
+            AppLog.log("snapshot undecodable; moved aside to \(quarantineURL.lastPathComponent)")
         }
         return snapshot
     }
@@ -162,7 +162,7 @@ enum CrashMarker {
             let precrash = SnapshotStore.url.appendingPathExtension("pre-crash")
             try? fm.removeItem(at: precrash)
             try? fm.copyItem(at: SnapshotStore.url, to: precrash)
-            NSLog("previous run ended uncleanly; snapshot preserved at \(precrash.lastPathComponent)")
+            AppLog.log("previous run ended uncleanly; snapshot preserved at \(precrash.lastPathComponent)")
         }
         try? Data("\(ProcessInfo.processInfo.processIdentifier)\n".utf8).write(to: markerURL)
         return unclean
