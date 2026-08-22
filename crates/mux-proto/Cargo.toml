@@ -8,7 +8,12 @@ publish.workspace = true
 [lints]
 workspace = true
 
+# The async frame adapters. Off by default so mux-attach, a sync binary,
+# links nothing from tokio.
+[features]
+tokio = ["dep:tokio"]
+
 [dependencies]
-thiserror.workspace = true
 serde.workspace = true
 postcard.workspace = true
+tokio = { workspace = true, optional = true }
