@@ -125,17 +125,43 @@ enum Muxd {
         /// (`unreachable`, `pin-mismatch`, `token-rejected`,
         /// `version-mismatch`, `no-host`, `error`).
         let failure: String?
+        /// The failure in the daemon's words, for the log.
+        let error: String?
 
         enum CodingKeys: String, CodingKey {
             case ok
             case rttMs = "rtt_ms"
             case ptys
             case failure = "class"
+            case error
         }
 
         /// Nothing was asked, or nothing came back.
         static func failed(_ reason: String) -> Probe {
-            Probe(ok: false, rttMs: nil, ptys: nil, failure: reason)
+            Probe(ok: false, rttMs: nil, ptys: nil, failure: reason, error: nil)
+        }
+    }
+
+    /// The local daemon outlives the app, so the first launch after an
+    /// install can meet one speaking an older protocol, and every pane
+    /// would then sit in "cannot attach" until someone ran `muxd
+    /// --upgrade` by hand. Ask before any pane exists; on a version
+    /// mismatch, `muxd upgrade` starts the bundled binary as the
+    /// successor and returns once it answers on the socket (or gives up,
+    /// bounded). Waited for here, on purpose: panes born during the
+    /// handoff would dial the daemon being replaced.
+    static func upgradeStaleDaemon() {
+        guard let daemon = daemonBinary else { return }
+        let probe: Probe = jsonLines(Subprocess.output(daemon, ["probe", "local"])).last
+            ?? .failed("error")
+        guard probe.failure == "version-mismatch" else { return }
+        AppLog.log("local muxd speaks another protocol version; upgrading: \(probe.error ?? "")")
+        let upgraded: Probe = jsonLines(Subprocess.output(daemon, ["upgrade"])).last
+            ?? .failed("no answer")
+        if upgraded.ok {
+            AppLog.log("muxd upgraded in \(upgraded.rttMs ?? 0)ms, serving \(upgraded.ptys ?? 0) pty(s)")
+        } else {
+            AppLog.log("muxd upgrade failed (\(upgraded.failure ?? "")): \(upgraded.error ?? "")")
         }
     }
 

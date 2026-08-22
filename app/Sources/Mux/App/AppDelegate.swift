@@ -50,6 +50,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
 
+        // Before the first pane dials it: a daemon left over from the
+        // previous install may not speak this build's protocol.
+        Muxd.upgradeStaleDaemon()
+
         if let snapshot = SnapshotStore.load(), !snapshot.sessions.isEmpty {
             let panes = snapshot.sessions.flatMap { $0.panes.keys.map(\.uuidString) }
             AppLog.log("restoring sessions=\(snapshot.sessions.count) panes=\(panes.joined(separator: ","))")
