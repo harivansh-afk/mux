@@ -1,9 +1,3 @@
-//! Terminal state tracking for VM console reattach.
-//!
-//! Backed by ghostty's Zig VT terminal emulator via C FFI. Tracks the full
-//! screen grid by processing VT sequences from workload output. On reattach
-//! the current viewport is dumped and sent to the client.
-
 #![expect(unsafe_code, reason = "FFI wrapper around ghostty C API")]
 
 use std::ptr::NonNull;
@@ -72,6 +66,7 @@ pub struct Terminal {
 // exclusive access through &mut self on all mutating methods.
 unsafe impl Send for Terminal {}
 
+// SAFETY: handle was created by ghostty_vt_terminal_new and is valid.
 impl Terminal {
     /// Create a new terminal with the given dimensions.
     ///
@@ -80,14 +75,12 @@ impl Terminal {
     pub fn new(rows: u16, cols: u16) -> Option<Self> {
         let rows = rows.max(1);
         let cols = cols.max(1);
-        // SAFETY: FFI call to create a new terminal handle. Dimensions ≥ 1.
         let ptr = unsafe { ffi::ghostty_vt_terminal_new(cols, rows) };
         NonNull::new(ptr).map(|handle| Self { handle, rows, cols })
     }
 
     /// Feed raw workload output bytes to update terminal state.
     pub fn feed(&mut self, bytes: &[u8]) {
-        // SAFETY: handle is valid, bytes pointer and len are from a slice.
         unsafe {
             ffi::ghostty_vt_terminal_feed(self.handle.as_ptr(), bytes.as_ptr(), bytes.len());
         }
@@ -102,7 +95,6 @@ impl Terminal {
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let rows = rows.max(1);
         let cols = cols.max(1);
-        // SAFETY: handle is valid, cols/rows are clamped ≥ 1.
         unsafe {
             ffi::ghostty_vt_terminal_resize(self.handle.as_ptr(), cols, rows);
         }
@@ -115,7 +107,6 @@ impl Terminal {
     pub fn cursor_position(&self) -> CursorPosition {
         let mut col: u16 = 1;
         let mut row: u16 = 1;
-        // SAFETY: handle is valid, col/row are valid mut pointers.
         unsafe {
             ffi::ghostty_vt_terminal_cursor_position(
                 self.handle.as_ptr(),
@@ -133,7 +124,6 @@ impl Terminal {
     /// specially to preserve cursor behavior.
     #[must_use]
     pub fn cursor_pending_wrap(&self) -> bool {
-        // SAFETY: handle is valid.
         unsafe { ffi::ghostty_vt_terminal_cursor_pending_wrap(self.handle.as_ptr()) }
     }
 
@@ -147,7 +137,6 @@ impl Terminal {
 
         let mut row_texts = Vec::with_capacity(usize::from(self.rows));
         for r in 0..self.rows {
-            // SAFETY: handle is valid, row index is within bounds.
             let bytes =
                 unsafe { ffi::ghostty_vt_terminal_dump_viewport_row(self.handle.as_ptr(), r) };
             let text = if bytes.ptr.is_null() || bytes.len == 0 {
@@ -182,7 +171,6 @@ impl Terminal {
     /// side effects. See `renderReattach` in `zig/lib.zig` for emission order.
     #[must_use]
     pub fn render_screen_bytes(&self) -> Vec<u8> {
-        // SAFETY: handle is valid.
         let bytes = unsafe { ffi::ghostty_vt_terminal_render_reattach(self.handle.as_ptr()) };
 
         if bytes.ptr.is_null() || bytes.len == 0 {
@@ -202,7 +190,6 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        // SAFETY: handle was created by ghostty_vt_terminal_new and is valid.
         unsafe {
             ffi::ghostty_vt_terminal_free(self.handle.as_ptr());
         }

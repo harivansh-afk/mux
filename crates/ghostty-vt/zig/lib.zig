@@ -149,23 +149,6 @@ export fn ghostty_vt_terminal_cursor_pending_wrap(
     return handle.terminal.screens.active.cursor.pending_wrap;
 }
 
-/// Render complete terminal state as VT escape sequences for reattach.
-///
-/// Uses ghostty's ScreenFormatter for viewport content with per-cell SGR,
-/// and emits terminal-level state (modes, scroll region, tabstops, etc.)
-/// in an order that avoids cursor-homing side effects:
-///
-///   1. Clear screen + reset SGR
-///   2. Non-default modes (except origin — homes cursor)
-///   3. Viewport content with per-cell SGR (ScreenFormatter)
-///   4. Scroll region (DECSTBM/DECSLRM — homes cursor)
-///   5. Tab stops (CSI 3g clear + HTS per stop — moves cursor)
-///   6. ModifyOtherKeys
-///   7. PWD (OSC 7) and title (OSC 0)
-///   8. Screen extras: style, hyperlink, protection, kitty keyboard, charsets
-///   9. Origin mode (CSI ?6h — homes cursor to scroll region)
-///  10. CUP (DECOM-aware cursor positioning)
-///  11. Pending wrap (re-print character at cursor to set LCF)
 export fn ghostty_vt_terminal_render_reattach(
     terminal_ptr: ?*anyopaque,
 ) callconv(.c) ghostty_vt_bytes_t {
@@ -189,10 +172,6 @@ fn renderReattach(
     errdefer builder.deinit();
     const writer = &builder.writer;
 
-    // 0. Scrollback history: render all lines above the viewport so they
-    //    scroll through the client's terminal, populating its scrollback
-    //    buffer with historical output. Uses ghostty's native page list
-    //    which preserves per-cell SGR attributes.
     if (screen.pages.getBottomRight(.history)) |history_br| {
         const history_tl = screen.pages.getTopLeft(.history);
         var history_fmt: terminal.formatter.PageListFormatter = .init(
@@ -206,11 +185,8 @@ fn renderReattach(
         try writer.writeAll("\x1b[0m\r\n");
     }
 
-    // 1. Clear screen, home cursor, reset SGR.
     try writer.writeAll("\x1b[H\x1b[2J\x1b[0m");
 
-    // 2. Non-default modes, except origin (DECOM). Origin is emitted
-    //    after scroll region and tabstops because it homes the cursor.
     inline for (@typeInfo(modespkg.Mode).@"enum".fields) |field| {
         const mode: modespkg.Mode = @enumFromInt(field.value);
         if (comptime std.mem.eql(u8, field.name, "origin")) continue;
@@ -224,9 +200,6 @@ fn renderReattach(
         }
     }
 
-    // 3. Viewport content with per-cell SGR via PageListFormatter.
-    //    Bounded to viewport only (not scrollback). No cursor/extra
-    //    state — we handle those separately below.
     const viewport_tl = screen.pages.getTopLeft(.viewport);
     const viewport_br = screen.pages.getBottomRight(.viewport) orelse viewport_tl;
     var list_fmt: terminal.formatter.PageListFormatter = .init(&screen.pages, .{
@@ -238,8 +211,6 @@ fn renderReattach(
     list_fmt.bottom_right = viewport_br;
     try list_fmt.format(writer);
 
-    // 4. Scroll region: DECSTBM / DECSLRM if non-default.
-    //    These home the cursor, which is fine — CUP comes later.
     const region = &t.scrolling_region;
     if (region.top != 0 or region.bottom != t.rows - 1) {
         try writer.print("\x1b[{d};{d}r", .{ region.top + 1, region.bottom + 1 });
@@ -248,8 +219,6 @@ fn renderReattach(
         try writer.print("\x1b[{d};{d}s", .{ region.left + 1, region.right + 1 });
     }
 
-    // 5. Tab stops: clear all, then set each configured stop.
-    //    HTS moves cursor, which is fine — CUP comes later.
     try writer.writeAll("\x1b[3g");
     for (0..t.cols) |col| {
         if (t.tabstops.get(col)) {
@@ -257,12 +226,10 @@ fn renderReattach(
         }
     }
 
-    // 6. ModifyOtherKeys level 2.
     if (t.flags.modify_other_keys_2) {
         try writer.writeAll("\x1b[>4;2m");
     }
 
-    // 7. PWD via OSC 7.
     if (t.pwd.items.len > 0) {
         try writer.print("\x1b]7;{s}\x1b\\", .{t.pwd.items});
     }
@@ -274,8 +241,6 @@ fn renderReattach(
         try writer.print("\x1b]0;{s}\x1b\\", .{title});
     }
 
-    // 8. Screen extras that do NOT move the cursor: SGR style,
-    //    hyperlink, protection, kitty keyboard, charsets.
     var extras_fmt: terminal.formatter.ScreenFormatter = .init(screen, .{
         .emit = .vt,
         .unwrap = false,
@@ -298,9 +263,7 @@ fn renderReattach(
         try writer.writeAll("\x1b[?6h");
     }
 
-    // 10. CUP — DECOM-aware cursor positioning.
     if (t.modes.get(.origin)) {
-        // DECOM on: cursor position is relative to scroll region.
         const rel_y = cursor.y -| region.top;
         try writer.print("\x1b[{d};{d}H", .{ rel_y + 1, cursor.x + 1 });
     } else {

@@ -2,8 +2,7 @@
 //!
 //! Spawns actual programs in a pseudo-terminal, reads the raw byte
 //! output, feeds it through our Terminal, and asserts the viewport
-//! contains expected content. This is the most realistic integration
-//! test — exercising the exact byte path a VM console would produce.
+//! contains expected content.
 
 #![expect(unsafe_code, reason = "PTY setup requires unsafe libc/fd calls")]
 #![expect(
