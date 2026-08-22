@@ -1,10 +1,10 @@
 //! muxd's native peer protocol: the ix lane framing carrying
 //! postcard-encoded control values.
 //!
-//! ix VMs speak the ix codec encoding (`shell.rs` types, M4 golden-byte
-//! work); mux peers (Mux.app panes via mux-attach <-> muxd) speak these
-//! types. Same framing, same lane numbering, so mux-attach's relay loop
-//! is transport-agnostic.
+//! ix VMs speak the ix codec encoding (M4 golden-byte work); mux peers
+//! (Mux.app panes via mux-attach <-> muxd) speak these types. Same
+//! framing, same lane numbering, so mux-attach's relay loop is
+//! transport-agnostic.
 //!
 //! Handshake: `[u32 LE len][postcard OpenRequest]`, then lane frames.
 //! Ptys are keyed by client-chosen name (the pane id), so "attach or

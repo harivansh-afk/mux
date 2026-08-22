@@ -390,7 +390,7 @@ mux/
 │   │   └── UI/                     <span class="c">MuxWindow(+Controller), ModeBar, HelpOverlay, Theme</span>
 │   └── GhosttyKit/                 <span class="c">xcframework, copied/fetched - never vendored in git</span>
 ├── crates/                         <span class="c">Rust workspace (zig 0.16 + GHOSTTY_SOURCE_DIR to build)</span>
-│   ├── mux-proto/                  <span class="c">frame.rs (ix framing) + peer.rs (postcard control) + shell.rs (ix types, M4)</span>
+│   ├── mux-proto/                  <span class="c">frame.rs (ix framing, sync + async) + peer.rs (postcard control)</span>
 │   ├── muxd/                       <span class="c">daemon: manager/pty/server; ptys survive clients</span>
 │   ├── mux-attach/                 <span class="c">raw-mode stdio relay (the pane command)</span>
 │   └── ghostty-vt/                 <span class="c">headless VT + render_reattach (zig shim, vendored from ix)</span>
