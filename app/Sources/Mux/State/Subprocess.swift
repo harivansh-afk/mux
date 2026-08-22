@@ -1,8 +1,8 @@
 import Foundation
 
-/// One-shot reads from a helper binary. The overlays ask mux-attach, muxd
-/// and the ix CLI for live status, and none of those answers may block the
-/// main thread: every caller gets its result back asynchronously.
+/// One-shot reads from a helper binary. The overlays ask muxd and the ix
+/// CLI for live status, and none of those answers may block the main
+/// thread: every caller gets its result back asynchronously.
 enum Subprocess {
     /// How long a helper gets to answer. A probe dials a host that may be
     /// off, asleep, or holding the connection open with nothing to say,
@@ -14,7 +14,7 @@ enum Subprocess {
     /// the main thread. stderr is dropped (ix writes progress there). nil
     /// means no usable answer - the process could not be launched, or it
     /// outlived `timeout` and was killed; a nonzero exit still yields its
-    /// stdout, because `mux-attach probe` reports failures as JSON on it.
+    /// stdout, because `muxd probe` reports failures as JSON on it.
     static func run(
         _ path: String, _ arguments: [String], timeout: TimeInterval = defaultTimeout,
         then completion: @escaping (String?) -> Void

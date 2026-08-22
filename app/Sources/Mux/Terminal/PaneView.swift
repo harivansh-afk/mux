@@ -453,10 +453,10 @@ final class PaneView: NSView {
     /// that ends the `ix shell` the pty is running, and with it the session
     /// on the VM.
     func killRemote() {
-        guard let attach = Muxd.attachBinary else { return }
+        guard let daemon = Muxd.daemonBinary else { return }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: attach)
-        process.arguments = ["--kill", attachAddress]
+        process.executableURL = URL(fileURLWithPath: daemon)
+        process.arguments = ["kill", attachAddress]
         try? process.run()
     }
 

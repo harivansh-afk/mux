@@ -421,7 +421,7 @@ final class HostsWindowView: NSView {
     }
 
     private static func status(of probe: Muxd.Probe) -> Status {
-        guard probe.ok else { return .bad(probe.failure) }
+        guard probe.ok else { return .bad(probe.failure ?? "error") }
         let rtt = probe.rttMs.map { "ok \($0)ms" } ?? "ok"
         guard let ptys = probe.ptys, ptys > 0 else { return .ok(rtt) }
         return .ok("\(rtt)  \(ptys == 1 ? "1 pty" : "\(ptys) ptys")")
