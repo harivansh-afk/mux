@@ -17,3 +17,7 @@ tokio = ["dep:tokio"]
 serde.workspace = true
 postcard.workspace = true
 tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+# `error_kinds_serialise_by_name` pins the strings Mux.app switches on.
+serde_json.workspace = true

@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 /// The daemon replies with a readable error on mismatch instead of
 /// dropping the connection, so skew between a running daemon and a newer
 /// client is diagnosable (v1: M2; v2: token+target; v3: this field;
-/// v4: `cwd_from`; v5: `PtyInfo::cwd`).
-pub const PROTOCOL_VERSION: u32 = 5;
+/// v4: `cwd_from`; v5: `PtyInfo::cwd`; v6: typed `OpenError`).
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// ALPN for muxd's QUIC listener (M3). Each bidirectional stream carries
 /// exactly one protocol run: the same handshake + lane frames as a unix
@@ -80,7 +80,72 @@ pub enum Opened {
     Killed { existed: bool },
 }
 
-pub type OpenReply = Result<Opened, String>;
+/// Why an open failed, decided where the failure is raised. Clients
+/// switch on this instead of reading the daemon's prose.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ErrorKind {
+    /// No bytes reached the host: resolve, dial or stream-open failed.
+    Unreachable,
+    /// The host presented a key other than the pinned one.
+    PinMismatch,
+    /// The host refused our bearer token.
+    TokenRejected,
+    /// The two daemons disagree about `PROTOCOL_VERSION`.
+    VersionMismatch,
+    /// The alias is not one this client knows how to reach.
+    NoHost,
+    /// Anything else. Named `error` on the wire's JSON side, which is
+    /// the fallback class Mux.app has always shown.
+    #[serde(rename = "error")]
+    Other,
+}
+
+impl ErrorKind {
+    /// The kebab-case name, the same string the JSON encoding uses.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unreachable => "unreachable",
+            Self::PinMismatch => "pin-mismatch",
+            Self::TokenRejected => "token-rejected",
+            Self::VersionMismatch => "version-mismatch",
+            Self::NoHost => "no-host",
+            Self::Other => "error",
+        }
+    }
+}
+
+impl std::fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenError {
+    pub kind: ErrorKind,
+    /// What to show the user. Prose, and only prose: nothing parses it.
+    pub detail: String,
+}
+
+impl OpenError {
+    #[must_use]
+    pub fn new(kind: ErrorKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.kind, self.detail)
+    }
+}
+
+pub type OpenReply = Result<Opened, OpenError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PtyInfo {
@@ -171,7 +236,7 @@ mod tests {
         assert_eq!(
             encode(&req),
             [
-                0x05, // version = PROTOCOL_VERSION (varint)
+                0x06, // version = PROTOCOL_VERSION (varint)
                 0x78, // cols = 120 (varint)
                 0x28, // rows = 40
                 0x01, 0x0d, // term: Some, len 13
@@ -206,7 +271,18 @@ mod tests {
             created: true,
         });
         assert_eq!(decode::<OpenReply>(&encode(&ok)).unwrap(), ok);
-        let err: OpenReply = Err("nope".into());
+        let err: OpenReply = Err(OpenError::new(ErrorKind::PinMismatch, "nope"));
         assert_eq!(decode::<OpenReply>(&encode(&err)).unwrap(), err);
+    }
+
+    /// Swift switches on these strings; they are the JSON encoding.
+    #[test]
+    fn error_kinds_serialise_by_name() {
+        assert_eq!(
+            serde_json::to_string(&ErrorKind::PinMismatch).unwrap(),
+            "\"pin-mismatch\""
+        );
+        assert_eq!(ErrorKind::VersionMismatch.to_string(), "version-mismatch");
+        assert_eq!(ErrorKind::Other.to_string(), "error");
     }
 }
