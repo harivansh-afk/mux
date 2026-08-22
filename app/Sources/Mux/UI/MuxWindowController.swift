@@ -1,18 +1,5 @@
 import AppKit
 
-/// A container view with top-left origin so tree layout math is direct.
-final class PaneContainerView: NSView {
-    weak var controller: MuxWindowController?
-    override var isFlipped: Bool {
-        true
-    }
-
-    override func layout() {
-        super.layout()
-        controller?.layoutPanes()
-    }
-}
-
 /// One window = window chrome (borderless NSWindow, mode bar, keybinds
 /// overlay, target picker, theming) plus an ordered list of sessions.
 /// Tiling state and pane lifecycle live in Session; the controller routes
@@ -87,6 +74,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         container.wantsLayer = true
         window.contentView = container
         workspace.wantsLayer = true
+        workspace.frame = container.bounds
+        workspace.autoresizingMask = [.width, .height]
         container.addSubview(workspace)
         self.window = window
 
@@ -306,9 +295,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
 
         // The workspace never moves for the canvas: the picker floats
-        // above it and the scrim dims it in place. Sizes and positions
-        // untouched, so the ptys see nothing.
-        workspace.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height)
+        // above it and the scrim dims it in place, so no pty ever
+        // observes a size or position it did not ask for.
         for (index, session) in sessions.enumerated() {
             session.applyLayout(in: workspace.bounds, visible: index == activeSessionIndex)
         }
@@ -380,5 +368,31 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     func saveStateSoon() {
         App.delegate.saveSnapshotSoon()
+    }
+}
+
+/// A container view with top-left origin so tree layout math is direct.
+final class PaneContainerView: NSView {
+    weak var controller: MuxWindowController?
+    override var isFlipped: Bool {
+        true
+    }
+
+    override func layout() {
+        super.layout()
+        controller?.layoutPanes()
+    }
+}
+
+
+/// Borderless, square-cornered window. Borderless windows refuse
+/// key/main status by default, so both are overridden.
+final class MuxWindow: NSWindow {
+    override var canBecomeKey: Bool {
+        true
+    }
+
+    override var canBecomeMain: Bool {
+        true
     }
 }
