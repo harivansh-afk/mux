@@ -176,11 +176,23 @@ jobs:
       - run: swiftformat --lint app/Sources
       - run: swiftlint lint --strict app/Sources
 
+  # The split-tree model is the one Swift target that needs nothing but
+  # Foundation, so its tests run on Linux. app/Package.swift declares the
+  # AppKit app target only on macOS, which is what keeps this buildable
+  # without the GhosttyKit xcframework.
+  swift-test:
+    runs-on: ubuntu-latest
+    container: swift:6.1
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test --package-path app
+
   # Ported from ix: a required status that cannot false-green when an
   # upstream job is skipped or cancelled. Branch protection requires this
   # job's status, not the individual gates.
   closure-gate:
-    needs: [rust, lint, swift]
+    needs: [rust, lint, swift, swift-test]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 1

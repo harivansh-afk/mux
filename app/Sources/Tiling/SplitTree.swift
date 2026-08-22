@@ -1,34 +1,45 @@
 import Foundation
 
+// Foundation alone gives the bare CGRect struct; the geometry accessors this
+// file uses come from CoreGraphics on Apple platforms and from Foundation
+// itself elsewhere.
+#if canImport(CoreGraphics)
+    import CoreGraphics
+#endif
+
 // Pure-data BSP split tree. Lean reimplementation of the model in ghostty's
 // SplitTree.swift (MIT): leaves are pane IDs, splits carry direction+ratio.
 // Codable by synthesis, so layout persistence is free.
+//
+// Its own target because it is the one part of the app that depends on
+// nothing but Foundation, so `swift test` can reach it without AppKit or
+// the GhosttyKit xcframework.
 
-enum SplitDirection: String, Codable {
+public enum SplitDirection: String, Codable {
     /// Side by side (split created by "split right").
     case horizontal
     /// Stacked (split created by "split down").
     case vertical
 }
 
-enum FocusDirection {
+public enum FocusDirection {
     case left, right, up, down
 }
 
-indirect enum SplitNode: Codable {
+public indirect enum SplitNode: Codable {
     case leaf(UUID)
     case split(SplitBranch)
 }
 
-struct SplitBranch: Codable {
-    var direction: SplitDirection
+public struct SplitBranch: Codable {
+    public var direction: SplitDirection
     /// Fraction of space given to `first` (left/top). Clamped to [0.1, 0.9].
-    var ratio: Double
-    var first: SplitNode
-    var second: SplitNode
+    public var ratio: Double
+    public var first: SplitNode
+    public var second: SplitNode
 }
 
-extension SplitNode {
+public extension SplitNode {
     var leaves: [UUID] {
         switch self {
         case let .leaf(id): [id]

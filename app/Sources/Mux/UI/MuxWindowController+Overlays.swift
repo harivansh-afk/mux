@@ -1,4 +1,5 @@
 import AppKit
+import Tiling
 
 /// The window's chrome: the floating mode bar, the session indicator, the
 /// keybinds overlay, and the canvas and hosts windows. All of them are

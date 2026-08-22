@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import Tiling
 
 /// A container view with top-left origin so tree layout math is direct.
 final class PaneContainerView: NSView {
