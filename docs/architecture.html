@@ -195,7 +195,7 @@ Handshake: attach-or-create pty <code>"p1"</code> at 120x40, TERM=xterm-ghostty,
 <pre>
 <span class="c">handshake message = [u32 LE payload length][payload]</span>
 1b 00 00 00                                        <span class="c">length = 27</span>
-05                                                 <span class="c">version = 5       (varint)</span>
+06                                                 <span class="c">version = 6       (varint)</span>
 78                                                 <span class="c">cols = 120        (u16, varint)</span>
 28                                                 <span class="c">rows = 40</span>
 01 0d 78 74 65 72 6d 2d 67 68 6f 73 74 74 79      <span class="c">term = Some, len 13, "xterm-ghostty"</span>
@@ -207,7 +207,12 @@ Handshake: attach-or-create pty <code>"p1"</code> at 120x40, TERM=xterm-ghostty,
 00                                                 <span class="c">command = 0 args (login shell)</span>
 00                                                 <span class="c">cwd_from = None</span>
 </pre>
-<p>After the reply (<code>OpenReply</code> on egress lane 0) and the screen replay (raw bytes on
+<p>The reply is <code>OpenReply = Result&lt;Opened, OpenError&gt;</code>, and
+<code>OpenError { kind, detail }</code> carries the reason as a value:
+<code>unreachable</code>, <code>pin-mismatch</code>, <code>token-rejected</code>,
+<code>version-mismatch</code>, <code>no-host</code> or <code>error</code>, set where the failure
+is raised. <code>detail</code> is prose for the user and nothing parses it.</p>
+<p>After the reply (on egress lane 0) and the screen replay (raw bytes on
 egress lane 1), everything is lane frames. A resize control frame and an exit event, complete:</p>
 <pre>
 <span class="c">resize to 120x40, ingress lane 1:</span>

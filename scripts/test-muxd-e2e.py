@@ -13,7 +13,7 @@ Sequence:
      assert MARKER-42 comes back through the relay
   3. SIGKILL the client (the pty must outlive it)
   4. reattach, assert the replayed screen still contains MARKER-42
-  5. type `exit`, assert the client terminates and `--list` reports nothing
+  5. type `exit`, assert the client terminates and `muxd ls` reports nothing
 """
 
 import fcntl
@@ -183,7 +183,7 @@ class Harness:
 
     def list_ptys(self):
         result = subprocess.run(
-            [MUX_ATTACH_BIN, "--list"],
+            [MUXD_BIN, "ls"],
             env=self.env(),
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -250,7 +250,7 @@ def run(harness):
         log(f"saw {MARKER.decode()} live")
 
         listed = harness.list_ptys()
-        if len(listed) != 1 or not listed[0].startswith(PTY_NAME):
+        if len(listed) != 1 or PTY_NAME not in listed[0]:
             fail(f"expected one pty named {PTY_NAME}, got {listed}")
 
         log("SIGKILL the client; the pty must survive")
@@ -259,7 +259,7 @@ def run(harness):
         tty.close()
 
     listed = harness.list_ptys()
-    if len(listed) != 1 or not listed[0].startswith(PTY_NAME):
+    if len(listed) != 1 or PTY_NAME not in listed[0]:
         fail(f"pty {PTY_NAME} did not outlive its client, list is {listed}")
 
     log("reattach and check the replay")

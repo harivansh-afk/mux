@@ -13,7 +13,8 @@ use mux_proto::frame::{
     self, IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
 };
 use mux_proto::peer::{
-    self, ClientControl, ErrorKind, OpenError, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent,
+    self, ClientControl, ErrorKind, OpenError, OpenMode, OpenReply, OpenRequest, Opened,
+    ServerEvent,
 };
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{UnixListener, UnixStream};

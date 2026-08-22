@@ -253,7 +253,7 @@ def main() -> int:
 
         wait_until(lambda: socket_answers(control), "daemon B to listen")
         listing = subprocess.run(
-            [mux_attach, "--list"],
+            [muxd, "ls"],
             env=env,
             capture_output=True,
             text=True,

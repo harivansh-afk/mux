@@ -135,7 +135,11 @@ fn connect() -> Result<UnixStream> {
     // controlling tty, or their teardown SIGHUPs it away.
     unsafe {
         use std::os::unix::process::CommandExt as _;
-        cmd.pre_exec(|| nix::unistd::setsid().map(|_| ()).map_err(std::io::Error::from));
+        cmd.pre_exec(|| {
+            nix::unistd::setsid()
+                .map(|_| ())
+                .map_err(std::io::Error::from)
+        });
     }
     cmd.spawn().context("spawn muxd")?;
     // A double-spawn race resolves by itself: the loser exits on
@@ -327,7 +331,10 @@ async fn main() -> Result<()> {
         Some(command @ ("pin" | "client-digest")) => return print_enrollment(command),
         Some("ls") => return ls(&args[1..]),
         Some("kill") => {
-            return kill(args.get(1).context("usage: muxd kill [host|local]:<name>")?)
+            return kill(
+                args.get(1)
+                    .context("usage: muxd kill [host|local]:<name>")?,
+            )
         }
         Some("probe") => {
             let alias = args.get(1).context("usage: muxd probe <alias>")?;

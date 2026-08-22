@@ -292,11 +292,17 @@ impl Broker {
         let connecting = endpoint.connect(remote, sni).context("start QUIC dial")?;
         let connection = match tokio::time::timeout(DIAL_TIMEOUT, connecting).await {
             Err(_) => {
-                return Err(anyhow::anyhow!("dial {remote} timed out after {DIAL_TIMEOUT:?}").into())
+                return Err(
+                    anyhow::anyhow!("dial {remote} timed out after {DIAL_TIMEOUT:?}").into(),
+                )
             }
             Ok(Err(e)) => match verifier.failure() {
                 Some(failure) => return Err(DialError::Pin(failure)),
-                None => return Err(anyhow::Error::from(e).context(format!("dial {remote}")).into()),
+                None => {
+                    return Err(anyhow::Error::from(e)
+                        .context(format!("dial {remote}"))
+                        .into())
+                }
             },
             Ok(Ok(connection)) => connection,
         };
@@ -382,7 +388,10 @@ fn host_addr(hosts: &Path, alias: &str) -> Result<String> {
     } else {
         known.join(", ")
     };
-    bail!("unknown host {alias:?} in {}; known: {known}", hosts.display())
+    bail!(
+        "unknown host {alias:?} in {}; known: {known}",
+        hosts.display()
+    )
 }
 
 /// The bearer token to present to `alias`, injected into the relayed
@@ -1015,7 +1024,10 @@ mod tests {
 
         let error = error_reply(&written);
         assert_eq!(error.kind, ErrorKind::PinMismatch);
-        assert!(error.detail.contains("host key changed for spark"), "{error}");
+        assert!(
+            error.detail.contains("host key changed for spark"),
+            "{error}"
+        );
         assert!(error.detail.contains("sha256:stale"), "{error}");
 
         std::fs::remove_dir_all(&dir).unwrap();

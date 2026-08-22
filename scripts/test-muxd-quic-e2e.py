@@ -9,7 +9,7 @@ Verifies:
   2. TOFU pin is recorded on first contact
   3. the pty is owned by the remote daemon, not the local one
   4. killing the client and reattaching replays the screen over QUIC
-  5. `mux-attach probe` reports the host ok, and an unknown alias no-host
+  5. `muxd probe` reports the host ok, and an unknown alias no-host
   6. a wrong bearer token is rejected with a readable error
 
 The client is enrolled by digest: `muxd client-digest` on the client
@@ -161,10 +161,10 @@ def main():
 
     # 3. pty owned by the remote daemon.
     lst_remote = subprocess.run(
-        [ATTACH, "--list"], env=env_remote, capture_output=True, text=True
+        [MUXD, "ls"], env=env_remote, capture_output=True, text=True
     ).stdout
     lst_local = subprocess.run(
-        [ATTACH, "--list"], env=env_local, capture_output=True, text=True
+        [MUXD, "ls"], env=env_local, capture_output=True, text=True
     ).stdout
     assert "remote-pane-1" in lst_remote, lst_remote
     assert "remote-pane-1" not in lst_local, lst_local
@@ -182,7 +182,7 @@ def main():
     # 5. probe: one line of JSON, the health check Mux.app runs per host.
     def probe(alias):
         done = subprocess.run(
-            [ATTACH, "probe", alias], env=env_local, capture_output=True, text=True
+            [MUXD, "probe", alias], env=env_local, capture_output=True, text=True
         )
         assert len(done.stdout.splitlines()) == 1, done.stdout
         return done.returncode, json.loads(done.stdout)
