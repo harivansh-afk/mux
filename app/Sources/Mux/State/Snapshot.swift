@@ -1,10 +1,6 @@
 import Foundation
 import Tiling
 
-// Layout-and-identity persistence: structural facts are
-// always saved (cheap, versioned JSON); screen contents are the daemon's
-// job starting in M2. Restore resurrects the layout and per-pane cwd.
-
 struct PaneSnapshot: Codable {
     var cwd: String?
     /// Where the pane's terminal lives (see PaneView.target). Absent in
@@ -103,8 +99,6 @@ enum SnapshotStore {
             if let existing = try? Data(contentsOf: url), existing == data {
                 return
             }
-            // Rotate the current file to .bak first: the previous state
-            // survives a bad write or a bad snapshot by one generation.
             if fm.fileExists(atPath: url.path) {
                 try? fm.removeItem(at: backupURL)
                 try? fm.moveItem(at: url, to: backupURL)

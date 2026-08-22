@@ -17,8 +17,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// invariant (focus routing, snapshot identity, close semantics)
     /// for no capability.
     private(set) var controller: MuxWindowController?
-    /// Internal (not private): the canvas overlay's click-to-jump ends
-    /// the mode through the engine, exactly like enter does.
     let prefixEngine = PrefixEngine()
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -60,8 +58,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             makeWindow()?.activeSession?.addInitialPane()
         }
 
-        // The snapshot is a claim, not the truth: the daemons know which
-        // ptys actually exist. Adopt live shells no window remembers.
         adoptOrphanedPanes()
 
         NSApp.activate(ignoringOtherApps: true)
@@ -122,14 +118,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         GhosttyRuntime.shared?.setFocus(false)
     }
 
-    /// True once quit begins: window teardown during termination is a
-    /// detach (ptys survive for restore), never a kill.
     private(set) var isTerminating = false
 
-    /// Mark the app as exiting: save while the sessions are still alive,
-    /// then freeze the snapshot against the teardown that follows. Called
-    /// from every path that ends the app - shouldTerminate for a real
-    /// quit, and the window's close, which with one window IS quitting.
     func beginTermination(reason: String) {
         guard !isTerminating else { return }
         AppLog.log("terminating (\(reason))")
@@ -140,16 +130,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
-        // Save before raising the flag: saveSnapshot is a no-op once
-        // terminating, so the teardown saves cannot clobber this
-        // snapshot with an empty one.
         beginTermination(reason: "applicationShouldTerminate")
         return .terminateNow
     }
 
     func applicationWillTerminate(_: Notification) {
-        // Normally a no-op (shouldTerminate already saved and raised the
-        // flag); covers termination paths that skip shouldTerminate.
         beginTermination(reason: "applicationWillTerminate")
     }
 
@@ -181,9 +166,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var pendingSave: DispatchWorkItem?
 
-    /// Coalesces high-frequency triggers (window drags, focus hops, cwd
-    /// updates) into one write shortly after they settle. Structural
-    /// mutations keep calling saveSnapshot directly.
     func saveSnapshotSoon() {
         guard !isTerminating else { return }
         pendingSave?.cancel()
@@ -193,10 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func saveSnapshot() {
-        // Termination teardown must not overwrite the snapshot taken at
-        // the start of the quit; that file is the restore source.
         guard !isTerminating else { return }
-        // A direct save supersedes any pending debounced one.
         pendingSave?.cancel()
         pendingSave = nil
         guard let controller else { return }
