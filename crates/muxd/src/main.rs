@@ -7,6 +7,7 @@
 //!   muxd ls [alias] [--json]   one JSON object per pty
 //!   muxd kill [host|local]:<name>
 //!   muxd probe <alias>         check a host, one JSON line, exit 1 on failure
+//!   muxd upgrade               replace the running daemon with this binary
 //!   muxd client-digest         print this user's client token digest and exit
 //!
 //! The queries dial the local socket (`MUXD_SOCKET`, else the per-uid
@@ -21,7 +22,15 @@
 //! ```
 //!
 //! `class` is the reply's `ErrorKind`; `rtt_ms` covers request to reply
-//! only, never the connect that may precede it.
+//! only, never the connect that may precede it. `probe local` asks this
+//! machine's own daemon, starting one if none answers.
+//!
+//! `upgrade` starts this binary as the running daemon's successor
+//! (`--upgrade`, below) and prints the same line once the new daemon
+//! answers, `rtt_ms` covering the whole handoff. Mux.app runs it at
+//! launch when `probe local` reports `version-mismatch`: the daemon
+//! outlives the app, so the first launch after an install meets the
+//! previous build's.
 //!
 //! The unix socket is always on; `--listen-quic` additionally exposes
 //! the same protocol to the network (`ADDR` is `<ip>:<port>` or a bare
@@ -42,7 +51,7 @@
 use std::io::Write as _;
 use std::net::{IpAddr, SocketAddr};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -115,24 +124,7 @@ fn connect() -> Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(&path) {
         return Ok(stream);
     }
-    let exe = std::env::current_exe().context("locate muxd")?;
-    let mut cmd = std::process::Command::new(exe);
-    cmd.arg("--socket")
-        .arg(&path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    // The daemon must outlive the shell that ran the query and its
-    // controlling tty, or their teardown SIGHUPs it away.
-    unsafe {
-        use std::os::unix::process::CommandExt as _;
-        cmd.pre_exec(|| {
-            nix::unistd::setsid()
-                .map(|_| ())
-                .map_err(std::io::Error::from)
-        });
-    }
-    cmd.spawn().context("spawn muxd")?;
+    spawn_daemon(&path, &[])?;
     // A double-spawn race resolves by itself: the loser exits on
     // "already running" and we only need the socket to answer.
     for _ in 0..100 {
@@ -142,6 +134,30 @@ fn connect() -> Result<UnixStream> {
         }
     }
     bail!("muxd did not come up on {}", path.display())
+}
+
+/// Start this binary as a daemon on `path`, plus `flags`, in a session of
+/// its own: it must outlive the shell that ran the query and its
+/// controlling tty, or their teardown SIGHUPs it away.
+fn spawn_daemon(path: &Path, flags: &[&str]) -> Result<()> {
+    let exe = std::env::current_exe().context("locate muxd")?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--socket")
+        .arg(path)
+        .args(flags)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    unsafe {
+        use std::os::unix::process::CommandExt as _;
+        cmd.pre_exec(|| {
+            nix::unistd::setsid()
+                .map(|_| ())
+                .map_err(std::io::Error::from)
+        });
+    }
+    cmd.spawn().context("spawn muxd")?;
+    Ok(())
 }
 
 fn query(target: Option<String>, mode: OpenMode) -> OpenRequest {
@@ -171,6 +187,11 @@ fn ask(target: Option<String>, mode: OpenMode) -> Result<Opened> {
     exchange(&mut connect()?, &query(target, mode))?.map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// `local` is this machine's daemon, which the wire spells as no target.
+fn host(alias: &str) -> Option<String> {
+    (alias != "local").then(|| alias.to_string())
+}
+
 /// `local:<name>` or `<host-alias>:<name>`; a `local` target is None,
 /// which is what the daemon calls itself.
 fn parse_target(target: &str) -> Result<(Option<String>, String)> {
@@ -191,7 +212,7 @@ fn ls(args: &[String]) -> Result<()> {
         match arg.as_str() {
             "--json" => {}
             flag if flag.starts_with('-') => bail!("unknown flag {flag:?}"),
-            host => alias = Some(host.to_string()),
+            alias_arg => alias = host(alias_arg),
         }
     }
     match ask(alias, OpenMode::List)? {
@@ -241,7 +262,7 @@ struct Probe<'a> {
 /// host being probed.
 fn probe(alias: &str) -> i32 {
     let measured = connect().and_then(|mut stream| {
-        let request = query(Some(alias.to_string()), OpenMode::List);
+        let request = query(host(alias), OpenMode::List);
         let started = Instant::now();
         Ok((exchange(&mut stream, &request)?, started.elapsed()))
     });
@@ -254,6 +275,63 @@ fn probe(alias: &str) -> i32 {
         Ok((Err(e), _)) => Err(e),
         Err(e) => Err(OpenError::new(ErrorKind::Other, format!("{e:#}"))),
     };
+    report(alias, &answer)
+}
+
+/// Give the handoff this long, then report failure. Under Mux.app's 10s
+/// helper watchdog so the answer lands; a real handoff takes well under
+/// a second (the predecessor renders its screens and writes one message).
+const UPGRADE_TIMEOUT: Duration = Duration::from_secs(8);
+const UPGRADE_POLL: Duration = Duration::from_millis(50);
+
+/// Replace the running daemon with this binary: start it as the
+/// successor (`--upgrade`, migrate.rs) and wait for the socket to answer
+/// at this protocol version.
+///
+/// The wait never spawns a daemon. Between the predecessor's exit and
+/// the successor's bind the socket is dead, and a fresh muxd raced in
+/// there takes the socket from the successor, together with every pty
+/// it just adopted.
+fn upgrade() -> i32 {
+    let path = socket_path();
+    let started = Instant::now();
+    let answer = spawn_daemon(&path, &["--upgrade"])
+        .map_err(|e| OpenError::new(ErrorKind::Other, format!("{e:#}")))
+        .and_then(|()| {
+            let mut last = OpenError::new(ErrorKind::Unreachable, "nothing answered");
+            while started.elapsed() < UPGRADE_TIMEOUT {
+                std::thread::sleep(UPGRADE_POLL);
+                let Ok(mut stream) = UnixStream::connect(&path) else {
+                    continue;
+                };
+                match exchange(&mut stream, &query(None, OpenMode::List)) {
+                    Ok(Ok(Opened::Listed { ptys })) => return Ok((ptys.len(), started.elapsed())),
+                    Ok(Ok(other)) => {
+                        return Err(OpenError::new(
+                            ErrorKind::Other,
+                            format!("unexpected reply: {other:?}"),
+                        ))
+                    }
+                    // The predecessor still serving, or closing under us:
+                    // the handoff is in flight.
+                    Ok(Err(e)) => last = e,
+                    Err(e) => last = OpenError::new(ErrorKind::Other, format!("{e:#}")),
+                }
+            }
+            Err(OpenError::new(
+                last.kind,
+                format!(
+                    "no daemon at v{} after {UPGRADE_TIMEOUT:?}; last answer: {}",
+                    peer::PROTOCOL_VERSION,
+                    last.detail
+                ),
+            ))
+        });
+    report("local", &answer)
+}
+
+/// Print one `Probe` line for `answer` and turn it into an exit code.
+fn report(alias: &str, answer: &Result<(usize, Duration), OpenError>) -> i32 {
     let line = Probe {
         alias,
         ok: answer.is_ok(),
@@ -331,6 +409,7 @@ async fn main() -> Result<()> {
             let alias = args.get(1).context("usage: muxd probe <alias>")?;
             std::process::exit(probe(alias));
         }
+        Some("upgrade") => std::process::exit(upgrade()),
         _ => {}
     }
 
