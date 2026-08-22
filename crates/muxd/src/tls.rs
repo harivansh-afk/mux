@@ -1,12 +1,11 @@
 //! Bearer tokens and the daemon's QUIC identity: load-or-generate, on
 //! disk at the locations `crate::paths` documents.
 //!
-//! There is no CA. The certificate is self-signed and clients pin the
-//! SHA-256 of its `SubjectPublicKeyInfo` (ssh-style trust-on-first-use;
-//! `known_hosts` in paths.rs), so the pin is logged once at startup for
-//! out-of-band copying. The token is the second factor: a certificate
-//! proves which daemon answered, the token proves the caller is allowed
-//! to talk to it.
+//! There is no CA. The certificate is self-signed and clients pin
+//! [`fingerprint`] of it (ssh-style trust-on-first-use; `known_hosts` in
+//! paths.rs). The token is the second factor: a certificate proves which
+//! daemon answered, the token proves the caller is allowed to talk to
+//! it.
 //!
 //! Tokens are the same recipe on both sides - 32 random bytes as hex,
 //! 0600 - because both sides hold one: the daemon its own, a client its
@@ -21,10 +20,11 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
 use rand::RngCore as _;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::pki_types::pem::PemObject as _;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sha2::{Digest as _, Sha256};
 
 use crate::paths;
@@ -42,10 +42,23 @@ const SECRET_MODE: u32 = 0o600;
 pub struct Identity {
     pub cert: CertificateDer<'static>,
     pub key: PrivateKeyDer<'static>,
-    /// `sha256:<base64>` over the certificate SPKI: byte for byte the
-    /// token a client stores in `known_hosts` (see paths.rs), so the
-    /// logged line can be copied verbatim.
-    pub spki_pin: String,
+}
+
+/// The `known_hosts` pin for a certificate: `sha256:<standard base64 of
+/// the SHA-256 of the whole DER>`. The one fingerprint function in the
+/// workspace, so a client comparing strings cannot be reading a
+/// different field than a host printing one.
+///
+/// Hashing the certificate rather than its `SubjectPublicKeyInfo` needs
+/// no X.509 parser and has the same trust lifetime here: [`generate`]
+/// writes the pair together and `load_or_generate_identity` regenerates
+/// both if either is missing, so nothing rotates one without the other.
+#[must_use]
+pub fn fingerprint(cert: &CertificateDer<'_>) -> String {
+    format!(
+        "sha256:{}",
+        base64::engine::general_purpose::STANDARD.encode(Sha256::digest(cert.as_ref()))
+    )
 }
 
 /// SHA-256 of a secret. Tokens are compared as digests: equal-length,
@@ -59,16 +72,16 @@ pub fn digest(secret: &str) -> [u8; 32] {
 /// line of an authorized-tokens file. This is what `muxd client-digest`
 /// prints and the only thing about a token that ever leaves its machine.
 pub fn digest_line(secret: &str) -> String {
-    format!("sha256:{}", hex(&digest(secret)))
+    format!("sha256:{}", hex::encode(digest(secret)))
 }
 
 /// Read `cert.pem`/`key.pem`, generating a self-signed pair on first
-/// use, and log the pin clients need.
+/// use.
 pub fn load_or_generate_identity() -> Result<Identity> {
     let cert_path = paths::daemon_cert();
     let key_path = paths::daemon_key();
 
-    let pair = match (
+    let (cert_pem, key_pem) = match (
         fs::read_to_string(&cert_path),
         fs::read_to_string(&key_path),
     ) {
@@ -77,25 +90,12 @@ pub fn load_or_generate_identity() -> Result<Identity> {
         // a cert without its key is useless either way.
         _ => generate(&cert_path, &key_path)?,
     };
-    let (cert_pem, key_pem) = pair;
-
-    // rcgen re-derives the SPKI from the private key, which saves
-    // pulling in an X.509 parser just to reach one field.
-    let key_pair = rcgen::KeyPair::from_pem(&key_pem)
-        .with_context(|| format!("parse {}", key_path.display()))?;
-    // Exactly the `known_hosts` token: SHA-256 over the SPKI DER
-    // (tag+len+value, what public_key_der returns), standard base64
-    // alphabet, padded. A client comparing strings must get a match.
-    let spki_pin = format!(
-        "sha256:{}",
-        base64::engine::general_purpose::STANDARD.encode(Sha256::digest(key_pair.public_key_der()))
-    );
-    tracing::info!(pin = %spki_pin, "certificate SPKI (pin this on clients)");
 
     Ok(Identity {
-        cert: CertificateDer::from(pem_body(&cert_pem, "CERTIFICATE")?),
-        key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pem_body(&key_pem, "PRIVATE KEY")?)),
-        spki_pin,
+        cert: CertificateDer::from_pem_slice(cert_pem.as_bytes())
+            .map_err(|e| anyhow!("parse {}: {e}", cert_path.display()))?,
+        key: PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
+            .map_err(|e| anyhow!("parse {}: {e}", key_path.display()))?,
     })
 }
 
@@ -111,7 +111,7 @@ pub fn load_or_generate_token(path: &Path) -> Result<String> {
     }
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
-    let token = hex(&bytes);
+    let token = hex::encode(bytes);
     write_secret(path, token.as_bytes())?;
     tracing::info!(path = %path.display(), "generated bearer token");
     Ok(token)
@@ -141,32 +141,33 @@ fn parse_digests(text: &str) -> Result<Vec<[u8; 32]>> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let hex = line
+        let digits = line
             .strip_prefix("sha256:")
             .with_context(|| format!("line {}: expected sha256:<64 hex>, got {line:?}", n + 1))?;
-        if hex.len() != 64
-            || !hex
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        if !digits
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         {
-            bail!(
-                "line {}: expected 64 lowercase hex digits, got {hex:?}",
-                n + 1
-            );
+            bail!("line {}: expected lowercase hex digits, got {digits:?}", n + 1);
         }
-        let mut digest = [0u8; 32];
-        for (byte, pair) in digest.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
-            let pair = std::str::from_utf8(pair).expect("hex is ascii");
-            *byte = u8::from_str_radix(pair, 16).expect("checked hex digits");
-        }
+        let digest: [u8; 32] = hex::decode(digits)
+            .with_context(|| format!("line {}: {digits:?} is not hex", n + 1))?
+            .try_into()
+            .map_err(|_| {
+                anyhow!(
+                    "line {}: expected 64 hex digits, got {}",
+                    n + 1,
+                    digits.len()
+                )
+            })?;
         digests.push(digest);
     }
     Ok(digests)
 }
 
 fn generate(cert_path: &Path, key_path: &Path) -> Result<(String, String)> {
-    // The names are cosmetic: clients pin the SPKI, they do not resolve
-    // a hostname back to this certificate.
+    // The names are cosmetic: clients pin the certificate, they do not
+    // resolve a hostname back to it.
     let certified = rcgen::generate_simple_self_signed(vec!["muxd".into(), "localhost".into()])
         .context("generate self-signed certificate")?;
     let cert_pem = certified.cert.pem();
@@ -194,27 +195,6 @@ fn write_secret(path: &Path, contents: &[u8]) -> Result<()> {
     // file keeps its old, possibly wider, permissions.
     fs::set_permissions(path, fs::Permissions::from_mode(SECRET_MODE))
         .with_context(|| format!("chmod {}", path.display()))
-}
-
-/// The DER between a PEM block's BEGIN/END lines. Enough for the two
-/// shapes rcgen writes, and cheaper than a PEM dependency.
-fn pem_body(pem: &str, tag: &str) -> Result<Vec<u8>> {
-    let base64: String = pem
-        .split_once(&format!("-----BEGIN {tag}-----"))
-        .and_then(|(_, rest)| rest.split_once(&format!("-----END {tag}-----")))
-        .map(|(body, _)| body.split_whitespace().collect())
-        .with_context(|| format!("no {tag} block in PEM"))?;
-    base64::engine::general_purpose::STANDARD
-        .decode(base64)
-        .with_context(|| format!("decode {tag} body"))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
 }
 
 #[cfg(test)]
@@ -255,6 +235,23 @@ mod tests {
         let hex = line.strip_prefix("sha256:").expect("prefix");
         assert_eq!(hex.len(), 64);
         assert_eq!(parse_digests(&line).unwrap(), vec![digest("s3cret")]);
+    }
+
+    /// The pin is copied between machines as text, so its shape is a
+    /// contract: `sha256:` plus padded standard base64 of a 32-byte
+    /// digest of the certificate DER.
+    #[test]
+    fn fingerprint_is_the_known_hosts_form() {
+        let key = rcgen::generate_simple_self_signed(vec!["muxd".to_string()]).unwrap();
+        let printed = fingerprint(key.cert.der());
+        let encoded = printed.strip_prefix("sha256:").expect("prefix");
+        assert_eq!(encoded.len(), 44, "base64 of 32 bytes, padded: {encoded}");
+        assert!(!encoded.contains(['-', '_']), "standard alphabet: {encoded}");
+        assert_eq!(
+            encoded,
+            base64::engine::general_purpose::STANDARD
+                .encode(Sha256::digest(key.cert.der().as_ref()))
+        );
     }
 
     #[test]

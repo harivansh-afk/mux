@@ -6,7 +6,7 @@ uncommon port. Never touches the default per-uid socket.
 
 Verifies:
   1. attach through the broker reaches a pty on the remote daemon
-  2. TOFU pin is recorded on first contact
+  2. TOFU pin is recorded on first contact and hashes the remote cert
   3. the pty is owned by the remote daemon, not the local one
   4. killing the client and reattaching replays the screen over QUIC
   5. `muxd probe` reports the host ok, and an unknown alias no-host
@@ -20,6 +20,8 @@ Env: MUXD_BIN / MUX_ATTACH_BIN override target/debug defaults.
 """
 
 import atexit
+import base64
+import hashlib
 import json
 import os
 import pty
@@ -50,6 +52,17 @@ def cleanup():
 
 
 atexit.register(cleanup)
+
+
+def cert_fingerprint(path):
+    """The `known_hosts` pin for a PEM certificate: what tls::fingerprint
+    computes, spelled out here so the assertion is independent of the code
+    under test."""
+    with open(path) as f:
+        pem = f.read()
+    body = pem.split("-----BEGIN CERTIFICATE-----", 1)[1].split("-----END CERTIFICATE-----", 1)[0]
+    der = base64.b64decode("".join(body.split()))
+    return "sha256:" + base64.b64encode(hashlib.sha256(der).digest()).decode()
 
 
 def read_all(fd, seconds):
@@ -108,13 +121,10 @@ def main():
     )
     time.sleep(1.2)
 
-    # Enrollment, host side: `muxd pin` prints what the daemon logged, so
-    # a client can be pinned without reading the journal.
-    pin = subprocess.run(
-        [MUXD, "pin"], env=env_remote, capture_output=True, text=True, check=True
-    ).stdout.strip()
-    assert pin.startswith("sha256:"), pin
-    print("PASS: muxd client-digest + muxd pin print the enrollment lines")
+    # The pin a correct client must record, read off the certificate the
+    # daemon just generated.
+    pin = cert_fingerprint(os.path.join(remote_home, ".local/state/muxd/cert.pem"))
+    print("PASS: muxd client-digest prints the enrollment line")
 
     # Local daemon: hosts.json names the remote. No tokens/<alias> file -
     # the broker presents the client identity the host just enrolled.
@@ -145,19 +155,16 @@ def main():
     assert b"RMARKER-42" in out, f"no marker via broker: {out[-400:]!r}"
     print("PASS: enrolled by digest alone, pane reached the remote daemon")
 
-    # 2. TOFU pin recorded - and byte-identical to what `muxd pin` printed
-    # and the daemon logged, which is what a user copies into known_hosts.
-    # This equality is the assertion that catches format drift between the
-    # server and the client's parser.
+    # 2. TOFU pin recorded - and byte-identical to the SHA-256 of the
+    # remote certificate's DER, which is what a user copies into
+    # known_hosts. This equality catches format drift between the
+    # certificate on the host and the client's parser.
     with open(os.path.join(local_home, ".local/state/mux/known_hosts")) as f:
         known_hosts = f.read()
     assert "testbox sha256:" in known_hosts, known_hosts
     stored = known_hosts.split("testbox ", 1)[1].split()[0]
-    assert stored == pin, f"pinned {stored!r}, `muxd pin` said {pin!r}"
-    with open(os.path.join(remote_home, "muxd.log")) as f:
-        log = f.read()
-    assert stored in log, f"pin {stored!r} not found in the daemon's startup log"
-    print("PASS: TOFU pin recorded and matches `muxd pin` and the daemon's log")
+    assert stored == pin, f"pinned {stored!r}, the certificate hashes to {pin!r}"
+    print("PASS: TOFU pin recorded and matches the remote certificate")
 
     # 3. pty owned by the remote daemon.
     lst_remote = subprocess.run(

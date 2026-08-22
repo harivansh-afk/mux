@@ -7,7 +7,6 @@
 //!   muxd ls [alias] [--json]   one JSON object per pty
 //!   muxd kill [host|local]:<name>
 //!   muxd probe <alias>         check a host, one JSON line, exit 1 on failure
-//!   muxd pin                   print this daemon's SPKI pin and exit
 //!   muxd client-digest         print this user's client token digest and exit
 //!
 //! The queries dial the local socket (`MUXD_SOCKET`, else the per-uid
@@ -33,10 +32,8 @@
 //! the file is deployable by configuration management (nix/module.nix)
 //! and no token ever crosses machines.
 //!
-//! The two subcommands are that enrollment, one printed line each so the
-//! app and shell scripts can read them: `muxd pin` on the host gives the
-//! client its `known_hosts` entry, `muxd client-digest` on the client
-//! gives the host its authorized-tokens entry.
+//! `muxd client-digest` is that enrollment from the client's side: one
+//! printed line, generated on first use, that the host's config lists.
 //!
 //! `--upgrade` replaces a running daemon without killing a shell: the
 //! new process inherits the live PTY fds plus a screen snapshot per pty
@@ -91,18 +88,12 @@ fn parse_args() -> Result<Args> {
     })
 }
 
-/// The enrollment subcommands: one line on stdout, then exit. Each
-/// generates the material it prints when this is its first use, so the
-/// answer is always something the peer can act on.
-fn print_enrollment(command: &str) -> Result<()> {
-    match command {
-        "pin" => println!("{}", tls::load_or_generate_identity()?.spki_pin),
-        "client-digest" => {
-            let token = tls::load_or_generate_token(&paths::client_token())?;
-            println!("{}", tls::digest_line(&token));
-        }
-        other => bail!("unknown command {other:?}"),
-    }
+/// Enrollment: this client's token digest, one line on stdout. The token
+/// is generated when this is its first use, so the answer is always
+/// something the host can enroll.
+fn client_digest() -> Result<()> {
+    let token = tls::load_or_generate_token(&paths::client_token())?;
+    println!("{}", tls::digest_line(&token));
     Ok(())
 }
 
@@ -328,7 +319,7 @@ async fn main() -> Result<()> {
     // Subcommands before flags: each answers on stdout and exits.
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some(command @ ("pin" | "client-digest")) => return print_enrollment(command),
+        Some("client-digest") => return client_digest(),
         Some("ls") => return ls(&args[1..]),
         Some("kill") => {
             return kill(

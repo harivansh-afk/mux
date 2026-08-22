@@ -8,9 +8,9 @@
 //! handshake is parsed here: the pane and the remote daemon speak the same
 //! lane protocol end to end, so the broker is a pipe.
 //!
-//! Trust is trust-on-first-use keyed by the host ALIAS, like ssh: the
-//! SHA-256 of the presented certificate's `SubjectPublicKeyInfo` is written
-//! to `known_hosts` on first contact and must match on every later one. The
+//! Trust is trust-on-first-use keyed by the host ALIAS, like ssh:
+//! [`tls::fingerprint`] of the presented certificate is written to
+//! `known_hosts` on first contact and must match on every later one. The
 //! certificate is self-signed by design, so nothing else about it is
 //! checked - the pin, not a CA and not the name, is the whole decision.
 
@@ -28,7 +28,6 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use crate::{paths, server, tls};
@@ -482,15 +481,16 @@ impl ServerCertVerifier for Tofu {
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
         match check_pin(&self.alias, &self.known_hosts, end_entity) {
-            Ok(Pin::Stored(fingerprint)) => {
-                tracing::warn!(
-                    host = %self.alias,
-                    %fingerprint,
-                    "pinned new host key on first contact",
-                );
+            Ok(stored) => {
+                if let Some(fingerprint) = stored {
+                    tracing::warn!(
+                        host = %self.alias,
+                        %fingerprint,
+                        "pinned new host key on first contact",
+                    );
+                }
                 Ok(ServerCertVerified::assertion())
             }
-            Ok(Pin::Matched) => Ok(ServerCertVerified::assertion()),
             Err(e) => {
                 let message = format!("{e:#}");
                 *self
@@ -537,20 +537,13 @@ impl ServerCertVerifier for Tofu {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum Pin {
-    /// First contact: the fingerprint was appended to `known_hosts`.
-    Stored(String),
-    /// The stored pin matched.
-    Matched,
-}
-
-/// The whole trust decision: match the stored pin, or store it.
-fn check_pin(alias: &str, known_hosts: &Path, cert: &CertificateDer<'_>) -> Result<Pin> {
-    let fingerprint = fingerprint(cert)?;
+/// The whole trust decision: match the stored pin, or store it. `Some`
+/// is the fingerprint written on first contact.
+fn check_pin(alias: &str, known_hosts: &Path, cert: &CertificateDer<'_>) -> Result<Option<String>> {
+    let fingerprint = tls::fingerprint(cert);
     if let Some(pinned) = read_pin(known_hosts, alias)? {
         if pinned == fingerprint {
-            return Ok(Pin::Matched);
+            return Ok(None);
         }
         bail!(
             "host key changed for {alias}: pinned {pinned}, presented {fingerprint}. \
@@ -560,18 +553,7 @@ fn check_pin(alias: &str, known_hosts: &Path, cert: &CertificateDer<'_>) -> Resu
         );
     }
     append_pin(known_hosts, alias, &fingerprint)?;
-    Ok(Pin::Stored(fingerprint))
-}
-
-/// `sha256:<base64 of the SHA-256 of the certificate's SPKI>`, the form
-/// stored in `known_hosts`.
-fn fingerprint(cert: &CertificateDer<'_>) -> Result<String> {
-    let spki = spki(cert).context("read the server certificate's public key")?;
-    let digest = Sha256::digest(spki);
-    Ok(format!(
-        "sha256:{}",
-        base64::engine::general_purpose::STANDARD.encode(digest)
-    ))
+    Ok(Some(fingerprint))
 }
 
 fn read_pin(known_hosts: &Path, alias: &str) -> Result<Option<String>> {
@@ -604,80 +586,6 @@ fn append_pin(known_hosts: &Path, alias: &str, fingerprint: &str) -> Result<()> 
         .with_context(|| format!("open {}", known_hosts.display()))?;
     writeln!(file, "{alias} {fingerprint}")
         .with_context(|| format!("append to {}", known_hosts.display()))
-}
-
-// --------------------------------------------------------------------- der
-
-/// The DER of the certificate's `SubjectPublicKeyInfo`.
-///
-/// X.509 is nested DER SEQUENCEs (RFC 5280 4.1): a Certificate opens with
-/// its `TBSCertificate`, whose fields are an optional `[0]` version tag, then
-/// serialNumber, signature, issuer, validity, subject and the
-/// `SubjectPublicKeyInfo` we hash. Walking that far needs no X.509 parser,
-/// only lengths, and the pin covers exactly the key doing the channel
-/// crypto.
-fn spki<'a>(cert: &'a CertificateDer<'_>) -> Result<&'a [u8]> {
-    const SEQUENCE: u8 = 0x30;
-    const CONTEXT_0: u8 = 0xa0;
-
-    let certificate = tlv(cert.as_ref())?;
-    if certificate.tag != SEQUENCE {
-        bail!("certificate is not a DER SEQUENCE");
-    }
-    let tbs = tlv(certificate.value)?;
-    if tbs.tag != SEQUENCE {
-        bail!("tbsCertificate is not a DER SEQUENCE");
-    }
-    let mut field = tlv(tbs.value)?;
-    if field.tag == CONTEXT_0 {
-        field = tlv(field.rest)?;
-    }
-    // serialNumber -> signature -> issuer -> validity -> subject -> spki
-    for _ in 0..5 {
-        field = tlv(field.rest)?;
-    }
-    if field.tag != SEQUENCE {
-        bail!("subjectPublicKeyInfo is not a DER SEQUENCE");
-    }
-    Ok(field.whole)
-}
-
-/// One DER tag-length-value, plus what follows it.
-struct Tlv<'a> {
-    tag: u8,
-    /// The value bytes.
-    value: &'a [u8],
-    /// Tag, length and value together: what a hash of this element covers.
-    whole: &'a [u8],
-    /// The bytes after this element.
-    rest: &'a [u8],
-}
-
-fn tlv(der: &[u8]) -> Result<Tlv<'_>> {
-    let (&tag, after_tag) = der.split_first().context("truncated DER element")?;
-    let (&first, after_first) = after_tag.split_first().context("truncated DER length")?;
-    let (len, body) = if first < 0x80 {
-        (usize::from(first), after_first)
-    } else {
-        let count = usize::from(first & 0x7f);
-        if count == 0 || count > 4 {
-            bail!("unsupported DER length form");
-        }
-        let (bytes, body) = after_first
-            .split_at_checked(count)
-            .context("truncated DER length")?;
-        let len = bytes
-            .iter()
-            .fold(0usize, |acc, b| (acc << 8) | usize::from(*b));
-        (len, body)
-    };
-    let (value, rest) = body.split_at_checked(len).context("truncated DER value")?;
-    Ok(Tlv {
-        tag,
-        value,
-        whole: &der[..der.len() - rest.len()],
-        rest,
-    })
 }
 
 #[cfg(test)]
@@ -776,21 +684,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// rcgen writes the same structure it hands back as `public_key_der`,
-    /// so it is the oracle for the DER walk.
-    #[test]
-    fn spki_is_the_certificate_public_key() {
-        let key = cert();
-        assert_eq!(spki(key.cert.der()).unwrap(), key.key_pair.public_key_der());
-    }
-
-    #[test]
-    fn truncated_certificate_is_an_error() {
-        let key = cert();
-        let der = CertificateDer::from(key.cert.der().as_ref()[..40].to_vec());
-        assert!(spki(&der).is_err());
-    }
-
     #[test]
     fn first_use_pins_then_matches() {
         let dir = scratch("tofu");
@@ -800,18 +693,15 @@ mod tests {
         // A pin for another host must not answer for this one.
         append_pin(&known_hosts, "other", "sha256:AAAA").unwrap();
 
-        let first = check_pin("spark", &known_hosts, key.cert.der()).unwrap();
-        let Pin::Stored(fingerprint) = first else {
-            panic!("first contact must store a pin, got {first:?}");
-        };
+        let fingerprint = check_pin("spark", &known_hosts, key.cert.der())
+            .unwrap()
+            .expect("first contact must store a pin");
+        assert_eq!(fingerprint, tls::fingerprint(key.cert.der()));
         assert_eq!(
             std::fs::read_to_string(&known_hosts).unwrap(),
             format!("other sha256:AAAA\nspark {fingerprint}\n")
         );
-        assert_eq!(
-            check_pin("spark", &known_hosts, key.cert.der()).unwrap(),
-            Pin::Matched
-        );
+        assert_eq!(check_pin("spark", &known_hosts, key.cert.der()).unwrap(), None);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -835,15 +725,6 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn fingerprint_is_the_known_hosts_form() {
-        let key = cert();
-        let printed = fingerprint(key.cert.der()).unwrap();
-        let expected = base64::engine::general_purpose::STANDARD
-            .encode(Sha256::digest(key.key_pair.public_key_der()));
-        assert_eq!(printed, format!("sha256:{expected}"));
     }
 
     #[test]
@@ -1103,7 +984,7 @@ mod tests {
 
         // First contact pinned the host key.
         let pinned = read_pin(&dir.join("known_hosts"), "spark").unwrap();
-        assert_eq!(pinned, Some(fingerprint(key.cert.der()).unwrap()));
+        assert_eq!(pinned, Some(tls::fingerprint(key.cert.der())));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
