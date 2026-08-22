@@ -13,7 +13,7 @@
 //!   `sun_path` is 104 bytes on darwin), always on. Filesystem
 //!   permissions are the auth boundary.
 //! - QUIC on `--listen-quic <addr>`, opt in. Self-signed cert with an
-//!   SPKI pin plus a bearer token (tls.rs) are the auth boundary.
+//!   certificate pin plus a bearer token (tls.rs) are the auth boundary.
 //!
 //! `muxd --upgrade` replaces a running daemon without killing a shell:
 //! the successor inherits the live PTY fds plus a screen snapshot per

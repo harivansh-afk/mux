@@ -250,9 +250,10 @@ handshake.</p>
 <tr><td>Channel crypto</td><td>TLS 1.3 inside QUIC (rustls): AEAD only, forward secrecy, no legacy
 versions to misconfigure</td><td>ssh transport layer</td></tr>
 <tr><td>Server identity</td><td>self-signed cert generated on first run (rcgen); client pins
-SHA-256 of the SPKI per host alias, trust-on-first-use, recorded in
-<code>~/.local/state/mux/known_hosts</code>; hard fail on mismatch. The daemon logs its SPKI hash at
-startup for out-of-band verification</td><td><code>known_hosts</code> fingerprint pinning</td></tr>
+SHA-256 of the certificate DER per host alias, trust-on-first-use, recorded in
+<code>~/.local/state/mux/known_hosts</code>; hard fail on mismatch. The cert and its key are
+generated and regenerated together, so the pin covers the key doing the channel
+crypto</td><td><code>known_hosts</code> fingerprint pinning</td></tr>
 <tr><td>Client authorization</td><td>256-bit random client token, generated 0600 at
 <code>~/.local/state/mux/token</code>, never copied anywhere; the daemon accepts any token whose
 SHA-256 digest is listed in its <code>--authorized-tokens</code> file (digests are not secrets -
@@ -267,8 +268,8 @@ same way: the client mints its identity, the host's config authorizes its finger
 user</td><td>sshd: root daemon, PAM, subsystems, forwarding, config drift</td></tr>
 </table>
 <p>What a network observer sees: opaque QUIC datagrams. What a MITM can do: nothing after first
-contact (the pin covers the key doing the channel crypto); on <i>first</i> contact, TOFU has the
-same window ssh has - verify the logged SPKI hash out-of-band if the first connection crosses
+contact; on <i>first</i> contact, TOFU has the same window ssh has - compare the pinned line
+against the host's own <code>cert.pem</code> out-of-band if the first connection crosses
 hostile ground. What a stolen client token yields: attach rights to the daemons that authorized its
 digest; rotate by deleting <code>~/.local/state/mux/token</code> and updating the digest in the
 flake. Deliberately
