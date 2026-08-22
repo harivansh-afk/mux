@@ -442,41 +442,36 @@ final class PaneView: NSView {
     /// Post a desktop notification for this pane (OSC 9 / OSC 777),
     /// ported from ghostty: delivered notifications are tracked so they
     /// clear when the pane gains focus, and notifications for a focused
-    /// pane expire after a few seconds.
+    /// pane expire after a few seconds. Authorization was asked for once,
+    /// at launch; an unauthorized app gets the refusal back as an error.
     func showUserNotification(title: String, body: String) {
-        let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
-            guard granted else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.subtitle = self.title
+        content.body = body
+        content.sound = .default
 
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.subtitle = self?.title ?? ""
-            content.body = body
-            content.sound = .default
-
-            let uuid = UUID().uuidString
-            let request = UNNotificationRequest(identifier: uuid, content: content, trigger: nil)
-            center.add(request) { error in
-                if let error {
-                    NSLog("error scheduling user notification: \(error)")
-                    return
-                }
-
-                DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
-                    notificationIdentifiers.insert(uuid)
-
-                    // If we're focused then remove the notification after
-                    // a few seconds; on focus gain they clear immediately.
-                    if focused {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                            self?.notificationIdentifiers.remove(uuid)
-                            UNUserNotificationCenter.current()
-                                .removeDeliveredNotifications(withIdentifiers: [uuid])
-                        }
-                    }
-                }
+        let uuid = UUID().uuidString
+        let request = UNNotificationRequest(identifier: uuid, content: content, trigger: nil)
+        let paneID = id
+        UNUserNotificationCenter.current().add(request) { [weak self] error in
+            if let error {
+                AppLog.log("notification pane=\(paneID.uuidString) failed: \(error)")
+                return
             }
+            DispatchQueue.main.async { self?.noteDelivered(uuid) }
+        }
+    }
+
+    /// Remember a delivered notification so focus can clear it. One for a
+    /// pane that already has focus expires by itself after a few seconds.
+    private func noteDelivered(_ uuid: String) {
+        notificationIdentifiers.insert(uuid)
+        guard focused else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.notificationIdentifiers.remove(uuid)
+            UNUserNotificationCenter.current()
+                .removeDeliveredNotifications(withIdentifiers: [uuid])
         }
     }
 

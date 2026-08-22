@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var runtime: GhosttyRuntime?
@@ -33,6 +34,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         ThemeManager.shared.start()
         prefixEngine.install()
+
+        // Ask once, here, rather than on every OSC 9 a pane fires.
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound]) { granted, error in
+                if let error {
+                    AppLog.log("notification authorization failed: \(error)")
+                } else if !granted {
+                    AppLog.log("notification authorization denied")
+                }
+            }
 
         if let snapshot = SnapshotStore.load(), !snapshot.windows.isEmpty {
             let panes = snapshot.windows.flatMap(\.sessions).flatMap { $0.panes.keys.map(\.uuidString) }
