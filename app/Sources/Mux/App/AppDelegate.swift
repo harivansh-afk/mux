@@ -77,16 +77,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
                 let known = Set(controller.sessions.flatMap(\.panes.keys))
-                let orphans = listings.compactMap { l -> (UUID, String?, String?)? in
+                var orphans: [UUID: PaneSnapshot] = [:]
+                for listing in listings {
                     // Only pane-shaped names: the pane UUID namespace is
                     // the app's, anything else is not ours to adopt.
-                    guard let id = UUID(uuidString: l.name),
-                          !l.exited, !l.attached, !known.contains(id)
-                    else { return nil }
-                    return (id, l.cwd, Self.recoveredTarget(host: host, command: l.command))
+                    guard let id = UUID(uuidString: listing.name),
+                          !listing.exited, !listing.attached, !known.contains(id)
+                    else { continue }
+                    orphans[id] = PaneSnapshot(
+                        cwd: listing.cwd,
+                        target: Self.recoveredTarget(host: host, command: listing.command)
+                    )
                 }
                 guard !orphans.isEmpty else { return }
-                AppLog.log("adopting \(orphans.count) orphaned pty(s) from \(host ?? "local"): \(orphans.map(\.0.uuidString).joined(separator: ","))")
+                AppLog.log("adopting \(orphans.count) orphaned pty(s) from \(host ?? "local"): \(orphans.keys.map(\.uuidString).joined(separator: ","))")
                 controller.addRecoverySession(orphans)
             }
         }
@@ -193,20 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingSave?.cancel()
         pendingSave = nil
         guard let controller else { return }
-        let sessions: [SessionSnapshot] = controller.sessions.compactMap { s in
-            guard let tree = s.tree else { return nil }
-            var paneMeta: [UUID: PaneSnapshot] = [:]
-            for (id, pane) in s.panes {
-                paneMeta[id] = PaneSnapshot(
-                    cwd: pane.pwd, target: pane.target,
-                    fontDelta: pane.fontDelta == 0 ? nil : pane.fontDelta
-                )
-            }
-            return SessionSnapshot(
-                tree: tree, panes: paneMeta,
-                focused: s.focusedID, zoomed: s.zoomedID
-            )
-        }
+        let sessions = controller.sessions.compactMap(\.snapshot)
         AppLog.log("save sessions=\(sessions.count) panes=\(sessions.map(\.panes.count).reduce(0, +))")
         SnapshotStore.save(AppSnapshot(
             frame: controller.window.frame.values,

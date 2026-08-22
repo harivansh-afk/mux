@@ -161,15 +161,12 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// process), or the machine the hosts window named - in which case
     /// there is no directory to inherit.
     func newSession(target: NewPaneTarget = .inherit) {
-        let source = activeSession?.focusedPane
-        let sameHost = target.inheritsDirectory(from: source)
+        let seed = target.seed(from: activeSession?.focusedPane)
         let session = Session(runtime: runtime, controller: self)
         sessions.append(session)
         activeSessionIndex = sessions.count - 1
         session.addInitialPane(
-            workingDirectory: sameHost ? source?.pwd : nil,
-            cwdFrom: sameHost ? source?.id : nil,
-            target: target.resolved(from: source)
+            workingDirectory: seed.cwd, cwdFrom: seed.cwdFrom, target: seed.target
         )
         layoutPanes()
         updateSessionIndicator()
@@ -180,21 +177,22 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// knew about (a lost or stale snapshot), split evenly. Appended,
     /// not selected: the session indicator shows it without yanking
     /// focus from whatever the user is doing.
-    func addRecoverySession(_ recovered: [(id: UUID, cwd: String?, target: String?)]) {
-        guard let first = recovered.first else { return }
-        var tree: SplitNode = .leaf(first.id)
-        var previous = first.id
-        var meta: [UUID: PaneSnapshot] = [:]
-        for item in recovered.dropFirst() {
-            tree = tree.inserting(item.id, at: previous, direction: .horizontal)
-            previous = item.id
-        }
-        for item in recovered {
-            meta[item.id] = PaneSnapshot(cwd: item.cwd, target: item.target)
+    func addRecoverySession(_ panes: [UUID: PaneSnapshot]) {
+        // Sorted so the same set of recovered ptys always lands in the
+        // same order; a dictionary's is per-run.
+        let ids = panes.keys.sorted { $0.uuidString < $1.uuidString }
+        guard let first = ids.first else { return }
+        var tree: SplitNode = .leaf(first)
+        var previous = first
+        for id in ids.dropFirst() {
+            tree = tree.inserting(id, at: previous, direction: .horizontal)
+            previous = id
         }
         let session = Session(runtime: runtime, controller: self)
         sessions.append(session)
-        session.restore(tree: tree, paneMeta: meta, focused: first.id, zoomed: nil)
+        session.restore(SessionSnapshot(
+            tree: tree, panes: panes, focused: first, zoomed: nil
+        ))
         layoutPanes()
         // Session.restore focused its own pane; give focus back to the
         // session the user is actually looking at.
@@ -282,10 +280,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         sessions = snapshots.map { _ in Session(runtime: runtime, controller: self) }
         activeSessionIndex = min(max(0, active), sessions.count - 1)
         for (index, snapshot) in snapshots.enumerated() {
-            sessions[index].restore(
-                tree: snapshot.tree, paneMeta: snapshot.panes,
-                focused: snapshot.focused, zoomed: snapshot.zoomed
-            )
+            sessions[index].restore(snapshot)
         }
         layoutPanes()
         updateSessionIndicator()
