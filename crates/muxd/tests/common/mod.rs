@@ -12,9 +12,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use mux_proto::peer::{self, OpenMode, OpenReply, OpenRequest};
+use mux_proto::frame;
 use mux_proto::frame::{OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
+use mux_proto::peer::{self, OpenMode, OpenReply, OpenRequest};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Long enough to be immune to a loaded box, short enough that a hang
 /// fails the run instead of stalling it.
@@ -45,31 +46,23 @@ pub fn request(token: Option<&str>, target: Option<&str>, mode: OpenMode) -> Ope
 }
 
 pub async fn write_request<W: AsyncWrite + Unpin>(w: &mut W, request: &OpenRequest) {
-    let bytes = peer::encode(request);
-    let len = u32::try_from(bytes.len()).expect("request length");
-    w.write_all(&len.to_le_bytes()).await.expect("write length");
-    w.write_all(&bytes).await.expect("write request");
+    frame::aio::write_message(w, &peer::encode(request))
+        .await
+        .expect("write request");
 }
 
 pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, lane: u8, payload: &[u8]) {
-    let len = u32::try_from(payload.len() + 1).expect("frame length");
-    w.write_all(&len.to_le_bytes()).await.expect("write length");
-    w.write_all(&[lane]).await.expect("write lane");
-    w.write_all(payload).await.expect("write payload");
+    frame::aio::write_lane(w, lane, payload)
+        .await
+        .expect("write frame");
 }
 
 /// One frame, or `None` when the peer closed at a frame boundary.
 pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Option<(u8, Vec<u8>)> {
-    let read = async {
-        let len = r.read_u32_le().await.ok()?;
-        let lane = r.read_u8().await.ok()?;
-        let mut payload = vec![0u8; (len - 1) as usize];
-        r.read_exact(&mut payload).await.ok()?;
-        Some((lane, payload))
-    };
-    tokio::time::timeout(PATIENCE, read)
+    tokio::time::timeout(PATIENCE, frame::aio::read_lane(r))
         .await
         .expect("frame timed out")
+        .expect("read frame")
 }
 
 pub async fn read_reply<R: AsyncRead + Unpin>(r: &mut R) -> OpenReply {
