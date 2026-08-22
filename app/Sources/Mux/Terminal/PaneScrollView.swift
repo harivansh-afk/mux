@@ -175,8 +175,9 @@ final class PaneScrollView: NSView {
         // the thumb stays visible on both light and dark themes. The
         // appearance tracks the surface's conditional theme state, which
         // the base config's `background` key does not carry.
-        let lightBackground = ThemeManager.shared.appearance == .light
-        scrollView.appearance = NSAppearance(named: lightBackground ? .aqua : .darkAqua)
+        scrollView.appearance = NSAppearance(
+            named: ThemeManager.shared.isDark ? .darkAqua : .aqua
+        )
         updateTrackingAreas()
     }
 
