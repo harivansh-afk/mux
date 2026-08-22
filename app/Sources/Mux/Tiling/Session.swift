@@ -308,28 +308,16 @@ final class Session {
     }
 
     func resizeFocused(_ direction: FocusDirection, step: Double = 0.03) {
-        guard let tree, let focusedID, let bounds = controller?.paneBounds else { return }
+        guard let tree, let focusedID else { return }
         let axis: SplitDirection = (direction == .left || direction == .right) ? .horizontal : .vertical
-        // Growing toward right/down grows whichever side the pane is on;
-        // express as a first-child delta by probing the layout result.
+        // adjustingRatio applies +delta under `first` and -delta under `second`,
+        // so a right/down delta grows the focused pane whichever side it is on.
         let delta: Double = (direction == .right || direction == .down) ? step : -step
-        let before = tree.layout(in: bounds)[focusedID]
-        var (adjusted, found) = tree.adjustingRatio(around: focusedID, axis: axis, delta: delta)
-        if found {
-            // If the focused pane shrank in the intended growth direction,
-            // flip the sign (it was the second child).
-            let after = adjusted.layout(in: bounds)[focusedID]
-            if let b = before, let a = after {
-                let grew = axis == .horizontal ? a.width >= b.width : a.height >= b.height
-                let wantedGrowth = (direction == .right || direction == .down)
-                if grew != wantedGrowth {
-                    (adjusted, _) = tree.adjustingRatio(around: focusedID, axis: axis, delta: -delta)
-                }
-            }
-            self.tree = adjusted
-            controller?.layoutPanes()
-            controller?.saveState()
-        }
+        let (adjusted, found) = tree.adjustingRatio(around: focusedID, axis: axis, delta: delta)
+        guard found else { return }
+        self.tree = adjusted
+        controller?.layoutPanes()
+        controller?.saveState()
     }
 
     // MARK: - Layout
