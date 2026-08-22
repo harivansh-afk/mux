@@ -26,12 +26,6 @@ enum NewPaneTarget {
 
 /// One session: a split tree of panes with its focus and zoom state.
 /// The unit the user switches between and the unit of layout persistence.
-///
-/// Sessions are pure client-owned layout. The daemon side (M2+) never
-/// learns they exist: a pane's terminal content is addressed per-pane,
-/// so one session can span machines. Window chrome stays in
-/// MuxWindowController; Session reaches it only through narrow hooks
-/// (attach, focus, layoutPanes, saveState, sessionDidEmpty).
 final class Session {
     private weak var controller: MuxWindowController?
     private let runtime: GhosttyRuntime
@@ -95,12 +89,7 @@ final class Session {
         focused: UUID?,
         zoomed: UUID?
     ) {
-        // Size each pane before its surface spawns the attach command, so
-        // the pty handshake carries the pane's real dimensions and the
-        // daemon replays the screen at the size it was left at. A zoomed
-        // pane was covering the whole container when the snapshot was
-        // taken; the covered panes keep their tree rects, exactly as they
-        // did pre-quit.
+        // Size each pane before its surface spawns, so the daemon replays the screen at the size it was left at.
         let bounds = controller?.paneBounds ?? .zero
         let rects = snapshotTree.layout(in: bounds)
         for id in snapshotTree.leaves {
@@ -133,11 +122,7 @@ final class Session {
         guard let source = pane ?? focusedPane else { return }
         guard let tree else { return }
         zoomedID = nil
-        // New panes inherit the source pane's target, and its working
-        // directory only when they stay on the same machine. The directory
-        // is resolved daemon-side from the source pane's live process
-        // (cwdFrom); pwd rides along only as the pane's label seed - it
-        // can be stale on a remote shell that never reports OSC 7.
+        // New panes inherit the source pane's target and, on the same host, its live working directory.
         let sameHost = target.inheritsDirectory(from: source)
         // Splits inherit the source pane's font zoom, matching ghostty's
         // window-inherit-font-size default.

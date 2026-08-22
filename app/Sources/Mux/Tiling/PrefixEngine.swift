@@ -4,28 +4,6 @@ import AppKit
 /// not a chord table. A local NSEvent monitor sees keys before any view,
 /// so prefix handling is independent of terminal focus.
 ///
-/// M1 bindings:
-///   ctrl+b        arm prefix mode
-///   prefix '      split right          prefix -      split down
-///   prefix arrows focus direction      prefix h/j/k/l focus left/down/up/right
-///   prefix z      zoom toggle          prefix x      close pane
-///   prefix c      new session          prefix 1..9   select session
-///   prefix n/p    next/prev session    prefix r      resize mode
-///   prefix t      hosts window         prefix space  canvas (f: alias)
-///   prefix ?      keybinds overlay     prefix ctrl+b send a literal ctrl+b
-///   prefix esc    cancel
-/// Held-ctrl aliasing: ctrl+<key> in prefix mode means <key> (the nvim-mux
-/// papercut fix: you rarely release ctrl between prefix and key).
-/// Resize mode: h/j/k/l nudge the enclosing split ratio, H/J/K/L move the
-/// pane through the layout, c breaks it into a new session, 1..9 moves it
-/// to that session, esc/enter/q exit. The pane being acted on wears the
-/// canvas selection stroke.
-/// Canvas mode: h/j/k/l walk every pane's live card grouped by session,
-/// enter or a click jumps to it.
-/// Hosts mode: j/k walk local, the hosts with their live probe status and
-/// the ix VMs; enter splits right into one and H/J/K/L split in a given
-/// direction, c opens a new session there, n creates a VM, t chooses the
-/// template new VMs are built from, y copies this client's identity digest.
 ///
 /// Mode changes drive the bottom mode bar on the active window.
 final class PrefixEngine {
