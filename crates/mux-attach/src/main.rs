@@ -51,11 +51,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use mux_proto::frame::{read_lane_frame, write_lane, FrameLimits};
-use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
 use mux_proto::frame::{
-    IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
+    self, write_lane, IN_LANE_CONTROL, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED,
+    OUT_LANE_OUTPUT,
 };
+use mux_proto::peer::{self, ClientControl, OpenMode, OpenReply, OpenRequest, Opened, ServerEvent};
 
 fn socket_path() -> std::path::PathBuf {
     std::env::var_os(peer::SOCKET_ENV).map_or_else(
@@ -279,10 +279,10 @@ fn run_control(target: Option<String>, mode: OpenMode, json: bool) -> Result<()>
             mode,
         },
     )?;
-    let Some(frame) = read_lane_frame(&mut stream, FrameLimits::default())? else {
+    let Some((_lane, payload)) = frame::read_lane(&mut stream)? else {
         bail!("daemon closed without a reply");
     };
-    let reply: OpenReply = peer::decode(&frame.payload)?;
+    let reply: OpenReply = peer::decode(&payload)?;
     match reply {
         Ok(Opened::Listed { ptys }) => {
             for p in ptys {
@@ -386,11 +386,11 @@ fn ask(alias: &str) -> Result<Listed> {
             mode: OpenMode::List,
         },
     )?;
-    let Some(frame) = read_lane_frame(&mut stream, FrameLimits::default())? else {
+    let Some((_lane, payload)) = frame::read_lane(&mut stream)? else {
         bail!("daemon closed without a reply");
     };
     let rtt = started.elapsed();
-    match peer::decode::<OpenReply>(&frame.payload)? {
+    match peer::decode::<OpenReply>(&payload)? {
         Ok(Opened::Listed { ptys }) => Ok(Listed {
             rtt,
             ptys: ptys.len(),
@@ -583,13 +583,13 @@ fn open_session(attach: &Attach, stream: UnixStream, size: (u16, u16)) -> Result
     )?;
 
     let mut reader = stream;
-    let Some(frame) = read_lane_frame(&mut reader, FrameLimits::default())? else {
+    let Some((lane, payload)) = frame::read_lane(&mut reader)? else {
         bail!("daemon closed during handshake");
     };
-    if frame.lane != OUT_LANE_OPENED {
-        bail!("unexpected first lane {}", frame.lane);
+    if lane != OUT_LANE_OPENED {
+        bail!("unexpected first lane {lane}");
     }
-    let reply: OpenReply = peer::decode(&frame.payload)?;
+    let reply: OpenReply = peer::decode(&payload)?;
     match reply {
         Ok(Opened::Attached { created, .. }) => Ok((reader, created)),
         Ok(other) => bail!("unexpected reply: {other:?}"),
@@ -678,16 +678,16 @@ fn pump(reader: &mut UnixStream) -> Relay {
     loop {
         // A read error mid-frame is a daemon that vanished, not a
         // protocol failure worth killing the pane over.
-        let Ok(Some(frame)) = read_lane_frame(reader, FrameLimits::default()) else {
+        let Ok(Some((lane, payload))) = frame::read_lane(reader) else {
             return Relay::DaemonGone;
         };
-        match frame.lane {
+        match lane {
             OUT_LANE_OUTPUT => {
-                if stdout.write_all(&frame.payload).is_err() || stdout.flush().is_err() {
+                if stdout.write_all(&payload).is_err() || stdout.flush().is_err() {
                     return Relay::Exited(0);
                 }
             }
-            OUT_LANE_EVENTS => match peer::decode::<ServerEvent>(&frame.payload) {
+            OUT_LANE_EVENTS => match peer::decode::<ServerEvent>(&payload) {
                 Ok(ServerEvent::Exit { code }) => return Relay::Exited(code),
                 Err(_) => {}
             },
@@ -697,10 +697,7 @@ fn pump(reader: &mut UnixStream) -> Relay {
 }
 
 fn write_request(stream: &mut UnixStream, request: &OpenRequest) -> Result<()> {
-    let bytes = peer::encode(request);
-    let len = u32::try_from(bytes.len()).context("request too large")?;
-    stream.write_all(&len.to_le_bytes())?;
-    stream.write_all(&bytes)?;
+    frame::write_message(stream, &peer::encode(request))?;
     stream.flush()?;
     Ok(())
 }

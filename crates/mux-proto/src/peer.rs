@@ -12,9 +12,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Handshake cap, matching ix's `MAX_LOCAL_REQUEST_BYTES`.
-pub const MAX_REQUEST_BYTES: u32 = 1024 * 1024;
-
 /// Bumped on every incompatible change to the handshake or lane values.
 /// The daemon replies with a readable error on mismatch instead of
 /// dropping the connection, so skew between a running daemon and a newer
