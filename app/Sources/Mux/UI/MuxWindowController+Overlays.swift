@@ -335,30 +335,37 @@ extension MuxWindowController {
         }
     }
 
-    /// The directory a pane shows must not depend on shell integration:
-    /// most shells never report OSC 7, and reattach replays screen
-    /// bytes, not escapes. The daemons resolve every pty's cwd from its
-    /// live process, so each canvas open asks them once (a discrete
-    /// user action, not a poll) and fills in whatever OSC 7 has not.
+    /// Ask every daemon holding a pane for its directories. Once per
+    /// canvas open: a discrete user action, not a poll.
     func refreshPaneDirectories() {
         var hosts: Set<String?> = []
-        var panesByID: [UUID: PaneView] = [:]
         for session in sessions {
-            for (id, pane) in session.panes {
-                // ix panes excluded: their local pty cwd is where `ix
-                // shell` started, not where the shell in the VM is.
-                guard IX.vm(of: pane.target) == nil else { continue }
+            for (_, pane) in session.panes where IX.vm(of: pane.target) == nil {
                 hosts.insert(pane.target)
-                panesByID[id] = pane
             }
         }
         for host in hosts {
-            Muxd.list(host: host) { listings in
-                for listing in listings ?? [] {
-                    guard let id = UUID(uuidString: listing.name),
-                          let pane = panesByID[id], pane.target == host,
-                          let cwd = listing.cwd
-                    else { continue }
+            Muxd.list(host: host) { [weak self] listings in
+                guard let self, let listings else { return }
+                applyCwds(listings, host: host)
+            }
+        }
+    }
+
+    /// One daemon's answer, applied to the panes it speaks for. The
+    /// directory a pane shows must not depend on shell integration: most
+    /// shells never report OSC 7, and reattach replays screen bytes, not
+    /// escapes. A listing names its pane by UUID and carries the cwd the
+    /// daemon read from the live process, which is the truth here; OSC 7
+    /// overrides it later when a shell does report. ix panes are
+    /// excluded: their local pty cwd is where `ix shell` started, not
+    /// where the shell in the VM is.
+    func applyCwds(_ listings: [Muxd.PtyListing], host: String?) {
+        for session in sessions {
+            for (id, pane) in session.panes
+                where pane.target == host && IX.vm(of: pane.target) == nil
+            {
+                if let cwd = listings.first(where: { $0.name == id.uuidString })?.cwd {
                     pane.pwd = cwd
                 }
             }
