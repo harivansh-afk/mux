@@ -60,8 +60,7 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
     /// events over it scroll the previewed pane's real scrollback, but
     /// that routing lives in the scroll monitor below, not in the view:
     /// responsive scrolling would never deliver the event to it.
-    private let stage = FlippedView()
-    private let stageMirror = CALayer()
+    private let stage = MirrorHostView(radius: 28, offset: 14, opacity: 0.55)
     private let stageTitle = NSTextField(labelWithString: "")
     private let stageMeta = NSTextField(labelWithString: "")
     private let wheel = FlippedView()
@@ -86,22 +85,10 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         scrim.onClick = { [weak self] in self?.onCancel?() }
         addSubview(scrim)
 
-        stage.wantsLayer = true
-        // Square hairline, like every other piece of mux chrome: the
-        // border sits exactly on the rectangular terminal content, no
-        // rounded corners clipping cells or fuzzing the edge. Width is
-        // one device pixel, set in render() where the backing scale is
-        // known.
-        // Depth is what separates the stage from the wall behind it:
-        // one wide soft shadow, path-backed so it costs a blit, not a
-        // mask pass.
-        stage.layer?.shadowColor = NSColor.black.cgColor
-        stage.layer?.shadowOpacity = 0.55
-        stage.layer?.shadowRadius = 28
-        stage.layer?.shadowOffset = CGSize(width: 0, height: 14)
-        stageMirror.contentsGravity = .resizeAspect
-        stageMirror.masksToBounds = true
-        stage.layer?.addSublayer(stageMirror)
+        // A click on the stage jumps to the previewed pane. Wheel events
+        // over it scroll that pane for real, but that routing lives in
+        // the scroll monitor below: responsive scrolling would never
+        // deliver the event to this view.
         stage.onClick = { [weak self] in
             guard let self, let selection else { return }
             onJump?(selection)
@@ -275,9 +262,9 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for item in items {
-            item.mirror.contents = item.entry.pane?.layer?.contents
+            item.thumb.mirror.contents = item.entry.pane?.layer?.contents
         }
-        stageMirror.contents = selection?.pane?.layer?.contents
+        stage.mirror.contents = selection?.pane?.layer?.contents
         CATransaction.commit()
         tick += 1
         if tick % 15 == 0 {
@@ -363,24 +350,17 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         let labelBlock = (Chrome.fontSize * 2.7).rounded()
         let areaH = max(1, bounds.height - Self.bottomReserve - areaY - Self.margin - labelBlock)
 
-        let size = pane.bounds.size
-        let aspect = size.width > 1 && size.height > 1 ? size.width / size.height : 16.0 / 9.0
         var w = areaW
-        var h = (w / aspect).rounded()
+        var h = (w / pane.aspect).rounded()
         if h > areaH {
             h = areaH
-            w = (h * aspect).rounded()
+            w = (h * pane.aspect).rounded()
         }
         stage.frame = NSRect(
             x: (areaX + (areaW - w) / 2).rounded(),
             y: (areaY + (areaH - h) / 2).rounded(),
             width: w, height: h
         )
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        stageMirror.frame = stage.bounds
-        stage.layer?.shadowPath = CGPath(rect: stage.bounds, transform: nil)
-        CATransaction.commit()
 
         stageTitle.sizeToFit()
         stageMeta.sizeToFit()
@@ -414,6 +394,10 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         scrim.layer?.backgroundColor = NSColor.black
             .withAlphaComponent(dark ? 0.95 : 0.72).cgColor
         stage.layer?.backgroundColor = palette.panelBg.cgColor
+        // Square hairline, like every other piece of mux chrome: the
+        // border sits exactly on the rectangular terminal content, no
+        // rounded corners clipping cells or fuzzing the edge, one device
+        // pixel wide.
         stage.layer?.borderColor = palette.accent.cgColor
         stage.layer?.borderWidth = 1 / (window?.backingScaleFactor ?? 2)
         renderSelection()
@@ -494,16 +478,13 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
 /// its title underneath in the product voice.
 private final class WheelItemView: FlippedView {
     let entry: CanvasOverlayView.Entry
-    let mirror = CALayer()
+    let thumb = MirrorHostView(radius: 10, offset: 5, opacity: 0.4)
 
-    private let thumb = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
 
     /// The pane's real frame ratio; the card never stretches it.
     private var aspect: CGFloat {
-        let size = entry.pane?.bounds.size ?? .zero
-        guard size.width > 1, size.height > 1 else { return 16.0 / 9.0 }
-        return size.width / size.height
+        entry.pane?.aspect ?? 16.0 / 9.0
     }
 
     private static let labelHeight = (Chrome.fontSize * 1.15).rounded()
@@ -511,14 +492,6 @@ private final class WheelItemView: FlippedView {
     init(entry: CanvasOverlayView.Entry) {
         self.entry = entry
         super.init(frame: .zero)
-        thumb.wantsLayer = true
-        thumb.layer?.shadowColor = NSColor.black.cgColor
-        thumb.layer?.shadowOpacity = 0.4
-        thumb.layer?.shadowRadius = 10
-        thumb.layer?.shadowOffset = CGSize(width: 0, height: 5)
-        mirror.contentsGravity = .resizeAspect
-        mirror.masksToBounds = true
-        thumb.layer?.addSublayer(mirror)
         addSubview(thumb)
         titleLabel.lineBreakMode = .byTruncatingTail
         addSubview(titleLabel)
@@ -546,11 +519,6 @@ private final class WheelItemView: FlippedView {
         titleLabel.frame = NSRect(
             x: 1, y: thumbHeight + 4, width: bounds.width - 2, height: Self.labelHeight
         )
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        mirror.frame = thumb.bounds
-        thumb.layer?.shadowPath = CGPath(rect: thumb.bounds, transform: nil)
-        CATransaction.commit()
     }
 
     func render(palette: Palette, selected: Bool, cameFrom: Bool) {
@@ -586,3 +554,39 @@ private final class WheelItemView: FlippedView {
         needsLayout = true
     }
 }
+
+/// A pane's framebuffer, mirrored: ghostty publishes each frame as an
+/// IOSurface in the pane layer's `contents` and `mirror` shows the same
+/// object - zero copy, GPU-scaled, and the pane's own frame is never
+/// touched. Depth is what separates it from the wall behind it: one soft
+/// shadow, path-backed so it costs a blit, not a mask pass.
+private final class MirrorHostView: FlippedView {
+    let mirror = CALayer()
+
+    init(radius: CGFloat, offset: CGFloat, opacity: Float) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = opacity
+        layer?.shadowRadius = radius
+        layer?.shadowOffset = CGSize(width: 0, height: offset)
+        mirror.contentsGravity = .resizeAspect
+        mirror.masksToBounds = true
+        layer?.addSublayer(mirror)
+    }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("not supported")
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        mirror.frame = bounds
+        layer?.shadowPath = CGPath(rect: bounds, transform: nil)
+        CATransaction.commit()
+    }
+}
+
