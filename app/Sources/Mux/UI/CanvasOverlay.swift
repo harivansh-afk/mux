@@ -43,9 +43,6 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
     var onJump: ((Entry) -> Void)?
     /// A click on the scrim leaves the mode, like esc.
     var onCancel: (() -> Void)?
-    /// Fires whenever the selection lands somewhere (reload, j/k, click):
-    /// the session indicator follows it live, so the numbers tell you
-    /// which session you are scrolling through as you scroll.
     var onSelectionChange: ((Entry?) -> Void)?
 
     private let scrim = FlippedView()
@@ -160,8 +157,6 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
     private var scrollMonitor: Any?
     private var tick = 0
 
-    /// Mirrors and the scroll monitor run exactly while the overlay is
-    /// on screen.
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
         mirrorTimer?.invalidate()
@@ -178,29 +173,15 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         RunLoop.main.add(timer, forMode: .common)
         mirrorTimer = timer
 
-        // Wheel events over the stage scroll the previewed pane for
-        // real. This is a local monitor, not a view override, because
-        // every pane sits in an NSScrollView and responsive scrolling
-        // latches wheel gestures onto the scroll view under the cursor
-        // at the window level - the overlay is never hit-tested for
-        // them. The monitor claims the event first; anything not over
-        // the stage is swallowed, so the workspace under the scrim
-        // never moves.
+        // Delivery is a local .scrollWheel NSEvent monitor, not a view
+        // override; see CLAUDE.md's stage-scroll invariants.
         scrollMonitor = NSEvent.addLocalMonitorForEvents(
             matching: .scrollWheel
         ) { [weak self] event in
             guard let self, event.window === window else { return event }
             if let pane = selection?.pane, !stage.isHidden,
                stage.frame.contains(convert(event.locationInWindow, from: nil)) {
-                // Hovering the stage IS hovering the pane. libghostty
-                // gives a wheel event meaning only at the surface's
-                // stored mouse position (mouse-reporting programs
-                // receive the scroll AT it; it parks at -1/-1 =
-                // outside), so place the mouse first - the same
-                // mouseMoved-then-scrollWheel pair a real hover
-                // produces. The stage box is the pane's exact aspect,
-                // so the point maps by pure proportion; repeated
-                // identical positions are deduped surface-side.
+                // Position before scroll; see CLAUDE.md's stage-scroll invariants.
                 if hoverPane !== pane {
                     hoverPane?.clearMousePos()
                     hoverPane = pane
@@ -220,10 +201,6 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         refreshMirrors()
     }
 
-    /// The pane last given a synthetic hover by the stage. When the
-    /// preview moves off it (selection change, canvas close), it gets
-    /// the same -1/-1 "left the viewport" report mouseExited sends, so
-    /// no pane keeps a phantom mouse.
     private weak var hoverPane: PaneView?
 
     private func clearHover() {
@@ -231,10 +208,6 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         hoverPane = nil
     }
 
-    /// One pointer read and one assignment per mirror: the pane's layer
-    /// holds the IOSurface of its latest frame, the mirrors show the
-    /// same object. Titles drift slower, so they refresh on a coarser
-    /// beat.
     private func refreshMirrors() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -305,9 +278,6 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         layer.add(spring, forKey: "wheel")
     }
 
-    /// The stage box takes the pane's true frame aspect and fits it into
-    /// the space left of the wheel - scaled uniformly, never stretched,
-    /// never resizing anything.
     private func layoutStage() {
         guard let pane = selection?.pane else {
             stage.isHidden = true
@@ -322,8 +292,6 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         let areaX = Self.margin
         let areaY = Self.margin
         let areaW = max(1, wheel.frame.minX - Self.gap - areaX)
-        // Two stacked descriptor lines under the stage: title, then
-        // directory + host.
         let labelBlock = (Chrome.fontSize * 2.7).rounded()
         let areaH = max(1, bounds.height - Self.bottomReserve - areaY - Self.margin - labelBlock)
 
@@ -364,9 +332,6 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
 
     @objc private func render() {
         let palette = ThemeManager.shared.palette
-        // The scrim drops the workspace well back - Mission Control
-        // dark, not a light mist - so the live mirrors carry all the
-        // brightness in the room.
         let dark = !palette.panelBg.isLightColor
         scrim.layer?.backgroundColor = NSColor.black
             .withAlphaComponent(dark ? 0.95 : 0.72).cgColor
@@ -381,8 +346,6 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         needsLayout = true
     }
 
-    /// Everything that follows the selection or the live panes: card
-    /// labels and borders, distance fades, the stage labels.
     private func renderSelection() {
         let palette = ThemeManager.shared.palette
         for (i, item) in items.enumerated() {
@@ -395,16 +358,6 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         }
 
         guard let entry = selection, let pane = entry.pane else { return }
-        // The stage descriptor, two stacked lines and nothing else:
-        //   <state glyph> <agent topic>
-        //   <directory> [<host>]
-        // No session number - the session indicator highlights the
-        // selection's session live instead.
-        // The first line exists only when the pane announces an agent
-        // (the state glyph is the proof); a bare shell gets no first
-        // line at all, whatever it titled itself - shells love titling
-        // themselves after their directory, which the second line
-        // already says.
         let title = NSMutableAttributedString()
         if let glyph = Self.stateGlyph(for: pane, palette: palette, font: Chrome.uiTitleFont) {
             title.append(glyph)
@@ -433,9 +386,6 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         needsLayout = true
     }
 
-    /// The agent-state indicator shared by the stage and the cards.
-    /// Exactly two states: ◐ working (busy yellow), ✓ done (ok green).
-    /// Nothing for panes that announce no state.
     static func stateGlyph(
         for pane: PaneView, palette: Palette, font: NSFont
     ) -> NSAttributedString? {
@@ -506,9 +456,6 @@ private final class WheelItemView: FlippedView {
                 attributes: [.font: Chrome.metaFont, .foregroundColor: palette.accent]
             ))
         }
-        // Cards carry only the state glyph and the host - topics and
-        // directories live on the stage, where there is room to read
-        // them.
         if let pane = entry.pane {
             if let glyph = CanvasOverlayView.stateGlyph(
                 for: pane, palette: palette, font: Chrome.metaFont
