@@ -1,9 +1,11 @@
 import AppKit
 
 /// The keybinds overlay (prefix ?): the sections laid out in columns side
-/// by side so everything fits at once - no scrolling, no footer. Section
-/// headings are bare words; the key that enters a mode is that section's
-/// first row. PrefixEngine drives dismissal; the overlay never takes focus.
+/// by side when the window is wide enough, stacked when it is not, and
+/// the body scrolls when the window is shorter than the list; no footer.
+/// Section headings are bare words; the key that enters a mode is that
+/// section's first row. PrefixEngine drives dismissal; the overlay never
+/// takes focus.
 final class HelpOverlayView: PanelView {
     private struct Section {
         let title: String
@@ -76,6 +78,12 @@ final class HelpOverlayView: PanelView {
 
     /// One multiline label per column of sections.
     private let columnLabels: [NSTextField]
+    /// The body scrolls when the window is shorter than the list.
+    private let scroll = NSScrollView()
+    private let document = FlippedView()
+    /// Columns sit side by side when the window has the width, else one
+    /// under the other. Decided in `desiredSize`, read by layout.
+    private var stacked = false
 
     init() {
         columnLabels = Self.columns.map { _ in
@@ -86,28 +94,56 @@ final class HelpOverlayView: PanelView {
             return f
         }
         super.init(title: "keybinds", badge: " esc close ")
-        columnLabels.forEach(addSubview)
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        scroll.documentView = document
+        columnLabels.forEach(document.addSubview)
+        addSubview(scroll)
     }
 
-    override var bodySize: NSSize {
+    private var contentSize: NSSize {
         let sizes = columnLabels.map(\.fittingSize)
+        let gap = Self.columnGap * CGFloat(max(0, sizes.count - 1))
+        return stacked
+            ? NSSize(width: sizes.map(\.width).max() ?? 0, height: sizes.map(\.height).reduce(0, +) + gap)
+            : NSSize(width: sizes.map(\.width).reduce(0, +) + gap, height: sizes.map(\.height).max() ?? 0)
+    }
+
+    /// Never wider or taller than the window, less a margin: columns stack
+    /// before the right edge is lost, and the body scrolls before the
+    /// bottom is.
+    override func desiredSize(in bounds: NSRect) -> NSSize {
+        let room = NSSize(width: bounds.width - 48, height: bounds.height - 48)
+        // Measure side by side first; stack only when that does not fit.
+        stacked = false
+        stacked = Self.inset * 2 + contentSize.width > room.width
+        let content = contentSize
         return NSSize(
-            width: sizes.map(\.width).reduce(0, +)
-                + Self.columnGap * CGFloat(max(0, sizes.count - 1)),
-            height: sizes.map(\.height).max() ?? 0
+            width: min(Self.inset * 2 + content.width, room.width),
+            height: min(Self.inset * 2 + Chrome.rowHeight + content.height, room.height)
         )
     }
 
-    /// Columns fill the band below the title row, top-aligned.
+    /// The columns fill the band below the title row, top-aligned, inside
+    /// the scroll view.
     override func layoutBody(in rect: NSRect) {
-        var x = rect.minX
+        scroll.frame = rect
+        let content = contentSize
+        document.frame = NSRect(
+            x: 0, y: 0,
+            width: max(rect.width, content.width), height: max(rect.height, content.height)
+        )
+        var origin = NSPoint.zero
         for label in columnLabels {
             let size = label.fittingSize
-            label.frame = NSRect(
-                x: x, y: rect.maxY - size.height,
-                width: size.width, height: size.height
-            )
-            x += size.width + Self.columnGap
+            label.frame = NSRect(origin: origin, size: size)
+            if stacked {
+                origin.y += size.height + Self.columnGap
+            } else {
+                origin.x += size.width + Self.columnGap
+            }
         }
     }
 
