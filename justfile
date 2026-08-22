@@ -12,17 +12,14 @@ test:
 check:
     cargo clippy --workspace --all-targets
 
-# Attach, SIGKILL the client, reattach, replay: runs against a throwaway
-# HOME and a private socket, never the daemon you are living in.
+# Real daemon, real pty, real binaries: attach/kill/reattach/replay, the
+# self-upgrade handoff, and the QUIC broker. Each runs against a
+# throwaway HOME and a private socket, never the daemon you are living in.
 e2e:
     cargo build -p muxd -p mux-attach
     python3 scripts/test-muxd-e2e.py
-
-# `muxd --upgrade` adopts a live pty from the running daemon: same
-# isolation as `e2e`, same promise about your own daemon.
-upgrade-test:
-    cargo build -p muxd -p mux-attach
     python3 scripts/test-muxd-upgrade.py
+    python3 scripts/test-muxd-quic-e2e.py
 
 # Everything CI gates on (Swift steps need the toolchain; see .forgejo/workflows/ci.yml)
 lint: check
@@ -59,8 +56,3 @@ ghosttykit:
 # Build the app (run on the Mac)
 app:
     ./scripts/make-app.sh
-
-# Two-daemon QUIC broker e2e (hermetic, loopback)
-quic-e2e:
-    cargo build -p muxd -p mux-attach
-    python3 scripts/test-muxd-quic-e2e.py
