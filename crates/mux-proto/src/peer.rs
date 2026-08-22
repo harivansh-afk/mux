@@ -28,6 +28,14 @@ pub const PROTOCOL_VERSION: u32 = 5;
 pub const ALPN: &[u8] = b"muxd/1";
 pub const DEFAULT_QUIC_PORT: u16 = 4433;
 
+/// Grid a client asks for when it has no tty to measure.
+pub const DEFAULT_COLS: u16 = 80;
+pub const DEFAULT_ROWS: u16 = 24;
+
+/// Environment override of [`socket_path`], read by the daemon and by
+/// every client.
+pub const SOCKET_ENV: &str = "MUXD_SOCKET";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenRequest {
     /// Must be `PROTOCOL_VERSION`; first field, so even a differently

@@ -198,7 +198,7 @@ impl Manager {
     /// a reattaching client repaints exactly what it had.
     pub fn adopt(
         &self,
-        pty: mux_proto::migrate::MigratePty,
+        pty: crate::migrate::MigratePty,
         master: std::os::fd::OwnedFd,
     ) -> Result<()> {
         if self.get(&pty.name).is_some() {

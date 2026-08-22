@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use mux_proto::peer::{self, OpenMode, OpenReply, OpenRequest, Opened};
-use mux_proto::shell::OUT_LANE_OPENED;
+use mux_proto::frame::OUT_LANE_OPENED;
 use muxd::manager::Manager;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::UnixStream;

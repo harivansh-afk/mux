@@ -22,9 +22,8 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
-use mux_proto::paths;
 use mux_proto::peer::{self, OpenReply, OpenRequest};
-use mux_proto::shell::OUT_LANE_OPENED;
+use mux_proto::frame::OUT_LANE_OPENED;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -32,7 +31,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
-use crate::tls;
+use crate::{paths, tls};
 
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);

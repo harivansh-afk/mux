@@ -1,6 +1,6 @@
-//! Filesystem contract for the daemon and clients. Code-as-spec: every
-//! path and file format shared between components is defined here, so
-//! the pieces can be built independently.
+//! Every filesystem location the daemon and its clients share, defined
+//! once. Code-as-spec: a component can be built against this module
+//! alone.
 //!
 //! File formats:
 //! - `hosts.json` (client, read by muxd's broker AND by Mux.app):
@@ -26,6 +26,8 @@
 //!   file can be world-readable and live in a nix store.
 
 use std::path::PathBuf;
+
+use mux_proto::peer;
 
 fn home() -> PathBuf {
     // Panicking here is worse than degrading: this is called lazily from
@@ -96,4 +98,31 @@ pub fn daemon_pid() -> PathBuf {
 /// session that vanished cannot be diagnosed after the fact.
 pub fn daemon_log() -> PathBuf {
     daemon_state_dir().join("muxd.log")
+}
+
+/// The daemon's control socket. [`peer::SOCKET_ENV`] overrides the
+/// per-uid default for the daemon and for every client that reads it, so
+/// a test daemon and its clients cannot end up on different sockets.
+#[must_use]
+pub fn control_socket() -> PathBuf {
+    std::env::var_os(peer::SOCKET_ENV).map_or_else(
+        || peer::socket_path(nix::unistd::getuid().as_raw()),
+        PathBuf::from,
+    )
+}
+
+/// Self-upgrade rendezvous socket, a short /tmp path (`sun_path` is 104
+/// bytes on darwin). `MUXD_MIGRATE_SOCKET` overrides the per-uid default
+/// so a test daemon can never steal the user's ptys.
+#[must_use]
+pub fn migrate_socket() -> PathBuf {
+    std::env::var_os("MUXD_MIGRATE_SOCKET").map_or_else(
+        || {
+            PathBuf::from(format!(
+                "/tmp/muxd-{}-migrate.sock",
+                nix::unistd::getuid().as_raw()
+            ))
+        },
+        PathBuf::from,
+    )
 }

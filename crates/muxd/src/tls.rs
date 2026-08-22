@@ -1,5 +1,5 @@
 //! Bearer tokens and the daemon's QUIC identity: load-or-generate, on
-//! disk at the locations `mux_proto::paths` documents.
+//! disk at the locations `crate::paths` documents.
 //!
 //! There is no CA. The certificate is self-signed and clients pin the
 //! SHA-256 of its `SubjectPublicKeyInfo` (ssh-style trust-on-first-use;
@@ -27,7 +27,8 @@ use rand::RngCore as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use sha2::{Digest as _, Sha256};
 
-use mux_proto::paths;
+use crate::paths;
+
 
 /// Every token digest a listener admits: its own, plus whatever
 /// `--authorized-tokens` enrolled. Shared by every connection handler,
