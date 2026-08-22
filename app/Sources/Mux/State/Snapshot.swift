@@ -1,4 +1,5 @@
 import Foundation
+import Tiling
 
 // Layout-and-identity persistence: structural facts are
 // always saved (cheap, versioned JSON); screen contents are the daemon's

@@ -1,4 +1,5 @@
 import AppKit
+import Tiling
 
 /// The multiplexer's interaction model: the prefix is a mode among modes,
 /// not a chord table. A local NSEvent monitor sees keys before any view,

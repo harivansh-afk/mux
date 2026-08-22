@@ -1,4 +1,5 @@
 import AppKit
+import Tiling
 
 /// A chrome view the window puts up and takes down: the mode bar, the
 /// session indicator, the keybinds overlay, the hosts window, the canvas.

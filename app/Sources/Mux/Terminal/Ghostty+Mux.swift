@@ -1,4 +1,5 @@
 import AppKit
+import Tiling
 import GhosttyKit
 
 /// libghostty to mux: key events, split directions, focus directions.

@@ -1,4 +1,5 @@
 import AppKit
+import Tiling
 
 /// One window = window chrome (borderless NSWindow, mode bar, keybinds
 /// overlay, target picker, theming) plus an ordered list of sessions.

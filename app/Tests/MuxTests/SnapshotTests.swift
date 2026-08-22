@@ -1,3 +1,4 @@
+import Tiling
 import XCTest
 
 @testable import Mux

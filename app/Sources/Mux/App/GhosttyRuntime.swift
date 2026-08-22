@@ -1,4 +1,5 @@
 import AppKit
+import Tiling
 import GhosttyKit
 
 /// Owns the single ghostty_app_t and the runtime callbacks. Adapted from

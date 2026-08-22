@@ -1,4 +1,5 @@
 import AppKit
+import Tiling
 
 /// Where a pane being created should live: inherited from the pane it is
 /// split from, or chosen explicitly (nil = the local daemon).
