@@ -206,9 +206,7 @@ extension MuxWindowController {
             self?.canvasSessionHighlight = entry?.sessionIndex
             self?.updateSessionIndicator()
         }
-        canvasOverlay.reload(
-            groups: canvasGroups(), selected: activeSession?.focusedPane?.id
-        )
+        canvasOverlay.reload(entries: canvasEntries(), selected: activeSession?.focusedPane?.id)
         canvasOverlay.onJump = { [weak self] entry in
             self?.commitCanvas(entry)
             App.delegate.prefixEngine.endCanvas()
@@ -278,18 +276,16 @@ extension MuxWindowController {
     }
 
     /// Wheel rows: sessions in order, panes in tree (visual) order.
-    private func canvasGroups() -> [CanvasOverlayView.Group] {
-        sessions.enumerated().map { sessionIndex, session in
-            var entries: [CanvasOverlayView.Entry] = []
-            for paneID in session.tree?.leaves ?? [] {
-                guard let pane = session.panes[paneID] else { continue }
-                entries.append(CanvasOverlayView.Entry(
+    private func canvasEntries() -> [CanvasOverlayView.Entry] {
+        sessions.enumerated().flatMap { sessionIndex, session in
+            (session.tree?.leaves ?? []).compactMap { paneID in
+                guard let pane = session.panes[paneID] else { return nil }
+                return CanvasOverlayView.Entry(
                     sessionIndex: sessionIndex,
                     paneID: paneID,
                     pane: pane
-                ))
+                )
             }
-            return CanvasOverlayView.Group(entries: entries)
         }
     }
 
