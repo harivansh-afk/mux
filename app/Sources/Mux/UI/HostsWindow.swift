@@ -69,8 +69,16 @@ final class HostsWindowView: PanelView {
     /// Minimum blank columns between a row's name and its status.
     private static let gap = 2
     /// One column of the chrome face, and the box `columns` of them make.
+    /// A text field keeps a few points of its own on each side of the
+    /// text; without them the last column is a fraction short and a row
+    /// whose last character is a letter wraps onto a second line.
     private static let boxWidth = (" " as NSString)
-        .size(withAttributes: [.font: font]).width * CGFloat(columns) + inset * 2
+        .size(withAttributes: [.font: font]).width * CGFloat(columns) + inset * 2 + cellInset
+    private static let cellInset: CGFloat = {
+        let cell = NSTextField(labelWithString: "").cell ?? NSTextFieldCell()
+        let bounds = NSRect(x: 0, y: 0, width: 100, height: rowHeight)
+        return bounds.width - cell.titleRect(forBounds: bounds).width
+    }()
 
     /// Every line of the list is exactly one row high, so the selection bar
     /// lands on the highlighted one, with the glyphs lifted from the foot of
@@ -79,6 +87,9 @@ final class HostsWindowView: PanelView {
         let style = NSMutableParagraphStyle()
         style.minimumLineHeight = rowHeight
         style.maximumLineHeight = rowHeight
+        // A row is one line whatever its width: the selection band and the
+        // contrast colouring address line N as row N.
+        style.lineBreakMode = .byClipping
         return style
     }()
 
