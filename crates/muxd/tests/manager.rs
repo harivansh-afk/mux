@@ -12,9 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use mux_proto::frame::{
-    self, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT,
-};
+use mux_proto::frame::{self, IN_LANE_INPUT, OUT_LANE_EVENTS, OUT_LANE_OPENED, OUT_LANE_OUTPUT};
 use mux_proto::peer::{self, OpenMode, OpenReply, OpenRequest, Opened};
 use muxd::manager::{ClientMsg, Manager, PtySession};
 use tokio::io::AsyncReadExt as _;

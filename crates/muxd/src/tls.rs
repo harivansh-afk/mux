@@ -29,7 +29,6 @@ use sha2::{Digest as _, Sha256};
 
 use crate::paths;
 
-
 /// Every token digest a listener admits: its own, plus whatever
 /// `--authorized-tokens` enrolled. Shared by every connection handler,
 /// hence the `Arc`.

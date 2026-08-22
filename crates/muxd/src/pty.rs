@@ -199,9 +199,7 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
             // daemon; leaking them makes every pane shell look like a
             // nested agent session (e.g. claude disables transcript
             // saving under CLAUDE_CODE_CHILD_SESSION).
-            Some(k) => {
-                !matches!(k, "TERM" | "COLORTERM" | "AI_AGENT") && !k.starts_with("CLAUDE")
-            }
+            Some(k) => !matches!(k, "TERM" | "COLORTERM" | "AI_AGENT") && !k.starts_with("CLAUDE"),
             None => true,
         })
         .filter_map(|(k, v)| {
