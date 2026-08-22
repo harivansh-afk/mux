@@ -108,12 +108,12 @@ async fn a_wedged_client_cannot_hold_the_pty_name_hostage() {
     drop(attached);
 }
 
-/// The contract `Manager::install` enforces under one guard, and the
-/// reason it exists: `adopt` used to check the name with `get` and then
-/// insert under a separate lock, so a concurrent open of the same name
-/// replaced the map entry instead of being refused. The orphaned session
-/// keeps its read loop and its client, and nothing can reach it to kill
-/// it. `adopt` also skipped `MAX_PTYS` entirely.
+/// The contract `Manager::insert_locked` enforces, and the reason it
+/// exists: `adopt` used to check the name with `get` and then insert
+/// under a separate lock, so a concurrent open of the same name replaced
+/// the map entry instead of being refused. The orphaned session keeps
+/// its read loop and its client, and nothing can reach it to kill it.
+/// `adopt` also skipped `MAX_PTYS` entirely.
 #[tokio::test]
 async fn adopting_a_taken_name_is_refused_and_the_original_keeps_its_client() {
     let manager = Manager::default();

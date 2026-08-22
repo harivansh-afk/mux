@@ -140,17 +140,18 @@ impl Manager {
         infos
     }
 
-    /// The single insertion path. One guard across lookup, capacity
-    /// check and insert: two racing installs of the same name must not
-    /// both land (the loser would be evicted from the map and leak a
-    /// process that kill can no longer reach), nor push the map past the
-    /// cap.
+    /// Build the session and put it in the table. Takes the guard the
+    /// caller is already holding, never one of its own: one guard must
+    /// span lookup, capacity check, spawn and insert, or two racing
+    /// opens for the same name each spawn a shell and the loser is
+    /// evicted from the map, leaking a process that `kill` can no longer
+    /// reach. The same guard is what keeps the map inside `MAX_PTYS`.
     ///
     /// # Errors
     ///
     /// The name is taken or the pty limit is reached.
-    fn install(
-        &self,
+    fn insert_locked(
+        ptys: &mut HashMap<String, Arc<PtySession>>,
         name: &str,
         command: Vec<String>,
         terminal: ghostty_vt::Terminal,
@@ -158,7 +159,6 @@ impl Manager {
         child: nix::unistd::Pid,
         adopted: bool,
     ) -> Result<Arc<PtySession>> {
-        let mut ptys = self.ptys.lock();
         if ptys.contains_key(name) {
             bail!("pty {name} already exists");
         }
@@ -177,11 +177,6 @@ impl Manager {
             exit_code: AtomicI32::new(0),
         });
         ptys.insert(name.to_string(), session.clone());
-        drop(ptys);
-
-        tokio::spawn(read_loop(self.clone(), session.clone()));
-
-        tracing::info!(name, adopted, command = ?session.command, "pty installed");
         Ok(session)
     }
 
@@ -197,9 +192,16 @@ impl Manager {
         cols: u16,
         rows: u16,
     ) -> Result<(Arc<PtySession>, bool)> {
-        if let Some(existing) = self.get(name) {
-            return Ok((existing, false));
+        let mut ptys = self.ptys.lock();
+        if let Some(existing) = ptys.get(name) {
+            return Ok((existing.clone(), false));
         }
+        // Before the fork, not only in insert_locked: a full table must
+        // not cost a shell that is spawned and immediately hung up.
+        if ptys.len() >= MAX_PTYS {
+            bail!("pty limit reached ({MAX_PTYS})");
+        }
+
         let pty = pty::spawn(&pty::Spawn {
             command,
             cwd,
@@ -209,7 +211,8 @@ impl Manager {
         })
         .context("spawn pty")?;
         let terminal = ghostty_vt::Terminal::new(rows, cols).context("terminal alloc")?;
-        let session = self.install(
+        let session = Self::insert_locked(
+            &mut ptys,
             name,
             command.to_vec(),
             terminal,
@@ -217,6 +220,11 @@ impl Manager {
             pty.child,
             false,
         )?;
+        drop(ptys);
+
+        tokio::spawn(read_loop(self.clone(), session.clone()));
+
+        tracing::info!(name, ?command, "pty created");
         Ok((session, true))
     }
 
@@ -232,14 +240,23 @@ impl Manager {
         let mut terminal =
             ghostty_vt::Terminal::new(pty.rows, pty.cols).context("terminal alloc")?;
         terminal.feed(&pty.screen);
-        self.install(
+        let master = tokio::io::unix::AsyncFd::new(master).context("AsyncFd")?;
+
+        let mut ptys = self.ptys.lock();
+        let session = Self::insert_locked(
+            &mut ptys,
             &pty.name,
             pty.command,
             terminal,
-            tokio::io::unix::AsyncFd::new(master).context("AsyncFd")?,
+            master,
             nix::unistd::Pid::from_raw(pty.child_pid),
             true,
         )?;
+        drop(ptys);
+
+        tokio::spawn(read_loop(self.clone(), session));
+
+        tracing::info!(name = pty.name, pid = pty.child_pid, "pty adopted");
         Ok(())
     }
 
