@@ -475,8 +475,7 @@ dependencies = [
  "libc",
  "mux-proto",
  "nix",
- "serde",
- "serde_json",
+ "parking_lot",
 ]
 
 [[package]]
