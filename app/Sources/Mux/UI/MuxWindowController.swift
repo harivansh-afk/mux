@@ -130,10 +130,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             guard let self, let id = UUID(uuidString: event.name),
                   let pane = pane(id, on: host)
             else { return }
-            pane.agent = event.agent
-            if let cwd = event.cwd, IX.vm(of: pane.target) == nil {
-                pane.pwd = cwd
-            }
+            pane.apply(agent: event.agent, cwd: event.cwd)
         }
     }
 

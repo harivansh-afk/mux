@@ -78,8 +78,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Muxd.list(host: host) { [weak self] listings in
                 guard let self, let controller, let listings, !listings.isEmpty else { return }
                 // The same answer that finds orphans also carries every
-                // known pane's live cwd.
-                controller.applyCwds(listings, host: host)
+                // known pane's live cwd and agent.
+                controller.applyListings(listings, host: host)
                 let known = Set(controller.sessions.flatMap(\.panes.keys))
                 var orphans: [UUID: PaneSnapshot] = [:]
                 for listing in listings {

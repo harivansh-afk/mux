@@ -360,8 +360,7 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         let title = NSMutableAttributedString()
         if let glyph = Self.stateGlyph(for: pane, palette: palette, font: Chrome.uiTitleFont) {
             title.append(glyph)
-            let topic = pane.displayTitle
-            if !topic.isEmpty {
+            if let topic = pane.agent?.topic, !topic.isEmpty {
                 title.append(NSAttributedString(
                     string: topic,
                     attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
@@ -388,7 +387,7 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
     static func stateGlyph(
         for pane: PaneView, palette: Palette, font: NSFont
     ) -> NSAttributedString? {
-        guard let state = pane.agentState else { return nil }
+        guard let state = pane.agent?.state else { return nil }
         let working = state == .working
         return NSAttributedString(
             string: (working ? "\u{25D0}" : "\u{2713}") + " ",
