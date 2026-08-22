@@ -357,15 +357,18 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         }
 
         guard let entry = selection, let pane = entry.pane else { return }
+        // Line one is the agent: its state glyph, its topic, either alone
+        // when that is all there is, and nothing at all when the pane has
+        // neither (the directory line moves up).
         let title = NSMutableAttributedString()
         if let glyph = Self.stateGlyph(for: pane, palette: palette, font: Chrome.uiTitleFont) {
             title.append(glyph)
-            if let topic = pane.agent?.topic, !topic.isEmpty {
-                title.append(NSAttributedString(
-                    string: topic,
-                    attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
-                ))
-            }
+        }
+        if let topic = pane.agent?.topic, !topic.isEmpty {
+            title.append(NSAttributedString(
+                string: topic,
+                attributes: [.font: Chrome.uiTitleFont, .foregroundColor: palette.text]
+            ))
         }
         stageTitle.attributedStringValue = title
 
@@ -388,13 +391,13 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         for pane: PaneView, palette: Palette, font: NSFont
     ) -> NSAttributedString? {
         guard let state = pane.agent?.state else { return nil }
-        let working = state == .working
+        let (glyph, color): (String, NSColor) = switch state {
+        case .working: ("\u{25D0}", palette.busy)
+        case .idle: ("\u{2713}", palette.ok)
+        case .blocked: ("\u{00D7}", palette.bad)
+        }
         return NSAttributedString(
-            string: (working ? "\u{25D0}" : "\u{2713}") + " ",
-            attributes: [
-                .font: font,
-                .foregroundColor: working ? palette.busy : palette.ok,
-            ]
+            string: glyph + " ", attributes: [.font: font, .foregroundColor: color]
         )
     }
 }
