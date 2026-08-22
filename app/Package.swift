@@ -7,6 +7,7 @@ import PackageDescription
 // builds on macOS, so it is declared only there.
 var targets: [Target] = [
     .target(name: "Tiling"),
+    .testTarget(name: "TilingTests", dependencies: ["Tiling"]),
 ]
 
 #if os(macOS)
@@ -36,8 +37,6 @@ var targets: [Target] = [
                 .linkedLibrary("z"),
             ]
         ),
-        // SplitTreeTests need only Tiling; SnapshotTests need the app, so the
-        // one test target lives on the macOS side.
         .testTarget(name: "MuxTests", dependencies: ["Mux", "Tiling"]),
     ]
 #endif

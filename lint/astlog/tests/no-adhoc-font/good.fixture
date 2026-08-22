@@ -1,6 +1,6 @@
 import AppKit
 
-func label(font: NSFont) -> NSTextField {
+func label(font: NSFont, weight: NSFont.Weight = .regular) -> NSTextField {
     let field = NSTextField()
     field.font = font
     return field

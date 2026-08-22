@@ -33,7 +33,7 @@
   (text m "unwrap_or_else")
   (text f "into_inner")
   (text-match p "PoisonError$"))
-(lint no-poison-unwrap warning
+(lint no-poison-unwrap error
   "std Mutex poison ceremony; use parking_lot::Mutex (already a workspace dependency)")
 
 ;; no-getpwuid: getpwuid returns a pointer into a static record that the next
@@ -43,7 +43,7 @@
   (match rust "(call_expression function: (scoped_identifier path: (identifier) @p name: (identifier) @f)) @n")
   (text p "libc")
   (text f "getpwuid"))
-(lint no-getpwuid warning
+(lint no-getpwuid error
   "non-reentrant getpwuid from a multithreaded runtime; use nix::unistd::User::from_uid")
 
 ;; no-libc-termios: raw termios through libc means `mem::zeroed`, hand-checked
@@ -53,14 +53,14 @@
   (match rust "(call_expression function: (scoped_identifier path: (identifier) @p name: (identifier) @f)) @n")
   (text p "libc")
   (text-match f "^(tcgetattr|tcsetattr|cfmakeraw)$"))
-(lint no-libc-termios warning
+(lint no-libc-termios error
   "use nix::sys::termios")
 
 ;; no-handrolled-frame: reading or writing the length prefix by hand is the
-;; frame layout written a fourth time. The two adapters inside frame.rs are
-;; the definition and carry an astlog-ignore.
+;; frame layout written a fourth time. mux_proto::frame is the definition; it
+;; encodes the prefix itself with to_le_bytes/from_le_bytes and never matches.
 (rule (no-handrolled-frame n)
   (match rust "(call_expression function: (field_expression field: (field_identifier) @m)) @n")
   (text-match m "^(write_u32_le|read_u32_le)$"))
-(lint no-handrolled-frame warning
+(lint no-handrolled-frame error
   "the lane frame and handshake layout live in mux_proto::frame; call its read/write functions")

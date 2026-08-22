@@ -194,9 +194,9 @@ jobs:
       - run: swiftlint lint --strict app/Sources
 
   # The split-tree model is the one Swift target that needs nothing but
-  # Foundation, so its tests run on Linux. app/Package.swift declares the
-  # AppKit app target only on macOS, which is what keeps this buildable
-  # without the GhosttyKit xcframework.
+  # Foundation, so TilingTests run on Linux. app/Package.swift declares the
+  # AppKit app target and MuxTests only on macOS, which is what keeps this
+  # buildable without the GhosttyKit xcframework; those tests run on a Mac.
   swift-test:
     runs-on: ubuntu-latest
     container: swift:6.1

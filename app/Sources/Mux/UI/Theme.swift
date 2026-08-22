@@ -18,28 +18,26 @@ import GhosttyKit
 enum Chrome {
     static let fontSize: CGFloat = 22
 
-    // astlog-ignore: no-adhoc-font
-    static let font = NSFont(name: "BerkeleyMono-Regular", size: fontSize)
-        ?? .monospacedSystemFont(ofSize: fontSize, weight: .regular)
-    // astlog-ignore: no-adhoc-font
-    static let boldFont = NSFont(name: "BerkeleyMono-Bold", size: fontSize)
-        ?? .monospacedSystemFont(ofSize: fontSize, weight: .bold)
+    static let font = mono("BerkeleyMono-Regular", size: fontSize, weight: .regular)
+    static let boldFont = mono("BerkeleyMono-Bold", size: fontSize, weight: .bold)
 
     /// The product voice: SF for labels ABOUT content (the canvas stage's
     /// agent topic). The mono face above stays the machine voice for
     /// content itself (commands, paths, hosts, keys). Same size knob.
-    // astlog-ignore: no-adhoc-font
-    static let uiTitleFont = NSFont.systemFont(
+    static let uiTitleFont = NSFont.systemFont( // astlog-ignore: no-adhoc-font
         ofSize: (fontSize * 0.95).rounded(), weight: .semibold
     )
 
     /// Small mono for metadata lines (pane labels, canvas meta).
-    // astlog-ignore: no-adhoc-font
-    static let metaFont = NSFont(name: "BerkeleyMono-Regular", size: (fontSize * 0.72).rounded())
-        ?? .monospacedSystemFont(ofSize: (fontSize * 0.72).rounded(), weight: .regular)
-    // astlog-ignore: no-adhoc-font
-    static let metaBoldFont = NSFont(name: "BerkeleyMono-Bold", size: (fontSize * 0.72).rounded())
-        ?? .monospacedSystemFont(ofSize: (fontSize * 0.72).rounded(), weight: .bold)
+    static let metaFont = mono("BerkeleyMono-Regular", size: (fontSize * 0.72).rounded(), weight: .regular)
+    static let metaBoldFont = mono("BerkeleyMono-Bold", size: (fontSize * 0.72).rounded(), weight: .bold)
+
+    /// The one place a face is resolved: the named font, or the system mono
+    /// when it is not installed.
+    private static func mono(_ name: String, size: CGFloat, weight: NSFont.Weight) -> NSFont {
+        // astlog-ignore: no-adhoc-font
+        NSFont(name: name, size: size) ?? .monospacedSystemFont(ofSize: size, weight: weight)
+    }
 
     /// Row height for list-style overlays (help, panes, hosts).
     static let rowHeight: CGFloat = fontSize * 2

@@ -1,8 +1,8 @@
-;; Cargo.toml lint rules (TOML grammar). Same shape as nix.astlog / rust.astlog:
-;; one relation per rule named after its id, each carrying a (lint <rule> ...)
+;; Cargo.toml lint rules (TOML grammar). Same shape as rust.astlog: one
+;; relation per rule named after its id, each carrying a (lint <rule> ...)
 ;; declaration so `astlog scan` gates CI on it, suppressible in place with an
-;; `astlog-ignore: <rule>` comment. Fixtures live in astlog-rules/tests/<rule-id>/
-;; and are run as `.toml` by the `astlog-rules` flake-check self-test.
+;; `astlog-ignore: <rule>` comment. Fixtures live under tests/<rule-id>/ and
+;; check.sh stages them as `.toml`.
 
 ;; no-cargo-path-dep: an inter-crate `path = "..."` dependency in a member
 ;; dependency table ([dependencies], [dev-dependencies], [build-dependencies],
