@@ -28,13 +28,6 @@ final class CanvasOverlayView: NSView {
         weak var pane: PaneView?
     }
 
-    /// One session's cards. No header, no session number: the gap
-    /// between groups is the grouping, and the session indicator
-    /// highlights the selection's number live.
-    struct Group {
-        let entries: [Entry]
-    }
-
     // One spacing scale, derived from the chrome size knob.
     private static let margin: CGFloat = Chrome.fontSize * 2
     private static let gap: CGFloat = Chrome.fontSize * 1.6
@@ -62,7 +55,6 @@ final class CanvasOverlayView: NSView {
     private let wheel = FlippedView()
     private let track = FlippedView()
 
-    private var groups: [Group] = []
     private var items: [WheelItemView] = []
     private var index = 0
     /// The pane the user came from (the focused pane on open).
@@ -118,22 +110,17 @@ final class CanvasOverlayView: NSView {
 
     /// Rebuild the wheel; the selection starts on `selected` (the focused
     /// pane) so enter with no movement is a no-op jump.
-    func reload(groups: [Group], selected: UUID?) {
-        self.groups = groups
+    func reload(entries: [Entry], selected: UUID?) {
         cameFrom = selected
 
         for view in items {
             view.removeFromSuperview()
         }
-        items = []
-
-        for group in groups {
-            for entry in group.entries {
-                let item = WheelItemView(entry: entry)
-                item.onClick = { [weak self] in self?.clicked(item) }
-                track.addSubview(item)
-                items.append(item)
-            }
+        items = entries.map { entry in
+            let item = WheelItemView(entry: entry)
+            item.onClick = { [weak self] in self?.clicked(item) }
+            track.addSubview(item)
+            return item
         }
 
         index = items.firstIndex { $0.entry.paneID == selected } ?? 0
@@ -287,22 +274,22 @@ final class CanvasOverlayView: NSView {
         layoutStage()
     }
 
-    /// Stack headers and cards top-down, then translate the whole track
-    /// so the selected card's center sits at the wheel's center. The
-    /// translate is the wheel's only motion: one spring, retargetable
-    /// mid-flight.
+    /// Stack the cards top-down, then translate the whole track so the
+    /// selected card's center sits at the wheel's center. The translate
+    /// is the wheel's only motion: one spring, retargetable mid-flight.
+    ///
+    /// Sessions are not headed or numbered: the wider gap where the
+    /// session index changes is the grouping, and the session indicator
+    /// highlights the selection's number live.
     private func positionTrack(animated: Bool) {
         var y: CGFloat = 0
-        var itemIndex = 0
-        for group in groups {
-            for _ in group.entries {
-                let item = items[itemIndex]
-                let height = item.height(for: Self.wheelWidth)
-                item.frame = NSRect(x: 0, y: y, width: Self.wheelWidth, height: height)
-                y += height + Self.itemGap
-                itemIndex += 1
+        for (i, item) in items.enumerated() {
+            if i > 0, item.entry.sessionIndex != items[i - 1].entry.sessionIndex {
+                y += Self.sectionGap - Self.itemGap
             }
-            y += Self.sectionGap - Self.itemGap
+            let height = item.height(for: Self.wheelWidth)
+            item.frame = NSRect(x: 0, y: y, width: Self.wheelWidth, height: height)
+            y += height + Self.itemGap
         }
 
         let selectedMid = items.indices.contains(index) ? items[index].frame.midY : 0
