@@ -1,0 +1,7 @@
+import Foundation
+
+func launch(_ path: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: path)
+    try? process.run()
+}

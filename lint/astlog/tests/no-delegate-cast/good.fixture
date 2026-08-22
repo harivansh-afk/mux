@@ -1,0 +1,5 @@
+import AppKit
+
+func save() {
+    App.delegate.saveSnapshot()
+}

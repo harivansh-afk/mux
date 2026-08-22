@@ -1,0 +1,5 @@
+import Foundation
+
+func report(_ error: Error) {
+    AppLog.log("something went wrong: \(error)")
+}

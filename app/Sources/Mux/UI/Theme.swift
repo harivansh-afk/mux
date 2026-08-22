@@ -23,30 +23,32 @@ enum Appearance {
 enum Chrome {
     static let fontSize: CGFloat = 22
 
-    static let font =
-        NSFont(name: "BerkeleyMono-Regular", size: fontSize)
-            ?? .monospacedSystemFont(ofSize: fontSize, weight: .regular)
-    static let boldFont =
-        NSFont(name: "BerkeleyMono-Bold", size: fontSize)
-            ?? .monospacedSystemFont(ofSize: fontSize, weight: .bold)
+    // astlog-ignore: no-adhoc-font
+    static let font = NSFont(name: "BerkeleyMono-Regular", size: fontSize)
+        ?? .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+    // astlog-ignore: no-adhoc-font
+    static let boldFont = NSFont(name: "BerkeleyMono-Bold", size: fontSize)
+        ?? .monospacedSystemFont(ofSize: fontSize, weight: .bold)
 
     /// The product voice: SF for labels ABOUT content (titles, session
     /// names, counts). The mono face above stays the machine voice for
     /// content itself (commands, paths, hosts, keys). Same size knob.
+    // astlog-ignore: no-adhoc-font
     static let uiFont = NSFont.systemFont(
         ofSize: (fontSize * 0.86).rounded(), weight: .medium
     )
+    // astlog-ignore: no-adhoc-font
     static let uiTitleFont = NSFont.systemFont(
         ofSize: (fontSize * 0.95).rounded(), weight: .semibold
     )
 
     /// Small mono for metadata lines (pane labels, canvas meta).
-    static let metaFont =
-        NSFont(name: "BerkeleyMono-Regular", size: (fontSize * 0.72).rounded())
-            ?? .monospacedSystemFont(ofSize: (fontSize * 0.72).rounded(), weight: .regular)
-    static let metaBoldFont =
-        NSFont(name: "BerkeleyMono-Bold", size: (fontSize * 0.72).rounded())
-            ?? .monospacedSystemFont(ofSize: (fontSize * 0.72).rounded(), weight: .bold)
+    // astlog-ignore: no-adhoc-font
+    static let metaFont = NSFont(name: "BerkeleyMono-Regular", size: (fontSize * 0.72).rounded())
+        ?? .monospacedSystemFont(ofSize: (fontSize * 0.72).rounded(), weight: .regular)
+    // astlog-ignore: no-adhoc-font
+    static let metaBoldFont = NSFont(name: "BerkeleyMono-Bold", size: (fontSize * 0.72).rounded())
+        ?? .monospacedSystemFont(ofSize: (fontSize * 0.72).rounded(), weight: .bold)
 
     /// Row height for list-style overlays (help, panes, hosts).
     static let rowHeight: CGFloat = fontSize * 2

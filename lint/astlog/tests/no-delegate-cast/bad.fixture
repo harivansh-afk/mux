@@ -1,0 +1,5 @@
+import AppKit
+
+func save() {
+    (NSApp.delegate as? AppDelegate)?.saveSnapshot()
+}

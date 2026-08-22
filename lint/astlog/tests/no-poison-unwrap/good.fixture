@@ -1,0 +1,9 @@
+use parking_lot::Mutex;
+
+fn read(cell: &Mutex<u32>) -> u32 {
+    *cell.lock()
+}
+
+fn fallback(value: Option<u32>) -> u32 {
+    value.unwrap_or_else(u32::default)
+}

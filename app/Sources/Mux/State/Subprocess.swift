@@ -20,6 +20,7 @@ enum Subprocess {
         then completion: @escaping (String?) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async {
+            // astlog-ignore: no-raw-process
             let process = Process()
             process.executableURL = URL(fileURLWithPath: path)
             process.arguments = arguments

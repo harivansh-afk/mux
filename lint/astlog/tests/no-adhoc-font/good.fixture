@@ -1,0 +1,13 @@
+import AppKit
+
+func label(font: NSFont) -> NSTextField {
+    let field = NSTextField()
+    field.font = font
+    return field
+}
+
+func chromeLabel() -> NSTextField {
+    let field = NSTextField()
+    field.font = Chrome.font
+    return field
+}

@@ -1,0 +1,7 @@
+async fn send<W: tokio::io::AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> std::io::Result<()> {
+    mux_proto::frame::write_request_async(w, payload).await
+}
+
+async fn recv<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Vec<u8>> {
+    mux_proto::frame::read_request_async(r).await
+}

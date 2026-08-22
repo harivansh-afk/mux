@@ -1,0 +1,7 @@
+fn triple() -> (u32, u32, u32) {
+    (0, 0, 0)
+}
+
+struct S {
+    field: (String, u8, bool),
+}

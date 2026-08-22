@@ -1,0 +1,5 @@
+import Foundation
+
+func launch(_ path: String) {
+    _ = Subprocess.run(path, arguments: [])
+}

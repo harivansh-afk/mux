@@ -1,0 +1,7 @@
+fn raw_mode(saved: &mut libc::termios, raw: &mut libc::termios) {
+    unsafe {
+        libc::tcgetattr(0, saved);
+        libc::cfmakeraw(raw);
+        libc::tcsetattr(0, libc::TCSANOW, raw);
+    }
+}

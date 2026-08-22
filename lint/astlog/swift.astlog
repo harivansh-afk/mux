@@ -1,0 +1,50 @@
+;; Swift lint rules for the AppKit target. Same shape as rust.astlog: one
+;; relation per rule id, one (lint ...) per relation, suppressed in place with
+;; an `astlog-ignore: <rule>` comment. Fixtures live under tests/<rule-id>/.
+
+;; no-raw-process: launching a helper means argv, environment, pipes, a
+;; termination handler and a decode of what came back. Subprocess.run is where
+;; that is written; a second Process() is a second set of those decisions.
+(rule (no-raw-process n)
+  (match swift "(call_expression (simple_identifier) @n)")
+  (text n "Process"))
+(lint no-raw-process warning
+  "launch helpers through Subprocess.run")
+
+;; no-nslog: NSLog writes to the system log with no level, no subsystem and a
+;; timestamp format nobody asked for. AppLog.log is the app's one sink.
+(rule (no-nslog n)
+  (match swift "(call_expression (simple_identifier) @n)")
+  (text n "NSLog"))
+(lint no-nslog warning
+  "use AppLog.log")
+
+;; no-adhoc-font: every glyph outside a terminal pane is chrome, and chrome has
+;; one face and one size knob. Two shapes reach NSFont: the `NSFont(name:size:)`
+;; initializer, and any `NSFont.` member (systemFont, monospacedSystemFont, the
+;; smallSystemFontSize a caller would otherwise size against). A `font: NSFont`
+;; parameter is a type, not a decision, and does not match either.
+(rule (no-adhoc-font n)
+  (match swift "(call_expression (simple_identifier) @n)")
+  (text n "NSFont"))
+(rule (no-adhoc-font n)
+  (match swift "(navigation_expression target: (simple_identifier) @n suffix: (navigation_suffix))")
+  (text n "NSFont"))
+(lint no-adhoc-font warning
+  "all chrome text comes from Chrome in UI/Theme.swift")
+
+;; no-delegate-cast: `NSApp.delegate as? AppDelegate` is a downcast that can
+;; fail in the type system and cannot fail in this app, so every call site
+;; carries an optional it then has to unwrap. One accessor states the fact once.
+(rule (no-delegate-cast n)
+  (match swift "
+    (as_expression
+      (navigation_expression
+        target: (simple_identifier) @n
+        suffix: (navigation_suffix suffix: (simple_identifier) @s))
+      (user_type (type_identifier) @ty))")
+  (text n "NSApp")
+  (text s "delegate")
+  (text ty "AppDelegate"))
+(lint no-delegate-cast warning
+  "use App.delegate")
