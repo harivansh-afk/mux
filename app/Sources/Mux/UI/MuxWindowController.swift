@@ -1,27 +1,5 @@
 import AppKit
 
-/// A container view with top-left origin so tree layout math is direct.
-final class PaneContainerView: NSView {
-    weak var controller: MuxWindowController?
-    override var isFlipped: Bool {
-        true
-    }
-
-    override func layout() {
-        super.layout()
-        controller?.layoutPanes()
-    }
-}
-
-/// The slab every pane lives on. The canvas slides this one view, so
-/// the push is a single animated property instead of many pane frames
-/// racing each other.
-final class WorkspaceView: NSView {
-    override var isFlipped: Bool {
-        true
-    }
-}
-
 /// One window = window chrome (borderless NSWindow, mode bar, keybinds
 /// overlay, target picker, theming) plus an ordered list of sessions.
 /// Tiling state and pane lifecycle live in Session; the controller routes
@@ -36,7 +14,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// Internal (not private): the overlay chrome is managed by
     /// MuxWindowController+Overlays.swift.
     let container = PaneContainerView()
-    let workspace = WorkspaceView()
+    let workspace = FlippedView()
     let modeBar = ModeBarView()
     let sessionIndicator = ModeBarView()
     let helpOverlay = HelpOverlayView()
@@ -97,6 +75,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         container.wantsLayer = true
         window.contentView = container
         workspace.wantsLayer = true
+        workspace.frame = container.bounds
+        workspace.autoresizingMask = [.width, .height]
         container.addSubview(workspace)
         self.window = window
 
@@ -321,9 +301,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
 
         // The workspace never moves for the canvas: the picker floats
-        // above it and the scrim dims it in place. Sizes and positions
-        // untouched, so the ptys see nothing.
-        workspace.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height)
+        // above it and the scrim dims it in place, so no pty ever
+        // observes a size or position it did not ask for.
         for (index, session) in sessions.enumerated() {
             session.applyLayout(in: workspace.bounds, visible: index == activeSessionIndex)
         }
@@ -396,5 +375,38 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     func saveStateSoon() {
         (NSApp.delegate as? AppDelegate)?.saveSnapshotSoon()
+    }
+}
+
+/// A container view with top-left origin so tree layout math is direct.
+final class PaneContainerView: NSView {
+    weak var controller: MuxWindowController?
+    override var isFlipped: Bool {
+        true
+    }
+
+    override func layout() {
+        super.layout()
+        controller?.layoutPanes()
+    }
+}
+
+/// Top-left origin, nothing else. Task 14 lifts this into a shared
+/// `UI/FlippedView.swift`; delete this copy when it lands.
+final class FlippedView: NSView {
+    override var isFlipped: Bool {
+        true
+    }
+}
+
+/// Borderless, square-cornered window. Borderless windows refuse
+/// key/main status by default, so both are overridden.
+final class MuxWindow: NSWindow {
+    override var canBecomeKey: Bool {
+        true
+    }
+
+    override var canBecomeMain: Bool {
+        true
     }
 }

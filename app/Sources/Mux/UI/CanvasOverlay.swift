@@ -625,9 +625,3 @@ private final class StageView: NSView {
         onClick?()
     }
 }
-
-private final class FlippedView: NSView {
-    override var isFlipped: Bool {
-        true
-    }
-}
