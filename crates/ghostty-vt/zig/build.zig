@@ -68,15 +68,27 @@ pub fn build(b: *std.Build) void {
     terminal_opts.addOption(bool, "oniguruma", false);
     terminal_opts.addOption(bool, "simd", false);
     terminal_opts.addOption(bool, "slow_runtime_safety", false);
-    // Kitty graphics: disable on wasm32-freestanding, enable otherwise (matches upstream).
-    const resolved_target = target.result;
-    terminal_opts.addOption(
-        bool,
-        "kitty_graphics",
-        !(resolved_target.cpu.arch == .wasm32 and resolved_target.os.tag == .freestanding),
-    );
+    // Kitty graphics: OFF, diverging from upstream's default. Enabling it
+    // now pulls wuffs (PNG/JPEG decode) plus its translate_c dependency
+    // tree into this offline build, to store image state muxd never reads:
+    // render_reattach does not replay images, and the client surface
+    // handles graphics from the live raw stream. Upstream documents
+    // disabled features as "sequences are still consumed and safely
+    // ignored", so text-state semantics stay identical - and the daemon
+    // stops decoding untrusted pty output as PNG.
+    terminal_opts.addOption(bool, "kitty_graphics", false);
     // tmux_control_mode is synthesized from oniguruma (matches upstream).
     terminal_opts.addOption(bool, "tmux_control_mode", false);
+    // Remaining feature gates from upstream's Options.Features
+    // (terminal/build_options.zig), emitted as flat bools like Options.add.
+    terminal_opts.addOption(bool, "snapshot", true);
+    terminal_opts.addOption(bool, "formatter", true);
+    terminal_opts.addOption(bool, "selection", true);
+    terminal_opts.addOption(bool, "render_state", true);
+    terminal_opts.addOption(bool, "input_encode", true);
+    terminal_opts.addOption(bool, "color", true);
+    terminal_opts.addOption(bool, "grid_introspection", true);
+    terminal_opts.addOption(bool, "glyph_protocol", true);
 
     // Version information (required by upstream terminal_options).
     const version_string = "0.0.0";

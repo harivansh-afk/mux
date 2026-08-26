@@ -27,7 +27,7 @@ env:
   # generation of app/GhosttyKit/GhosttyKit.xcframework: the Rust VT and the
   # AppKit renderer have to agree on ghostty's terminal semantics, and
   # build.zig.zon's uucode pin is chosen to match this tree.
-  GHOSTTY_COMMIT: "fea378e565c8ddb7f49808c4f2e36a4a932e35ff"
+  GHOSTTY_COMMIT: "d9840f3c8fc230c7768ae760c412974e9fc923bb"
 
 jobs:
   rust:

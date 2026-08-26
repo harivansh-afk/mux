@@ -13,7 +13,7 @@
     # agree on ghostty's terminal semantics, and build.zig.zon's uucode pin is
     # chosen to match this tree.
     ghostty = {
-      url = "github:ghostty-org/ghostty/fea378e565c8ddb7f49808c4f2e36a4a932e35ff";
+      url = "github:ghostty-org/ghostty/d9840f3c8fc230c7768ae760c412974e9fc923bb";
       flake = false;
     };
   };
