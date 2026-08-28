@@ -171,8 +171,14 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
             // per-session markers of whatever agent happened to start the
             // daemon; leaking them makes every pane shell look like a
             // nested agent session (e.g. claude disables transcript
-            // saving under CLAUDE_CODE_CHILD_SESSION).
-            Some(k) => !matches!(k, "TERM" | "COLORTERM" | "AI_AGENT") && !k.starts_with("CLAUDE"),
+            // saving under CLAUDE_CODE_CHILD_SESSION). GIT_EDITOR=true is
+            // the same harness keeping git from blocking on an editor:
+            // in a pane it turns every `git commit` into "Aborting commit
+            // due to empty commit message".
+            Some(k) => {
+                !matches!(k, "TERM" | "COLORTERM" | "AI_AGENT" | "GIT_EDITOR")
+                    && !k.starts_with("CLAUDE")
+            }
             None => true,
         })
         .filter_map(|(k, v)| {

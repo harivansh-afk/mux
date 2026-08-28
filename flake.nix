@@ -109,5 +109,7 @@
     // {
       # NixOS module: run muxd as a systemd service exposing its QUIC listener.
       nixosModules.muxd = import ./nix/module.nix self;
+      # nix-darwin module: run muxd as a launchd user agent.
+      darwinModules.muxd = import ./nix/darwin.nix self;
     };
 }
