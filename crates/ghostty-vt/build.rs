@@ -123,7 +123,7 @@ fn main() {
 fn ghostty_source_dir() -> PathBuf {
     let source = std::env::var_os("GHOSTTY_SOURCE_DIR")
         .map(PathBuf::from)
-        .or_else(|| home_dir().map(|home| home.join("src/ghostty/src")))
+        .or_else(|| home_dir().map(|home| home.join("Documents/Git/ghostty/src")))
         .unwrap_or_else(|| {
             panic!(
                 "GHOSTTY_SOURCE_DIR is required to build ghostty-vt; set it to the src directory \

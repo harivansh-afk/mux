@@ -6,7 +6,7 @@ import GhosttyKit
 if getenv("GHOSTTY_RESOURCES_DIR") == nil {
     let candidates = [
         Bundle.main.resourcePath.map { $0 + "/ghostty" },
-        NSHomeDirectory() + "/src/ghostty/zig-out/share/ghostty",
+        NSHomeDirectory() + "/Documents/Git/ghostty/zig-out/share/ghostty",
     ].compactMap(\.self)
     if let found = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) {
         setenv("GHOSTTY_RESOURCES_DIR", found, 1)
