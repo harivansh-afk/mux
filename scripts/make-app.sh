@@ -6,7 +6,7 @@ set -euo pipefail
 CONFIG="${1:-debug}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APPDIR="$ROOT/app"
-GHOSTTY_SRC="${GHOSTTY_SRC:-$HOME/src/ghostty}"
+GHOSTTY_SRC="${GHOSTTY_SRC:-$HOME/Documents/Git/ghostty}"
 
 cd "$APPDIR"
 swift build -c "$CONFIG"
