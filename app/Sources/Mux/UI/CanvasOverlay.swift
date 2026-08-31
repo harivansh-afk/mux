@@ -31,7 +31,7 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
     // One spacing scale, derived from the chrome size knob.
     private static let margin: CGFloat = Chrome.fontSize * 2
     private static let gap: CGFloat = Chrome.fontSize * 1.6
-    private static let wheelWidth: CGFloat = Chrome.fontSize * 12
+    private static let wheelWidth: CGFloat = Chrome.fontSize * 20.4
     private static let itemGap: CGFloat = 10
     private static let sectionGap: CGFloat = 22
     /// The floating badges keep their bottom strip.
