@@ -139,7 +139,8 @@ in {
         # sends MAINPID= before it asks for the handoff, so the
         # predecessor's exit is a main process replaced, not a service
         # stopped. NotifyAccess=all lets the successor (a grandchild of
-        # ExecReload) be the one to say it.
+        # ExecReload) be the one to say it; it also lets every pane, so
+        # muxd withholds NOTIFY_SOCKET from pane shells (pty.rs).
         Type = "notify";
         NotifyAccess = "all";
         User = cfg.user;

@@ -125,6 +125,29 @@ pub fn window_size(master: &AsyncFd<OwnedFd>) -> WindowSize {
     }
 }
 
+/// Whether a variable in the daemon's environment is passed to a pane.
+///
+/// TERM/COLORTERM are set per pane instead. CLAUDE*/AI_AGENT are
+/// per-session markers of whatever agent happened to start the daemon;
+/// leaking them makes every pane shell look like a nested agent session
+/// (e.g. claude disables transcript saving under
+/// CLAUDE_CODE_CHILD_SESSION).
+///
+/// NOTIFY_SOCKET, INVOCATION_ID and LISTEN_* are systemd's contract with
+/// the daemon, not with what runs in a pane. The unit has
+/// `NotifyAccess=all` (the upgrade successor is a grandchild of
+/// ExecReload), so anything in the cgroup that finds NOTIFY_SOCKET speaks
+/// for muxd: a `pg_ctl stop` in a pane sent `STOPPING=1`, systemd moved
+/// the unit to stop-sigterm without signalling anyone, and 90s later it
+/// SIGKILLed every pane on the host.
+fn pane_inherits(key: &str) -> bool {
+    !matches!(
+        key,
+        "TERM" | "COLORTERM" | "AI_AGENT" | "NOTIFY_SOCKET" | "INVOCATION_ID"
+    ) && !key.starts_with("CLAUDE")
+        && !key.starts_with("LISTEN_")
+}
+
 pub fn spawn(params: &Spawn) -> Result<Pty> {
     let pty =
         nix::pty::openpty(Some(&winsize(params.cols, params.rows)), None).context("openpty")?;
@@ -166,15 +189,7 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
     // PATH search, and building pointer tables after the fork.
     let exec_path = resolve_in_path(exec_path);
     let mut env: Vec<CString> = std::env::vars_os()
-        .filter(|(k, _)| match k.to_str() {
-            // TERM/COLORTERM are re-added below. CLAUDE*/AI_AGENT are
-            // per-session markers of whatever agent happened to start the
-            // daemon; leaking them makes every pane shell look like a
-            // nested agent session (e.g. claude disables transcript
-            // saving under CLAUDE_CODE_CHILD_SESSION).
-            Some(k) => !matches!(k, "TERM" | "COLORTERM" | "AI_AGENT") && !k.starts_with("CLAUDE"),
-            None => true,
-        })
+        .filter(|(k, _)| k.to_str().is_none_or(pane_inherits))
         .filter_map(|(k, v)| {
             use std::os::unix::ffi::OsStringExt;
             let mut bytes = k.into_vec();
@@ -259,4 +274,47 @@ pub fn resize(master: &AsyncFd<OwnedFd>, cols: u16, rows: u16) -> Result<()> {
         return Err(std::io::Error::last_os_error()).context("TIOCSWINSZ");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pane_inherits;
+
+    #[test]
+    fn panes_keep_the_ordinary_environment() {
+        for key in [
+            "HOME",
+            "PATH",
+            "SHELL",
+            "LANG",
+            "SSH_AUTH_SOCK",
+            "LISTENER",
+            "TERMINFO",
+        ] {
+            assert!(pane_inherits(key), "{key} should reach the pane");
+        }
+    }
+
+    #[test]
+    fn panes_never_see_the_service_manager() {
+        for key in [
+            "NOTIFY_SOCKET",
+            "INVOCATION_ID",
+            "LISTEN_PID",
+            "LISTEN_FDS",
+            "LISTEN_FDNAMES",
+        ] {
+            assert!(
+                !pane_inherits(key),
+                "{key} would let a pane speak for the unit"
+            );
+        }
+    }
+
+    #[test]
+    fn panes_never_look_like_a_nested_agent_session() {
+        for key in ["CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "AI_AGENT"] {
+            assert!(!pane_inherits(key));
+        }
+    }
 }
