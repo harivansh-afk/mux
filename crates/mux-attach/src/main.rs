@@ -14,6 +14,8 @@
 //! daemon had to create the pty, a notice is written into the terminal so
 //! a lost shell never masquerades as a healthy restore. Reconnects after
 //! a daemon EOF always print the notice when the pty came back `created`.
+//! `--require-existing` is stricter: reopen a closed terminal by identity,
+//! never create a replacement, and keep its pane open on connection failure.
 //!
 //! Plain threads, no async: stdin pump, winsize poll (200ms - coalesces
 //! during drags), and the main thread draining the socket to stdout.
@@ -175,11 +177,16 @@ fn main() -> Result<()> {
     let mut cwd_from: Option<String> = None;
     let mut command: Vec<String> = vec![];
     let mut expect_existing = false;
+    let mut require_existing = false;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--expect-existing" => expect_existing = true,
+            "--require-existing" => {
+                require_existing = true;
+                expect_existing = true;
+            }
             "--cwd" => {
                 i += 1;
                 cwd = Some(args.get(i).context("--cwd needs a dir")?.clone());
@@ -205,6 +212,7 @@ fn main() -> Result<()> {
         cwd_from,
         command,
         expect_existing,
+        require_existing,
     })
 }
 
@@ -265,6 +273,8 @@ struct Attach {
     /// This attach restores a pane the client believes exists: a
     /// `created` reply means the daemon lost it, which the user must see.
     expect_existing: bool,
+    /// A reopened closed terminal must never fall back to creating a shell.
+    require_existing: bool,
 }
 
 fn run_attach(attach: &Attach) -> Result<()> {
@@ -353,11 +363,17 @@ fn open_session(
         target: attach.target.clone(),
         // Same name every time: the daemon attaches us to the existing
         // pty and replays its screen.
-        mode: OpenMode::Open {
-            name: attach.name.clone(),
-            cwd: attach.cwd.clone(),
-            command: attach.command.clone(),
-            cwd_from: attach.cwd_from.clone(),
+        mode: if attach.require_existing {
+            OpenMode::Attach {
+                name: attach.name.clone(),
+            }
+        } else {
+            OpenMode::Open {
+                name: attach.name.clone(),
+                cwd: attach.cwd.clone(),
+                command: attach.command.clone(),
+                cwd_from: attach.cwd_from.clone(),
+            }
         },
     };
     match handshake(&mut stream, &request)? {
@@ -385,6 +401,7 @@ fn reconnect(attach: &Attach, stdin_closed: &AtomicBool) -> UnixStream {
     let started = Instant::now();
     let mut backoff = RECONNECT_BACKOFF;
     let mut notified = false;
+    let mut last_error = String::new();
     loop {
         // The pane died while we were waiting: nothing left to attach to.
         if stdin_closed.load(Ordering::SeqCst) {
@@ -392,7 +409,7 @@ fn reconnect(attach: &Attach, stdin_closed: &AtomicBool) -> UnixStream {
         }
         if !notified && started.elapsed() > RECONNECT_NOTIFY {
             notified = true;
-            print_notice("muxd is not answering; still retrying");
+            print_notice("terminal unavailable; still retrying");
         }
         std::thread::sleep(backoff);
         backoff = (backoff * 2).min(RECONNECT_BACKOFF_MAX);
@@ -403,13 +420,23 @@ fn reconnect(attach: &Attach, stdin_closed: &AtomicBool) -> UnixStream {
             connect().ok()
         };
         if let Some(socket) = socket {
-            if let Ok((stream, created)) = open_session(attach, socket, winsize()) {
-                // A reconnect always expected the pty to survive: the
-                // daemon creating one means the shell was lost.
-                if created {
-                    print_recreated_notice();
+            match open_session(attach, socket, winsize()) {
+                Ok((stream, created)) => {
+                    // A reconnect always expected the pty to survive: the
+                    // daemon creating one means the shell was lost.
+                    if created {
+                        print_recreated_notice();
+                    }
+                    return stream;
                 }
-                return stream;
+                Err(error) if attach.require_existing => {
+                    let detail = format!("{error:#}");
+                    if detail != last_error {
+                        print_notice(&format!("cannot reattach ({detail}); retrying"));
+                        last_error = detail;
+                    }
+                }
+                Err(_) => {}
             }
         }
     }

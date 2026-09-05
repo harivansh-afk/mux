@@ -11,6 +11,7 @@ process, so this keeps only what needs the real binaries:
      the recreated-shell notice
 """
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -30,6 +31,12 @@ def attach_kill_reattach(muxd_bin, mux_attach_bin, home, socket_path):
         client.send(COMMAND)
         client.expect(MARKER, 20, "the command output to echo back")
         log(TAG, f"saw {MARKER.decode()} live")
+        client.send(b"saved_value=preserved; sleep 300 & saved_job=$!; saved_pid=$$; printf 'STATE:%s:%s:END\\n' \"$$\" \"$saved_job\"\n")
+        client.expect(b":END\r\n", 20, "the original shell and background job identities")
+        match = re.search(rb"STATE:(\d+):(\d+):END", client.buffer)
+        if not match:
+            fail(f"could not read shell/job PIDs: {client.tail()}")
+        shell_pid, job_pid = match.groups()
         ptys = list_ptys(muxd_bin, env)
         if len(ptys) != 1 or ptys[0]["name"] != "t1":
             fail(f"expected one pty named t1, got {ptys}")
@@ -40,15 +47,34 @@ def attach_kill_reattach(muxd_bin, mux_attach_bin, home, socket_path):
         if len(ptys) != 1 or ptys[0]["name"] != "t1":
             fail(f"pty t1 did not outlive its client, list is {ptys}")
         log(TAG, "reattach and check the replay")
-        client = Pty([mux_attach_bin, "local:t1"], env)
+        client = Pty([mux_attach_bin, "--require-existing", "local:t1"], env)
         client.expect(MARKER, 20, "the replayed screen to contain the marker")
         log(TAG, f"replay carried {MARKER.decode()} across the kill")
+        client.send(b"kill -0 \"$saved_job\" && printf 'REOPEN:%s:%s:%s:END\\n' \"$$\" \"$saved_job\" \"$saved_value\"\n")
+        client.expect(b"REOPEN:" + shell_pid + b":" + job_pid + b":preserved:END", 20,
+                      "same shell PID, background job PID and unexported variable after reopen")
+        client.send(b"kill \"$saved_job\"; wait \"$saved_job\" 2>/dev/null || true\n")
         client.send(b"exit\n")
         code = client.wait_for_exit(20)
         if code != 0:
             fail(f"client exited {code} after a clean shell exit; last output:\n{client.tail()}")
         client.close()
         log(TAG, "clean exit propagated")
+
+def require_existing_never_creates(muxd_bin, mux_attach_bin, home, socket_path):
+    env = sandbox_env(home, socket_path)
+    with Daemon(muxd_bin, home, socket_path, env=env):
+        client = Pty([mux_attach_bin, "--require-existing", "local:missing"], env)
+        try:
+            client.expect(b"no replacement shell was started", 20, "a visible missing-terminal failure")
+            if list_ptys(muxd_bin, env):
+                fail("strict reopen created a shell")
+            if client.proc.poll() is not None:
+                fail("failed reopen erased its waiting pane by exiting")
+            log(TAG, "missing reopen reports failure, keeps the client alive and creates no shell")
+        finally:
+            client.kill()
+            client.close()
 
 def expect_existing_notice(muxd_bin, mux_attach_bin, home, socket_path):
     env = sandbox_env(home, socket_path)
@@ -72,6 +98,7 @@ def main():
     try:
         attach_kill_reattach(muxd_bin, mux_attach_bin, home, socket_path)
         expect_existing_notice(muxd_bin, mux_attach_bin, home, socket_path)
+        require_existing_never_creates(muxd_bin, mux_attach_bin, home, socket_path)
     except AssertionError as error:
         print(f"[{TAG}] FAIL: {error} (sandbox left at {tmp})", file=sys.stderr)
         return 1

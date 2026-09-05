@@ -32,8 +32,17 @@ muxd server sends raw PTY byte streams over UDP that are interpreted by the maco
 
 There are panes and sessions (1 2 3 4 5)
 
-Press **⌘⇧T** (File → Reopen Closed Tab) to reopen the most recently closed
-pane as a new, focused session. Repeat to walk back through the last 20 closes
-in this app run. The host, last known directory, and font size are restored.
-Surviving daemon terminals reattach; exited or explicitly killed terminals
-start a new shell. Closing the final session still quits Mux and clears this history.
+**⌘W** or **prefix x** closes a pane while its shell and programs keep running
+on the owning muxd (macOS locally, or Spark for a remote pane). **⌘⇧T** reopens
+the most recently closed pane as a focused session attached to that exact
+terminal. Repeat to reopen earlier panes. Closed identities persist across app
+restarts; closing the final pane leaves an empty window ready to reopen.
+
+**prefix X** or File → Kill Terminal explicitly kills a terminal. Killing or
+exiting the shell cannot be undone. An unavailable host is retried; a missing
+terminal is reported without starting a replacement shell. Closed terminals
+continue using daemon/process memory, and their jobs keep running. This is
+preservation of live processes, not disk hibernation.
+
+See [closed-terminal design and research](docs/closed-tabs.md) for persistence,
+upgrade compatibility, resource costs, and failure behavior.

@@ -21,19 +21,18 @@ use common::PATIENCE;
 #[tokio::test]
 async fn a_pty_running_claude_reports_its_state_as_the_title_moves() {
     let claude = fake_agent("claude");
+    let mut command = vec![claude.to_string_lossy().into_owned()];
+    // NixOS's multicall coreutils dispatches by argv[0]. Preserve the
+    // fake agent name while explicitly selecting its cat implementation.
+    if std::fs::canonicalize(common::cat()).is_ok_and(|path| path.ends_with("coreutils")) {
+        command.push("--coreutils-prog=cat".into());
+    }
     let manager = Manager::default();
     let (snapshot, mut events) = manager.watch();
     assert!(snapshot.is_empty(), "a fresh daemon has no ptys to report");
 
     let (session, created) = manager
-        .open(
-            "a1",
-            &[claude.to_string_lossy().into_owned()],
-            None,
-            None,
-            80,
-            24,
-        )
+        .open("a1", &command, None, None, 80, 24)
         .expect("open pty");
     assert!(created);
 
@@ -85,7 +84,7 @@ async fn a_pty_running_claude_reports_its_state_as_the_title_moves() {
 async fn a_shell_is_not_an_agent_and_a_watch_opens_with_every_pty() {
     let manager = Manager::default();
     let (session, _) = manager
-        .open("s1", &["/bin/cat".to_string()], None, None, 80, 24)
+        .open("s1", &[common::cat()], None, None, 80, 24)
         .expect("open pty");
     write_pty(
         &session,
@@ -111,7 +110,7 @@ fn fake_agent(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("muxd-agents-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("tempdir");
     let path = dir.join(name);
-    std::os::unix::fs::symlink("/bin/cat", &path).expect("link cat");
+    std::os::unix::fs::symlink(common::cat(), &path).expect("link cat");
     path
 }
 

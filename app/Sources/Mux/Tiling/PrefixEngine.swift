@@ -77,6 +77,10 @@ final class PrefixEngine {
                 reopenClosedTab()
                 return nil
             }
+            if Self.isCloseTab(event) {
+                closeTab()
+                return nil
+            }
             return handle(event)
         }
     }
@@ -85,6 +89,16 @@ final class PrefixEngine {
         guard let controller, !controller.closedPanes.isEmpty else { return }
         setMode(.normal)
         controller.reopenClosedTab()
+    }
+
+    func closeTab() {
+        setMode(.normal)
+        controller?.activeSession?.closeFocusedPane()
+    }
+
+    func killTerminal() {
+        setMode(.normal)
+        controller?.activeSession?.killFocusedPane()
     }
 
     deinit {
@@ -304,6 +318,7 @@ final class PrefixEngine {
         case "l", "\u{F703}": session?.focusDirection(.right)
         case "z": session?.toggleZoom()
         case "x": session?.closeFocusedPane()
+        case "X": session?.killFocusedPane()
         case "r": setMode(.resize)
         case "t": setMode(.hosts)
         // Space: the canvas is the navigation surface, it gets the

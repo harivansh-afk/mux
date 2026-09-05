@@ -195,7 +195,7 @@ Handshake: attach-or-create pty <code>"p1"</code> at 120x40, TERM=xterm-ghostty,
 <pre>
 <span class="c">handshake message = [u32 LE payload length][payload]</span>
 1b 00 00 00                                        <span class="c">length = 27</span>
-06                                                 <span class="c">version = 6       (varint)</span>
+08                                                 <span class="c">version = 8       (varint)</span>
 78                                                 <span class="c">cols = 120        (u16, varint)</span>
 28                                                 <span class="c">rows = 40</span>
 01 0d 78 74 65 72 6d 2d 67 68 6f 73 74 74 79      <span class="c">term = Some, len 13, "xterm-ghostty"</span>

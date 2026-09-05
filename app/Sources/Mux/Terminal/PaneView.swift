@@ -18,7 +18,7 @@ final class PaneView: NSView {
 
     /// Which pty this pane is, and how the relay reaches it. Everything
     /// the command line is built from lives in Muxd.Attach.
-    private let attach: Muxd.Attach
+    let attach: Muxd.Attach
 
     /// Where this pane's terminal lives: nil local, a host alias, or
     /// `ix:<vm>`. Chrome, snapshots and split inheritance read it.
@@ -348,7 +348,7 @@ final class PaneView: NSView {
 
     /// Free the surface explicitly (kills the local child - the relay).
     /// The daemon pty behind it survives; call killRemote() too when the
-    /// user actually closes the pane.
+    /// user explicitly kills the terminal.
     func destroySurface() {
         if let surface {
             ghostty_surface_free(surface)

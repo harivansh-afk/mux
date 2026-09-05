@@ -45,6 +45,7 @@ enum Muxd {
         /// exist, so the relay is told to call out a `created` reply (the
         /// daemon lost the shell) instead of silently starting fresh.
         let expectExisting: Bool
+        var requireExisting: Bool = false
 
         /// The pty to attach to: `<alias>:<id>` for a pane hosted on
         /// another machine, `local:<id>` otherwise. An `ix:<vm>` pane is
@@ -75,7 +76,9 @@ enum Muxd {
                 return inPty.map(Self.quote)
             }
             var parts = ["\"\(attach)\"", "\"\(address)\""]
-            if expectExisting {
+            if requireExisting {
+                parts.append("--require-existing")
+            } else if expectExisting {
                 // A restored or adopted pane believes its pty survived: the
                 // relay prints a notice if the daemon had to create one.
                 parts.append("--expect-existing")

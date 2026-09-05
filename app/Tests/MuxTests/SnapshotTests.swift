@@ -7,6 +7,15 @@ import XCTest
 /// so the formats it can be found in are pinned here: what this build
 /// writes, and what an older build left behind.
 final class SnapshotTests: XCTestCase {
+    func testOldV3SnapshotHasNoClosedTerminals() throws {
+        let json = """
+        {"version":3,"frame":[],"sessions":[],"activeSession":0}
+        """
+        let snapshot = try XCTUnwrap(SnapshotStore.decode(Data(json.utf8)))
+        XCTAssertNil(snapshot.closedPanes)
+        XCTAssertFalse(snapshot.requiresRelay)
+    }
+
     private let paneA = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
     private let paneB = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
     private let paneC = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!

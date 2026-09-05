@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 /// dropping the connection, so skew between a running daemon and a newer
 /// client is diagnosable (v1: M2; v2: token+target; v3: this field;
 /// v4: `cwd_from`; v5: `PtyInfo::cwd`; v6: typed `OpenError`; v7:
-/// `PtyInfo::agent`, `OpenMode::Watch`).
-pub const PROTOCOL_VERSION: u32 = 7;
+/// `PtyInfo::agent`, `OpenMode::Watch`; v8: attach-only reopen).
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// ALPN for muxd's QUIC listener. Each bidirectional stream carries
 /// exactly one protocol run: the same handshake + lane frames as a unix
@@ -75,6 +75,8 @@ pub enum OpenMode {
     /// Stream [`PtyEvent`]s: one per pty now, then one per change, on
     /// the events lane after the reply, until the client hangs up.
     Watch,
+    /// Reattach a preserved terminal. Never create a process if missing.
+    Attach { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -273,6 +275,15 @@ mod tests {
         assert_eq!(decode::<OpenRequest>(&bytes).unwrap(), req);
     }
 
+    #[test]
+    fn attach_only_request_roundtrips_without_spawn_parameters() {
+        let mode = OpenMode::Attach {
+            name: "saved".into(),
+        };
+        assert_eq!(decode::<OpenMode>(&encode(&mode)).unwrap(), mode);
+        assert_eq!(encode(&mode), [4, 5, b's', b'a', b'v', b'e', b'd']);
+    }
+
     /// The documented wire example (docs/architecture.html section 2):
     /// this test IS the spec. If it breaks, either update the doc and
     /// accept a protocol break, or revert the change.
@@ -296,7 +307,7 @@ mod tests {
         assert_eq!(
             encode(&req),
             [
-                0x07, // version = PROTOCOL_VERSION (varint)
+                0x08, // version = PROTOCOL_VERSION (varint)
                 0x78, // cols = 120 (varint)
                 0x28, // rows = 40
                 0x01, 0x0d, // term: Some, len 13

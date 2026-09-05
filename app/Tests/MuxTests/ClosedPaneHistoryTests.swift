@@ -7,13 +7,13 @@ final class ClosedPaneHistoryTests: XCTestCase {
         var history = ClosedPaneHistory()
         let first = UUID()
         let second = UUID()
-        history.record(id: first, pane: PaneSnapshot(cwd: "/tmp"), killed: false)
+        history.record(id: first, pane: PaneSnapshot(cwd: "/tmp"))
         history.record(
-            id: second, pane: PaneSnapshot(cwd: "/work", target: "spark", fontDelta: 3), killed: false
+            id: second, pane: PaneSnapshot(cwd: "/work", target: "spark", fontDelta: 3)
         )
         let entry = try XCTUnwrap(history.popLast())
         XCTAssertEqual(entry.id, second)
-        XCTAssertTrue(entry.expectExisting)
+        XCTAssertEqual(entry.pane.requireExisting, true)
         XCTAssertEqual(entry.snapshot.tree.leaves, [second])
         XCTAssertEqual(entry.snapshot.focused, second)
         XCTAssertEqual(entry.snapshot.panes[second]?.cwd, "/work")
@@ -24,26 +24,50 @@ final class ClosedPaneHistoryTests: XCTestCase {
         XCTAssertTrue(history.isEmpty)
     }
 
-    func testKilledPaneUsesFreshIdentity() throws {
+    func testHistoryPersistsAcrossAnEmptyAppRestart() throws {
         var history = ClosedPaneHistory()
-        let original = UUID()
-        history.record(id: original, pane: PaneSnapshot(target: "ix:dev"), killed: true)
-        let entry = try XCTUnwrap(history.popLast())
-        XCTAssertNotEqual(entry.id, original)
-        XCTAssertFalse(entry.expectExisting)
+        let id = UUID()
+        history.record(id: id, pane: PaneSnapshot(target: "ix:dev"))
+        let snapshot = AppSnapshot(frame: [], sessions: [], activeSession: 0, closedPanes: history.entries)
+        let decoded = try XCTUnwrap(SnapshotStore.decode(JSONEncoder().encode(snapshot)))
+        XCTAssertTrue(decoded.requiresRelay)
+        var restored = ClosedPaneHistory(entries: decoded.closedPanes ?? [])
+        XCTAssertTrue(restored.contains(id, on: nil))
+        XCTAssertFalse(restored.contains(id, on: "spark"))
+        let entry = try XCTUnwrap(restored.popLast())
+        XCTAssertEqual(entry.id, id)
+        XCTAssertEqual(entry.pane.requireExisting, true)
         XCTAssertEqual(entry.pane.target, "ix:dev")
+        let reopened = AppSnapshot(frame: [], sessions: [entry.snapshot], activeSession: 0)
+        let active = try XCTUnwrap(SnapshotStore.decode(JSONEncoder().encode(reopened)))
+        XCTAssertTrue(active.requiresRelay)
+        XCTAssertEqual(active.sessions[0].panes[id]?.requireExisting, true)
     }
 
-    func testHistoryKeepsNewestTwenty() {
+    func testHistoryDoesNotEvictLiveTerminals() {
         var history = ClosedPaneHistory()
         let ids = (0 ..< 21).map { _ in UUID() }
         for id in ids {
-            history.record(id: id, pane: PaneSnapshot(), killed: false)
+            history.record(id: id, pane: PaneSnapshot())
         }
-        for id in ids.dropFirst().reversed() {
+        for id in ids.reversed() {
             XCTAssertEqual(history.popLast()?.id, id)
         }
         XCTAssertNil(history.popLast())
+    }
+
+    func testDeduplicationAndExitAreScopedToTheOwningDaemon() {
+        var history = ClosedPaneHistory()
+        let id = UUID()
+        history.record(id: id, pane: PaneSnapshot())
+        history.record(id: id, pane: PaneSnapshot(target: "spark"))
+        history.record(id: id, pane: PaneSnapshot(target: "spark", fontDelta: 2))
+        XCTAssertEqual(history.entries.count, 2)
+        XCTAssertTrue(history.contains(id, on: "spark"))
+        XCTAssertFalse(history.remove(id, on: "other-host"))
+        XCTAssertTrue(history.remove(id, on: nil))
+        XCTAssertFalse(history.contains(id, on: nil))
+        XCTAssertEqual(history.popLast()?.pane.fontDelta, 2)
     }
 
     func testShortcutRequiresCommandShiftT() throws {
@@ -61,5 +85,8 @@ final class ClosedPaneHistoryTests: XCTestCase {
         XCTAssertFalse(try PrefixEngine.isReopenClosedTab(event("T", [.command, .shift, .option])))
         XCTAssertFalse(try PrefixEngine.isReopenClosedTab(event("T", [.command, .shift, .control])))
         XCTAssertFalse(try PrefixEngine.isReopenClosedTab(event("N", [.command, .shift])))
+        XCTAssertTrue(try PrefixEngine.isCloseTab(event("w", [.command])))
+        XCTAssertFalse(try PrefixEngine.isCloseTab(event("W", [.command, .shift])))
+        XCTAssertFalse(try PrefixEngine.isCloseTab(event("w", [.command, .option])))
     }
 }

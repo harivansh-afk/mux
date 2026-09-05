@@ -54,7 +54,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // previous install may not speak this build's protocol.
         Muxd.upgradeStaleDaemon()
 
-        if let snapshot = SnapshotStore.load(), !snapshot.sessions.isEmpty {
+        if let snapshot = SnapshotStore.load(),
+           !snapshot.sessions.isEmpty || !(snapshot.closedPanes ?? []).isEmpty
+        {
+            // A bare SwiftPM build normally falls back to a local shell.
+            // That cannot substitute for terminals promised exact reattachment.
+            if snapshot.requiresRelay, Muxd.attachBinary == nil {
+                let alert = NSAlert()
+                alert.messageText = "Open the bundled Mux.app to restore these terminals"
+                alert.informativeText = "This build lacks mux-attach. Your saved terminals have not been changed."
+                alert.runModal()
+                NSApp.terminate(nil)
+                return
+            }
             let panes = snapshot.sessions.flatMap { $0.panes.keys.map(\.uuidString) }
             AppLog.log("restoring sessions=\(snapshot.sessions.count) panes=\(panes.joined(separator: ","))")
             restore(snapshot)
@@ -73,7 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// what makes a lost or stale state.json recoverable: the shells
     /// are alive on the daemon either way.
     private func adoptOrphanedPanes() {
-        let targets: [String?] = [nil] + HostsConfig.aliases().map(Optional.some)
+        let savedHosts = controller?.closedPanes.entries.map(\.pane.daemon) ?? []
+        let targets = Set([nil] + HostsConfig.aliases().map(Optional.some) + savedHosts)
         for host in targets {
             Muxd.list(host: host) { [weak self] listings in
                 guard let self, let controller, let listings, !listings.isEmpty else { return }
@@ -86,7 +99,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Only pane-shaped names: the pane UUID namespace is
                     // the app's, anything else is not ours to adopt.
                     guard let id = UUID(uuidString: listing.name),
-                          !listing.exited, !listing.attached, !known.contains(id)
+                          !listing.exited, !listing.attached, !known.contains(id),
+                          !controller.closedPanes.contains(id, on: host)
                     else { continue }
                     orphans[id] = PaneSnapshot(
                         cwd: listing.cwd,
@@ -187,13 +201,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SnapshotStore.save(AppSnapshot(
             frame: controller.window.frame.values,
             sessions: sessions,
-            activeSession: controller.activeSessionIndex
+            activeSession: controller.activeSessionIndex,
+            closedPanes: controller.closedPanes.entries
         ))
     }
 
     /// Rebuild the single window from a snapshot.
     private func restore(_ snapshot: AppSnapshot) {
         guard let controller = makeWindow() else { return }
+        controller.closedPanes = ClosedPaneHistory(entries: snapshot.closedPanes ?? [])
+        for entry in controller.closedPanes.entries {
+            controller.watch(entry.pane.daemon)
+        }
         if let frame = NSRect(values: snapshot.frame) {
             restoreFrame(frame, on: controller.window)
         }
@@ -232,6 +251,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prefixEngine.reopenClosedTab()
     }
 
+    @objc func closeTab(_: Any?) {
+        prefixEngine.closeTab()
+    }
+
+    @objc func killTerminal(_: Any?) {
+        prefixEngine.killTerminal()
+    }
+
     @objc func copyFromPane(_: Any?) {
         controller?.activeSession?.focusedPane?.bindingAction("copy_to_clipboard")
     }
@@ -262,10 +289,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenuItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "n")
+        fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeTab(_:)), keyEquivalent: "w")
         let reopen = fileMenu.addItem(
             withTitle: "Reopen Closed Tab", action: #selector(reopenClosedTab(_:)), keyEquivalent: "t"
         )
         reopen.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(withTitle: "Kill Terminal", action: #selector(killTerminal(_:)), keyEquivalent: "")
         fileMenuItem.submenu = fileMenu
         main.addItem(fileMenuItem)
 

@@ -88,7 +88,7 @@ async fn quic_listener_serves_authenticated_clients() {
             OpenMode::Open {
                 name: "cat".into(),
                 cwd: None,
-                command: vec!["/bin/cat".into()],
+                command: vec![common::cat()],
                 cwd_from: None,
             },
         ),

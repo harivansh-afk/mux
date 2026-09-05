@@ -50,7 +50,8 @@ final class Session {
             panes: panes.mapValues {
                 PaneSnapshot(
                     cwd: $0.pwd, target: $0.target,
-                    fontDelta: $0.fontDelta == 0 ? nil : $0.fontDelta
+                    fontDelta: $0.fontDelta == 0 ? nil : $0.fontDelta,
+                    requireExisting: $0.requiresExisting ? true : nil
                 )
             },
             focused: focusedID,
@@ -109,12 +110,12 @@ final class Session {
         id: UUID = UUID(), workingDirectory: String? = nil, cwdFrom: UUID? = nil,
         target: String? = nil, ptyCommand: [String]? = nil,
         initialFrame: CGRect = .zero, fontDelta: Int = 0,
-        expectExisting: Bool = false
+        expectExisting: Bool = false, requireExisting: Bool = false
     ) -> PaneView {
         let pane = PaneView(
             attach: Muxd.Attach(
                 paneID: id, target: target, ptyCommand: ptyCommand,
-                expectExisting: expectExisting
+                expectExisting: expectExisting, requireExisting: requireExisting
             ),
             workingDirectory: workingDirectory, cwdFrom: cwdFrom,
             initialFrame: initialFrame, fontDelta: fontDelta
@@ -126,7 +127,7 @@ final class Session {
     }
 
     /// Rebuild a whole tree from a snapshot.
-    func restore(_ snapshot: SessionSnapshot, expectExisting: Bool = true) {
+    func restore(_ snapshot: SessionSnapshot) {
         // Size each pane before its surface spawns the attach command, so
         // the pty handshake carries the pane's real dimensions and the
         // daemon replays the screen at the size it was left at. A zoomed
@@ -140,7 +141,8 @@ final class Session {
             _ = makePane(
                 id: id, workingDirectory: meta?.cwd, target: meta?.target,
                 initialFrame: (snapshot.zoomed == id) ? bounds : (rects[id] ?? bounds),
-                fontDelta: meta?.fontDelta ?? 0, expectExisting: expectExisting
+                fontDelta: meta?.fontDelta ?? 0, expectExisting: true,
+                requireExisting: meta?.requireExisting ?? false
             )
         }
         tree = snapshot.tree
@@ -176,19 +178,38 @@ final class Session {
 
     func closeFocusedPane() {
         guard let pane = focusedPane else { return }
-        AppLog.log("kill pane=\(pane.id.uuidString) (prefix x)")
-        pane.killRemote()
-        pane.destroySurface()
-        removePane(pane, killed: true)
+        closePane(pane)
     }
 
-    func removePane(_ pane: PaneView, killed: Bool = false) {
-        guard panes[pane.id] != nil else { return }
+    /// Persist the closed identity before tearing down its client. The
+    /// same daemon pty (and every process behind it) stays alive.
+    func closePane(_ pane: PaneView) {
+        guard contains(pane) else { return }
+        guard Muxd.attachBinary != nil else {
+            let alert = NSAlert()
+            alert.messageText = "This build cannot preserve terminals"
+            alert.informativeText = "Use the bundled Mux.app, which includes mux-attach."
+            alert.runModal()
+            return
+        }
         controller?.closedPanes.record(
             id: pane.id,
-            pane: PaneSnapshot(cwd: pane.pwd, target: pane.target, fontDelta: pane.fontDelta),
-            killed: killed
+            pane: PaneSnapshot(cwd: pane.pwd, target: pane.target, fontDelta: pane.fontDelta)
         )
+        removePane(pane)
+        pane.destroySurface()
+    }
+
+    func killFocusedPane() {
+        guard let pane = focusedPane else { return }
+        AppLog.log("kill pane=\(pane.id.uuidString) (explicit kill)")
+        pane.killRemote()
+        removePane(pane)
+        pane.destroySurface()
+    }
+
+    func removePane(_ pane: PaneView) {
+        guard panes[pane.id] != nil else { return }
         AppLog.log("remove pane=\(pane.id.uuidString)")
         panes.removeValue(forKey: pane.id)
         pane.removeFromSuperview()

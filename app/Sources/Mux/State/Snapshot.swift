@@ -10,6 +10,12 @@ struct PaneSnapshot: Codable {
     /// Font zoom in points relative to the config default (cmd+= /
     /// cmd+-). Absent means default, so no version bump.
     var fontDelta: Int?
+    /// Reopened terminals must never silently become a fresh shell.
+    var requireExisting: Bool?
+
+    var daemon: String? {
+        IX.vm(of: target) == nil ? target : nil
+    }
 }
 
 struct SessionSnapshot: Codable {
@@ -26,6 +32,13 @@ struct AppSnapshot: Codable {
     var frame: [Double] // x, y, w, h
     var sessions: [SessionSnapshot]
     var activeSession: Int
+    /// Optional for compatibility with existing v3 snapshots.
+    var closedPanes: [ClosedPaneHistory.Entry]?
+
+    var requiresRelay: Bool {
+        !(closedPanes ?? []).isEmpty
+            || sessions.contains { $0.panes.values.contains { $0.requireExisting == true } }
+    }
 }
 
 /// v2: an array of windows, each with its own sessions. mux is

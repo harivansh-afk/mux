@@ -233,6 +233,17 @@ impl Manager {
         self.ptys.lock().get(name).cloned()
     }
 
+    /// Reopen a closed terminal without an attach-or-create fallback.
+    pub fn open_existing(&self, name: &str) -> Result<(Arc<PtySession>, bool)> {
+        let session = self.get(name).filter(|s| !s.exited.load(Ordering::SeqCst));
+        match session {
+            Some(session) => Ok((session, false)),
+            None => {
+                bail!("saved terminal {name} no longer exists; no replacement shell was started")
+            }
+        }
+    }
+
     /// Every pty that has not exited: what a self-upgrade hands over.
     pub fn live_sessions(&self) -> Vec<Arc<PtySession>> {
         let mut sessions: Vec<_> = self
