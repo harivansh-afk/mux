@@ -73,8 +73,18 @@ final class PrefixEngine {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
+            if Self.isReopenClosedTab(event) {
+                reopenClosedTab()
+                return nil
+            }
             return handle(event)
         }
+    }
+
+    func reopenClosedTab() {
+        guard let controller, !controller.closedPanes.isEmpty else { return }
+        setMode(.normal)
+        controller.reopenClosedTab()
     }
 
     deinit {

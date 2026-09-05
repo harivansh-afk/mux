@@ -126,7 +126,7 @@ final class Session {
     }
 
     /// Rebuild a whole tree from a snapshot.
-    func restore(_ snapshot: SessionSnapshot) {
+    func restore(_ snapshot: SessionSnapshot, expectExisting: Bool = true) {
         // Size each pane before its surface spawns the attach command, so
         // the pty handshake carries the pane's real dimensions and the
         // daemon replays the screen at the size it was left at. A zoomed
@@ -140,7 +140,7 @@ final class Session {
             _ = makePane(
                 id: id, workingDirectory: meta?.cwd, target: meta?.target,
                 initialFrame: (snapshot.zoomed == id) ? bounds : (rects[id] ?? bounds),
-                fontDelta: meta?.fontDelta ?? 0, expectExisting: true
+                fontDelta: meta?.fontDelta ?? 0, expectExisting: expectExisting
             )
         }
         tree = snapshot.tree
@@ -179,11 +179,16 @@ final class Session {
         AppLog.log("kill pane=\(pane.id.uuidString) (prefix x)")
         pane.killRemote()
         pane.destroySurface()
-        removePane(pane)
+        removePane(pane, killed: true)
     }
 
-    func removePane(_ pane: PaneView) {
+    func removePane(_ pane: PaneView, killed: Bool = false) {
         guard panes[pane.id] != nil else { return }
+        controller?.closedPanes.record(
+            id: pane.id,
+            pane: PaneSnapshot(cwd: pane.pwd, target: pane.target, fontDelta: pane.fontDelta),
+            killed: killed
+        )
         AppLog.log("remove pane=\(pane.id.uuidString)")
         panes.removeValue(forKey: pane.id)
         pane.removeFromSuperview()

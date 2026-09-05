@@ -65,6 +65,7 @@ final class HelpOverlayView: PanelView {
             ]),
             Section(title: "app", rows: [
                 ("cmd+n", "new window"),
+                ("cmd+shift+t", "reopen closed tab"),
                 ("cmd+c / cmd+v", "copy / paste"),
             ]),
         ],

@@ -31,3 +31,9 @@ Reattach replays the exact screen.
 muxd server sends raw PTY byte streams over UDP that are interpreted by the macos client
 
 There are panes and sessions (1 2 3 4 5)
+
+Press **⌘⇧T** (File → Reopen Closed Tab) to reopen the most recently closed
+pane as a new, focused session. Repeat to walk back through the last 20 closes
+in this app run. The host, last known directory, and font size are restored.
+Surviving daemon terminals reattach; exited or explicitly killed terminals
+start a new shell. Closing the final session still quits Mux and clears this history.

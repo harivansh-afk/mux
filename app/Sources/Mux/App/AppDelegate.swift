@@ -228,6 +228,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.newSession()
     }
 
+    @objc func reopenClosedTab(_: Any?) {
+        prefixEngine.reopenClosedTab()
+    }
+
     @objc func copyFromPane(_: Any?) {
         controller?.activeSession?.focusedPane?.bindingAction("copy_to_clipboard")
     }
@@ -258,6 +262,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenuItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "n")
+        let reopen = fileMenu.addItem(
+            withTitle: "Reopen Closed Tab", action: #selector(reopenClosedTab(_:)), keyEquivalent: "t"
+        )
+        reopen.keyEquivalentModifierMask = [.command, .shift]
         fileMenuItem.submenu = fileMenu
         main.addItem(fileMenuItem)
 

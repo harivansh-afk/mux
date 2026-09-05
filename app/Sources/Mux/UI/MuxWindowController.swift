@@ -28,6 +28,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     private(set) var sessions: [Session] = []
     private(set) var activeSessionIndex = 0
+    var closedPanes = ClosedPaneHistory()
 
     /// Canvas state (managed by MuxWindowController+Overlays.swift):
     /// the picker floats over the workspace, which never moves for it -
@@ -176,6 +177,17 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     }
 
     // MARK: - Session switching
+
+    func reopenClosedTab() {
+        guard let entry = closedPanes.popLast() else { return }
+        let session = Session(controller: self)
+        sessions.append(session)
+        activeSessionIndex = sessions.count - 1
+        session.restore(entry.snapshot, expectExisting: entry.expectExisting)
+        layoutPanes()
+        updateSessionIndicator()
+        saveState()
+    }
 
     /// Follows the focused pane's host and working directory, or the
     /// machine the hosts window named - in which case there is no
