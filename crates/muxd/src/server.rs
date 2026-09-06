@@ -243,6 +243,17 @@ fn inherited_cwd(manager: &Manager, cwd: Option<String>, cwd_from: Option<&str>)
 }
 
 /// The attach-or-create arm: reply + replay, then pump both directions.
+struct ClientGuard {
+    session: Arc<PtySession>,
+    id: manager::ClientId,
+}
+
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        self.session.detach(self.id);
+    }
+}
+
 async fn handle_open<R, W>(
     manager: Manager,
     request: OpenRequest,
@@ -281,6 +292,10 @@ where
 
     let attachment = manager::attach(&session, cols, rows);
     let client_id = attachment.id;
+    let _client = ClientGuard {
+        session: session.clone(),
+        id: client_id,
+    };
     tracing::info!(
         name,
         created,
@@ -356,9 +371,6 @@ where
         r = receive => r?,
     }
 
-    // Detach, by identity: this handler may be here because another
-    // client stole the pty, and that client's channel is in the slot now.
-    session.detach(client_id);
     tracing::info!(name = %session.name, client = client_id.raw(), "detached");
     Ok(())
 }
