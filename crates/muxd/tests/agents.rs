@@ -7,6 +7,7 @@
 //! test writes claude's titles into the pty and the vt sees them come
 //! back as output.
 
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +18,98 @@ use tokio::sync::broadcast::Receiver;
 
 mod common;
 use common::PATIENCE;
+
+#[tokio::test]
+async fn an_adopted_idle_agent_is_detected_without_fresh_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let executable = dir.path().join("codex");
+    std::os::unix::fs::symlink("/bin/cat", &executable).expect("link cat");
+    let command = vec![executable.to_string_lossy().into_owned()];
+    let pty = muxd::pty::spawn(&muxd::pty::Spawn {
+        command: &command,
+        cwd: None,
+        term: None,
+        cols: 80,
+        rows: 24,
+    })
+    .expect("spawn silent agent");
+    let manager = Manager::default();
+    let (_, mut events) = manager.watch();
+    manager
+        .adopt(
+            muxd::migrate::MigratePty {
+                name: "idle".into(),
+                command,
+                child_pid: pty.child.as_raw(),
+                cols: 80,
+                rows: 24,
+                screen: b"\x1b]0;A restored conversation\x07".to_vec(),
+            },
+            pty.master.into_inner(),
+        )
+        .expect("adopt");
+    let agent = next_agent(&mut events).await.agent.expect("restored agent");
+    assert_eq!(agent.agent, "codex");
+    assert_eq!(agent.state, "idle");
+    assert_eq!(agent.topic, "A restored conversation");
+    assert!(manager.kill("idle"));
+    let _ = nix::sys::wait::waitpid(pty.child, None);
+}
+
+#[tokio::test]
+async fn npm_codex_launcher_reports_its_title_through_list_and_watch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("codex");
+    nix::unistd::mkfifo(
+        &script,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .expect("create script fifo");
+    let mut input = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&script)
+        .expect("open fifo");
+    let manager = Manager::default();
+    let (_, mut events) = manager.watch();
+    // cat supplies terminal output with the same argv shape as the npm launcher,
+    // without requiring Node or a Codex account on the test host.
+    let (session, _) = manager
+        .open(
+            "npm",
+            &[
+                "/bin/bash".into(),
+                "-c".into(),
+                "exec -a node /bin/cat \"$1\"".into(),
+                "launcher".into(),
+                script.to_string_lossy().into_owned(),
+            ],
+            None,
+            None,
+            80,
+            24,
+        )
+        .expect("open pty");
+    for (title, state) in [
+        ("⠋ Review title recognition", "working"),
+        (
+            "[ ! ] Action Required | Review title recognition",
+            "blocked",
+        ),
+        ("Review title recognition", "idle"),
+    ] {
+        write!(input, "\x1b]0;{title}\x07").expect("emit title");
+        let event = next_event(&mut events, |event| {
+            event.agent.as_ref().is_some_and(|a| a.state == state)
+        })
+        .await;
+        let agent = event.agent.expect("npm launcher is an agent");
+        assert_eq!(agent.agent, "codex");
+        assert_eq!(agent.topic, "Review title recognition");
+        assert_eq!(manager.list()[0].agent.as_ref(), Some(&agent));
+    }
+    assert!(manager.kill(&session.name));
+}
 
 #[tokio::test]
 async fn a_pty_running_claude_reports_its_state_as_the_title_moves() {

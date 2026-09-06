@@ -140,7 +140,7 @@ impl PtySession {
     fn foreground_agent(&self) -> Option<agents::Agent> {
         let pid = nix::unistd::tcgetpgrp(self.master.get_ref())
             .map_or_else(|_| self.child.as_raw(), nix::unistd::Pid::as_raw);
-        process_name(pid).and_then(|name| agents::Agent::from_process_name(&name))
+        process_args(pid).and_then(|argv| agents::Agent::from_command(&argv))
     }
 
     /// Read the pty once: who is in the foreground, and what the title
@@ -394,7 +394,8 @@ impl Manager {
         }
         for (name, session) in staged {
             tracing::info!(name, pid = session.child.as_raw(), "pty adopted");
-            tokio::spawn(read_loop(self.clone(), session));
+            tokio::spawn(read_loop(self.clone(), session.clone()));
+            self.schedule_agent(&session);
         }
         Ok(())
     }
@@ -618,11 +619,9 @@ fn process_cwd(pid: i32) -> Option<String> {
     (!path.is_empty()).then(|| path.to_string())
 }
 
-/// What a live process was run as: its argv[0], from the kernel. The
-/// name the user typed (`claude`, a symlink, a wrapper script's name),
-/// where the executable path would say `node` or `cat`.
+/// The live process's arguments, including an interpreter's script name.
 #[cfg(target_os = "macos")]
-fn process_name(pid: i32) -> Option<String> {
+fn process_args(pid: i32) -> Option<Vec<String>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
     let mut size: libc::size_t = 0;
     // SAFETY: a size query writes nothing but `size`.
@@ -656,20 +655,32 @@ fn process_name(pid: i32) -> Option<String> {
         return None;
     }
     buf.truncate(size);
-    // Layout: argc (u32), the executable path, NUL padding, argv[0], NUL.
+    // Layout: argc (int), executable path, NUL padding, argv, environment.
+    // Stop at argc so environment values cannot become agent identities.
+    let count = usize::try_from(i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?)).ok()?;
     let rest = buf.get(4..)?;
     let after_exec = &rest[rest.iter().position(|b| *b == 0)?..];
-    let argv0 = &after_exec[after_exec.iter().position(|b| *b != 0)?..];
-    let end = argv0.iter().position(|b| *b == 0).unwrap_or(argv0.len());
-    Some(String::from_utf8_lossy(&argv0[..end]).into_owned())
+    let argv = &after_exec[after_exec.iter().position(|b| *b != 0)?..];
+    Some(
+        argv.split(|b| *b == 0)
+            .take(count)
+            .map(|arg| String::from_utf8_lossy(arg).into_owned())
+            .collect(),
+    )
 }
 
-/// What a live process was run as: its argv[0], from procfs.
+/// The live process's arguments, from procfs.
 #[cfg(target_os = "linux")]
-fn process_name(pid: i32) -> Option<String> {
+fn process_args(pid: i32) -> Option<Vec<String>> {
     let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let argv0 = cmdline.split(|b| *b == 0).next()?;
-    (!argv0.is_empty()).then(|| String::from_utf8_lossy(argv0).into_owned())
+    Some(
+        cmdline
+            .strip_suffix(&[0])
+            .unwrap_or(&cmdline)
+            .split(|b| *b == 0)
+            .map(|arg| String::from_utf8_lossy(arg).into_owned())
+            .collect(),
+    )
 }
 
 /// The working directory of a live process, from procfs.

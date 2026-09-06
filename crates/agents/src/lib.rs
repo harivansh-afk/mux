@@ -71,6 +71,17 @@ impl Agent {
         parse_agent_label(basename)
     }
 
+    /// Native agents use argv[0]; npm launchers use `node <agent-script>`.
+    /// Only the script position identifies an agent, never arbitrary arguments.
+    #[must_use]
+    pub fn from_command(argv: &[String]) -> Option<Self> {
+        let executable = argv.first()?;
+        Self::from_process_name(executable).or_else(|| match executable.rsplit('/').next()? {
+            "node" | "nodejs" | "bun" => Self::from_process_name(argv.get(1)?),
+            _ => None,
+        })
+    }
+
     /// The manifest id, and what the wire calls the agent.
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -208,6 +219,30 @@ mod tests {
         assert_eq!(topic("[ . ] Action Required"), "");
         assert_eq!(topic("mux"), "mux");
         assert_eq!(topic("  "), "");
+    }
+
+    #[test]
+    fn npm_launchers_identify_the_script_not_other_arguments() {
+        for (argv, expected) in [
+            (
+                vec!["/usr/bin/node", "/home/user/.local/bin/codex", "resume"],
+                Some(Agent::Codex),
+            ),
+            (vec!["nodejs", "/opt/codex.js"], Some(Agent::Codex)),
+            (vec!["bun", "/opt/claude"], Some(Agent::Claude)),
+            (
+                vec!["/opt/codex", "--model", "anything"],
+                Some(Agent::Codex),
+            ),
+            (vec!["node", "server.js", "codex"], None),
+            (vec!["node", "-e", "codex"], None),
+            (vec!["cat", "codex"], None),
+            (vec!["node"], None),
+            (vec![], None),
+        ] {
+            let argv: Vec<_> = argv.into_iter().map(String::from).collect();
+            assert_eq!(Agent::from_command(&argv), expected, "{argv:?}");
+        }
     }
 
     #[test]
