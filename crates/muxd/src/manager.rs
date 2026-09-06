@@ -87,6 +87,7 @@ pub struct PtySession {
     pub agent: Mutex<Option<AgentInfo>>,
     /// An evaluation is scheduled; output that lands meanwhile rides it.
     agent_pending: AtomicBool,
+    last_event: Mutex<Option<PtyEvent>>,
 }
 
 impl PtySession {
@@ -144,8 +145,8 @@ impl PtySession {
     }
 
     /// Read the pty once: who is in the foreground, and what the title
-    /// and the screen tail say it is doing. True when the reading moved.
-    fn refresh_agent(&self) -> bool {
+    /// and the screen tail say it is doing.
+    fn refresh_agent(&self) {
         let next = self.foreground_agent().map(|agent| {
             let (title, screen) = {
                 let term = self.terminal.lock();
@@ -173,12 +174,7 @@ impl PtySession {
                 topic: agents::topic(&title),
             }
         });
-        let mut current = self.agent.lock();
-        if *current == next {
-            return false;
-        }
-        *current = next;
-        true
+        *self.agent.lock() = next;
     }
 }
 
@@ -207,8 +203,14 @@ impl Manager {
     }
 
     fn emit(&self, session: &PtySession) {
+        let mut previous = session.last_event.lock();
+        let event = session.event();
+        if previous.as_ref() == Some(&event) {
+            return;
+        }
+        *previous = Some(event.clone());
         // No receivers is the common case and not an error.
-        let _ = self.events.send(session.event());
+        let _ = self.events.send(event);
     }
 
     /// Output landed: look at the pty once it settles. One evaluation
@@ -223,7 +225,8 @@ impl Manager {
             tokio::time::sleep(AGENT_SETTLE).await;
             session.agent_pending.store(false, Ordering::Release);
             // A pty that exited meanwhile was reported by its reaper.
-            if !session.exited.load(Ordering::SeqCst) && session.refresh_agent() {
+            if !session.exited.load(Ordering::SeqCst) {
+                session.refresh_agent();
                 manager.emit(&session);
             }
         });
@@ -299,6 +302,7 @@ impl Manager {
             exited: AtomicBool::new(false),
             agent: Mutex::new(None),
             agent_pending: AtomicBool::new(false),
+            last_event: Mutex::new(None),
         });
         ptys.insert(name.to_string(), session.clone());
         Ok(session)

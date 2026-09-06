@@ -197,6 +197,31 @@ async fn a_shell_is_not_an_agent_and_a_watch_opens_with_every_pty() {
     assert!(manager.kill("s1"));
 }
 
+#[tokio::test]
+async fn a_watch_reports_directory_changes_without_an_agent() {
+    let manager = Manager::default();
+    let (_, mut events) = manager.watch();
+    let (session, _) = manager
+        .open("cwd", &["/bin/sh".into()], Some("/"), None, 80, 24)
+        .expect("open shell");
+    write_pty(&session, b"printf 'ready\\n'\n").await;
+    let initial = next_event(&mut events, |e| e.cwd.as_deref() == Some("/")).await;
+    assert!(initial.agent.is_none());
+
+    write_pty(&session, b"cd /usr && printf 'changed\\n'\n").await;
+    let changed = next_event(&mut events, |e| e.cwd.as_deref() == Some("/usr")).await;
+    assert!(changed.agent.is_none());
+
+    write_pty(&session, b"printf 'unchanged\\n'\n").await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), events.recv())
+            .await
+            .is_err(),
+        "unchanged metadata must not repeat"
+    );
+    assert!(manager.kill("cwd"));
+}
+
 /// `/bin/cat` under an agent's name, in a private directory. A link,
 /// not a copy: macOS kills platform binaries that run from elsewhere.
 fn fake_agent(name: &str) -> PathBuf {
