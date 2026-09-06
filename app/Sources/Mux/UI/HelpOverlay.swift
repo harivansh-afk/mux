@@ -68,6 +68,7 @@ final class HelpOverlayView: PanelView {
                 ("cmd+n", "new window"),
                 ("cmd+shift+t", "reopen closed tab"),
                 ("cmd+w", "close tab (keep shell)"),
+                ("cmd+1 .. 9", "select session"),
                 ("cmd+c / cmd+v", "copy / paste"),
             ]),
         ],

@@ -237,6 +237,62 @@ async fn attach_only_preserves_identity_and_never_creates_a_missing_terminal() {
     let _ = std::fs::remove_file(&socket);
 }
 
+#[tokio::test]
+async fn a_failed_or_cancelled_connection_releases_its_client_slot() {
+    let manager = Manager::default();
+    for cancel in [false, true] {
+        let (mut client, server) = tokio::io::duplex(65536);
+        let (reader, writer) = tokio::io::split(server);
+        let serving = tokio::spawn({
+            let manager = manager.clone();
+            async move {
+                muxd::server::handle_connection(
+                    manager,
+                    reader,
+                    writer,
+                    &muxd::server::Policy::Local,
+                )
+                .await
+            }
+        });
+        write_request(
+            &mut client,
+            &request(
+                None,
+                None,
+                OpenMode::Open {
+                    name: "cleanup".into(),
+                    cwd: None,
+                    command: vec!["/bin/cat".into()],
+                    cwd_from: None,
+                },
+            ),
+        )
+        .await;
+        read_reply(&mut client).await.expect("attached");
+        read_dump(&mut client).await;
+        let session = manager.get("cleanup").expect("pty");
+        assert!(session.info().attached);
+        if cancel {
+            serving.abort();
+            assert!(serving.await.expect_err("cancelled task").is_cancelled());
+        } else {
+            // Invalid zero-length frame makes the receive arm return an error.
+            use tokio::io::AsyncWriteExt as _;
+            client.write_all(&[0; 5]).await.expect("invalid frame");
+            assert!(serving.await.expect("join handler").is_err());
+        }
+        assert!(
+            !session.info().attached,
+            "failed handlers must release silent ptys"
+        );
+        let mut reattached = muxd::manager::attach(&session, 80, 24);
+        write_pty(&session, b"still alive\n").await;
+        recv_output_until(&mut reattached.rx, b"still alive").await;
+        assert!(manager.kill("cleanup"));
+    }
+}
+
 /// Regression: attaching a second client evicts the first, whose handler
 /// then cleared `session.client` unconditionally - nulling the *new*
 /// client's slot. The stolen-from pane went quiet and the pty looked
@@ -305,6 +361,41 @@ async fn a_v5_client_is_told_to_upgrade_in_words_it_can_decode() {
 }
 
 // ---------------------------------------------------------------- upgrade
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_adoption_is_not_acknowledged_or_partially_installed() {
+    let predecessor = Manager::default();
+    let first = open_cat(&predecessor, "a-free");
+    let second = open_cat(&predecessor, "z-taken");
+    let successor = Manager::default();
+    let existing = open_cat(&successor, "z-taken");
+    let socket = temp_socket("adopt-failure");
+    let listener = muxd::migrate::bind_listener(&socket).expect("bind");
+    let adopting = tokio::spawn({
+        let successor = successor.clone();
+        async move { muxd::migrate::accept_handoff(&listener, &successor).await }
+    });
+    let handed = tokio::task::spawn_blocking({
+        let predecessor = predecessor.clone();
+        let socket = socket.clone();
+        move || muxd::migrate::hand_off(&predecessor, &socket)
+    })
+    .await
+    .expect("handoff task");
+    let adopted = adopting.await.expect("adopt task");
+    let installed = successor.get("a-free").is_some();
+    // Clean up before assertions, including on the broken implementation.
+    predecessor.kill(&first.name);
+    predecessor.kill(&second.name);
+    successor.kill(&existing.name);
+    let _ = std::fs::remove_file(socket);
+    assert!(
+        handed.is_err(),
+        "a failed adoption must keep the predecessor alive"
+    );
+    assert!(adopted.is_err(), "report the failed adoption");
+    assert!(!installed, "failed handoffs must install no ptys");
+}
 
 /// The self-upgrade handoff, both halves in one process: the predecessor
 /// snapshots and sends its live ptys over `SCM_RIGHTS`, the successor

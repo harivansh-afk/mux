@@ -127,19 +127,10 @@ pub fn window_size(master: &AsyncFd<OwnedFd>) -> WindowSize {
 
 /// Whether a variable in the daemon's environment is passed to a pane.
 ///
-/// TERM/COLORTERM are set per pane instead. CLAUDE*/AI_AGENT are
-/// per-session markers of whatever agent happened to start the daemon;
-/// leaking them makes every pane shell look like a nested agent session
-/// (e.g. claude disables transcript saving under
-/// CLAUDE_CODE_CHILD_SESSION).
-///
-/// NOTIFY_SOCKET, INVOCATION_ID and LISTEN_* are systemd's contract with
-/// the daemon, not with what runs in a pane. The unit has
-/// `NotifyAccess=all` (the upgrade successor is a grandchild of
-/// ExecReload), so anything in the cgroup that finds NOTIFY_SOCKET speaks
-/// for muxd: a `pg_ctl stop` in a pane sent `STOPPING=1`, systemd moved
-/// the unit to stop-sigterm without signalling anyone, and 90s later it
-/// SIGKILLed every pane on the host.
+/// Set `TERM`/`COLORTERM` per pane. Agent session markers belong to the
+/// daemon's launcher; inheriting them can disable transcript saving.
+/// Service-manager variables belong to the daemon: with `NotifyAccess=all`,
+/// a pane inheriting `NOTIFY_SOCKET` can stop the entire muxd unit.
 fn pane_inherits(key: &str) -> bool {
     !matches!(
         key,

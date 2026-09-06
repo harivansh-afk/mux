@@ -1,54 +1,43 @@
 # Mux.app
 
-Swift/AppKit. Builds on macOS only - generate the Xcode project here on the Mac.
+Swift/AppKit on macOS, built with SwiftPM. From the repository root, run
+`just ghosttykit` to fetch GhosttyKit, then `just app` to assemble
+`app/.build/Mux.app`. Rust builds also need the Ghostty source and Zig;
+see the root [README](../README.md). Run `swift test --package-path app`
+for the app and tiling tests on macOS.
 
-## Module plan
+## Source layout
 
-Standard SwiftPM layout: all sources under `Sources/Mux/`, grouped by feature.
-
-- `Sources/Mux/App/` - lifecycle. Owns the single `ghostty_app_t`; wraps
-  `ghostty_runtime_config_s` (wakeup_cb, action_cb, clipboard cbs) and dispatches
-  the ~70 action tags (new_split, goto_split, toggle_split_zoom, new_tab, ...)
-  into NotificationCenter. Adapted from ghostty's `Ghostty.App.swift` (MIT).
-- `Sources/Mux/Terminal/` - `PaneView: NSView` hosting a ghostty surface.
-  `ghostty_surface_new` with the view in `platform.nsview`; forward key/text/
-  mouse/scroll/IME (NSTextInputClient); `ghostty_surface_set_size` on layout,
-  `set_content_scale` on screen change. Adapted from `SurfaceView_AppKit.swift`.
-- `Sources/Mux/Tiling/` - the multiplexer. `Session`: one split tree of panes
-  plus focus/zoom state, the unit the user switches between (prefix c / 1..9 /
-  n / p) and the unit of layout persistence. Sessions are pure client-owned
-  layout; the daemon side (M2+) addresses terminal content per-pane and never
-  learns sessions exist. `SplitTree` adapted from ghostty's
-  `macos/Sources/Features/Splits/SplitTree.swift` (Codable BSP: leaf/split with
-  direction+ratio, spatial rects for h/j/k/l focus, zoomed node). Plus the
-  prefix engine: mode enum (normal/prefix/resize/help), local NSEvent monitor
-  ahead of the focused surface, held-ctrl aliasing, edge fallback motion.
-- `Sources/Mux/State/` - versioned JSON layout snapshots: BSP tree +
-  per-pane {target, session id, cwd, launch argv, label, agent session ref},
-  stable never-reused pane/tab ids, autosave on mutation. Restore = rebuild
-  tree, re-exec each pane's command (M1: local shell at cwd; M2: mux-attach
-  target which replays the daemon's screen). Also the host alias table read
-  from `~/.config/mux/hosts.json`.
-- `Sources/Mux/UI/` - window chrome: borderless `MuxWindow`, the window
-  controller, the floating mode bar, the help overlay, the target picker,
-  and theming.
+- `Sources/Mux/App/`: application lifecycle, Ghostty runtime callbacks,
+  clipboard integration, and action dispatch to the window controller.
+- `Sources/Mux/Terminal/`: Ghostty surfaces, keyboard/IME/mouse forwarding,
+  scrolling, and pane metadata.
+- `Sources/Mux/Tiling/`: sessions, pane ownership, and the prefix key engine.
+- `Sources/Tiling/`: the Foundation-only split tree, shared by layout,
+  navigation, persistence, and platform-independent tests.
+- `Sources/Mux/State/`: snapshots and recovery, daemon queries and watches,
+  host configuration, ix integration, and subprocesses.
+- `Sources/Mux/UI/`: the window controller, Canvas, overlays, host editor,
+  and theme.
 
 ## Pane targets
 
-A pane's `target` says where its terminal lives; a snapshot without the
-field is a local pane, so old state files keep loading.
+Sessions own client-side layout; muxd owns each persistent PTY. Restoring
+layout reattaches panes by their stable IDs and replays the daemon's screen.
+The client displays a notice if a missing PTY has to be recreated.
 
-- nil - the local daemon: `mux-attach "local:<pane>" [--cwd <dir>]`
-- a host alias from `~/.config/mux/hosts.json` - the same pty one hop away:
-  `mux-attach "<alias>:<pane>"`, relayed by the local daemon
-- `ix:<vm>` - no daemon and no persistence: the pane execs `ix shell <vm>`
+- `nil`: a local daemon PTY, addressed as `local:<pane>`.
+- A host alias from `~/.config/mux/hosts.json`: a remote daemon PTY,
+  reached through the local daemon's QUIC broker.
+- `ix:<vm>`: a local daemon PTY running `ix shell <vm>`. Detaching retains
+  that local process; persistence inside the VM depends on ix.
 
-Splits, new sessions and new windows inherit the source pane's target, and
-its cwd only when the targets match (a path on one machine means nothing on
-another). `prefix t` opens the target picker: `local` plus the aliases, j/k
-to choose, enter to split right into the chosen host.
+Splits and new sessions inherit their source pane's target. A working
+directory is inherited only when targets match. Prefix `t` opens the
+target picker.
 
 ## GhosttyKit
 
-`GhosttyKit/` holds module.modulemap + the fetched xcframework + resources
-(see ../scripts/fetch-ghosttykit.sh). Set GHOSTTY_RESOURCES_DIR at launch.
+`GhosttyKit/` contains the fetched xcframework and module map. The bundle
+assembler includes Ghostty runtime resources and the sibling terminfo
+directory, and signs with the local `mux-dev` identity when available.

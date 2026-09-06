@@ -147,6 +147,16 @@ final class PrefixEngine {
         let hasCtrl = event.modifierFlags.contains(.control)
         let hasCmd = event.modifierFlags.contains(.command)
 
+        // Direct session selection works from every mode, before the
+        // terminal or an overlay can consume the number key.
+        if event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+           key.count == 1, let number = Int(key), (1 ... 9).contains(number)
+        {
+            setMode(.normal)
+            controller?.selectSession(number - 1)
+            return nil
+        }
+
         switch mode {
         case .normal:
             if hasCtrl, !hasCmd, key == "b" {
