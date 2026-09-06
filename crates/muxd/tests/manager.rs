@@ -221,6 +221,41 @@ async fn a_v5_client_is_told_to_upgrade_in_words_it_can_decode() {
 
 // ---------------------------------------------------------------- upgrade
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_adoption_is_not_acknowledged_or_partially_installed() {
+    let predecessor = Manager::default();
+    let first = open_cat(&predecessor, "a-free");
+    let second = open_cat(&predecessor, "z-taken");
+    let successor = Manager::default();
+    let existing = open_cat(&successor, "z-taken");
+    let socket = temp_socket("adopt-failure");
+    let listener = muxd::migrate::bind_listener(&socket).expect("bind");
+    let adopting = tokio::spawn({
+        let successor = successor.clone();
+        async move { muxd::migrate::accept_handoff(&listener, &successor).await }
+    });
+    let handed = tokio::task::spawn_blocking({
+        let predecessor = predecessor.clone();
+        let socket = socket.clone();
+        move || muxd::migrate::hand_off(&predecessor, &socket)
+    })
+    .await
+    .expect("handoff task");
+    let adopted = adopting.await.expect("adopt task");
+    let installed = successor.get("a-free").is_some();
+    // Clean up before assertions, including on the broken implementation.
+    predecessor.kill(&first.name);
+    predecessor.kill(&second.name);
+    successor.kill(&existing.name);
+    let _ = std::fs::remove_file(socket);
+    assert!(
+        handed.is_err(),
+        "a failed adoption must keep the predecessor alive"
+    );
+    assert!(adopted.is_err(), "report the failed adoption");
+    assert!(!installed, "failed handoffs must install no ptys");
+}
+
 /// The self-upgrade handoff, both halves in one process: the predecessor
 /// snapshots and sends its live ptys over `SCM_RIGHTS`, the successor
 /// adopts them, and the child on the far end of the inherited fd is the

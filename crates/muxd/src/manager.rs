@@ -349,27 +349,53 @@ impl Manager {
         pty: crate::migrate::MigratePty,
         master: std::os::fd::OwnedFd,
     ) -> Result<()> {
-        crate::pty::set_nonblocking(&master).context("nonblocking master")?;
-        let mut terminal =
-            ghostty_vt::Terminal::new(pty.rows, pty.cols).context("terminal alloc")?;
-        terminal.feed(&pty.screen);
-        let master = tokio::io::unix::AsyncFd::new(master).context("AsyncFd")?;
+        self.adopt_many([(pty, master)])
+    }
 
-        let mut ptys = self.ptys.lock();
-        let session = Self::insert_locked(
-            &mut ptys,
-            &pty.name,
-            pty.command,
-            terminal,
-            master,
-            nix::unistd::Pid::from_raw(pty.child_pid),
-            true,
-        )?;
-        drop(ptys);
+    /// Prepare the entire handoff before installing any read loop. A failed
+    /// adoption leaves both managers and the predecessor's output untouched.
+    pub fn adopt_many(
+        &self,
+        incoming: impl IntoIterator<Item = (crate::migrate::MigratePty, std::os::fd::OwnedFd)>,
+    ) -> Result<()> {
+        let mut staged = HashMap::new();
+        for (pty, master) in incoming {
+            crate::pty::set_nonblocking(&master).context("nonblocking master")?;
+            let mut terminal =
+                ghostty_vt::Terminal::new(pty.rows, pty.cols).context("terminal alloc")?;
+            terminal.feed(&pty.screen);
+            let master = tokio::io::unix::AsyncFd::new(master).context("AsyncFd")?;
 
-        tokio::spawn(read_loop(self.clone(), session));
-
-        tracing::info!(name = pty.name, pid = pty.child_pid, "pty adopted");
+            Self::insert_locked(
+                &mut staged,
+                &pty.name,
+                pty.command,
+                terminal,
+                master,
+                nix::unistd::Pid::from_raw(pty.child_pid),
+                true,
+            )?;
+        }
+        {
+            let mut ptys = self.ptys.lock();
+            if ptys.len() + staged.len() > MAX_PTYS {
+                bail!("pty limit reached ({MAX_PTYS})");
+            }
+            for name in staged.keys() {
+                if ptys.contains_key(name) {
+                    bail!("pty {name} already exists");
+                }
+            }
+            ptys.extend(
+                staged
+                    .iter()
+                    .map(|(name, session)| (name.clone(), session.clone())),
+            );
+        }
+        for (name, session) in staged {
+            tracing::info!(name, pid = session.child.as_raw(), "pty adopted");
+            tokio::spawn(read_loop(self.clone(), session));
+        }
         Ok(())
     }
 
