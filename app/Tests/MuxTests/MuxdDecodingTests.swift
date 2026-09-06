@@ -17,7 +17,7 @@ final class MuxdDecodingTests: XCTestCase {
         """
         let event = try XCTUnwrap(event(line))
         XCTAssertEqual(event.name, "11111111-1111-1111-1111-111111111111")
-        XCTAssertEqual(event.agent, Muxd.AgentInfo(agent: .claude, state: .working, topic: "fix the tests"))
+        XCTAssertEqual(event.agent, Muxd.AgentInfo(agent: "claude", state: .working, topic: "fix the tests"))
         XCTAssertEqual(event.cwd, "/tmp")
         XCTAssertFalse(event.exited)
     }
@@ -31,16 +31,23 @@ final class MuxdDecodingTests: XCTestCase {
         XCTAssertNil(missing.agent)
     }
 
-    func testUnknownAgentOrStateDropsTheAgentNotTheLine() throws {
+    func testUnknownStateDropsTheAgentNotTheLine() throws {
         let state = try XCTUnwrap(event(
             #"{"name":"a","agent":{"agent":"codex","state":"dreaming","topic":""},"exited":false}"#
         ))
         XCTAssertNil(state.agent)
         XCTAssertEqual(state.name, "a")
-        let agent = try XCTUnwrap(event(
-            #"{"name":"a","agent":{"agent":"gemini","state":"idle","topic":""},"exited":false}"#
-        ))
-        XCTAssertNil(agent.agent)
+    }
+
+    func testAgentLabelsDoNotRequireAnAppUpdate() throws {
+        for label in ["gemini", "hermes", "future-agent"] {
+            let value = try XCTUnwrap(event(
+                """
+                {"name":"a","agent":{"agent":"\(label)","state":"idle","topic":"a task"},"exited":false}
+                """
+            ))
+            XCTAssertEqual(value.agent, Muxd.AgentInfo(agent: label, state: .idle, topic: "a task"))
+        }
     }
 
     func testLogLinesAndBrokenJsonAreSkipped() {
@@ -55,7 +62,7 @@ final class MuxdDecodingTests: XCTestCase {
         "agent":{"agent":"codex","state":"blocked","topic":"mux"}}
         """
         let listing: Muxd.PtyListing = try XCTUnwrap(Muxd.decode(line[...]))
-        XCTAssertEqual(listing.agent, Muxd.AgentInfo(agent: .codex, state: .blocked, topic: "mux"))
+        XCTAssertEqual(listing.agent, Muxd.AgentInfo(agent: "codex", state: .blocked, topic: "mux"))
         let bare: Muxd.PtyListing = try XCTUnwrap(Muxd.decode(
             #"{"name":"a","command":[],"attached":false,"exited":false,"cwd":null}"#[...]
         ))

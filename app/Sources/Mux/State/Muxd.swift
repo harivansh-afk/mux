@@ -198,15 +198,10 @@ enum Muxd {
     /// process and the terminal it tracks. The app renders this and never
     /// reads titles itself.
     struct AgentInfo: Decodable, Equatable {
-        let agent: Agent
+        let agent: String
         let state: AgentState
         /// What the agent says it is doing; may be empty.
         let topic: String
-    }
-
-    enum Agent: String, Decodable {
-        case claude
-        case codex
     }
 
     enum AgentState: String, Decodable {
