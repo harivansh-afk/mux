@@ -45,6 +45,7 @@ enum Muxd {
         /// exist, so the relay is told to call out a `created` reply (the
         /// daemon lost the shell) instead of silently starting fresh.
         let expectExisting: Bool
+        var requireExisting: Bool = false
 
         /// The pty to attach to: `<alias>:<id>` for a pane hosted on
         /// another machine, `local:<id>` otherwise. An `ix:<vm>` pane is
@@ -74,8 +75,10 @@ enum Muxd {
                 // fall back to the user's shell for a plain local pane.
                 return inPty.map(Self.quote)
             }
-            var parts = ["\"\(attach)\"", "\"\(address)\""]
-            if expectExisting {
+            var parts = [attach, address]
+            if requireExisting {
+                parts.append("--require-existing")
+            } else if expectExisting {
                 // A restored or adopted pane believes its pty survived: the
                 // relay prints a notice if the daemon had to create one.
                 parts.append("--expect-existing")
@@ -84,26 +87,24 @@ enum Muxd {
                 // `-- cmd` makes the pty run that command instead of the
                 // shell. No cwd: the pty's working directory is this
                 // machine's and means nothing inside the VM.
-                parts += ["--", Self.quote(inPty)]
-                return parts.joined(separator: " ")
+                parts += ["--"] + inPty
+                return Self.quote(parts)
             }
             if let cwdFrom {
                 // Never send --cwd beside --cwd-from: the daemon would let
                 // it win, and a client-side pwd can be stale (a remote
                 // shell with no OSC 7 never updates it). The live process
                 // is the truth.
-                parts += ["--cwd-from", "\"\(cwdFrom.uuidString)\""]
+                parts += ["--cwd-from", cwdFrom.uuidString]
             } else if let cwd {
-                parts += ["--cwd", "\"\(cwd)\""]
+                parts += ["--cwd", cwd]
             }
-            return parts.joined(separator: " ")
+            return Self.quote(parts)
         }
 
-        /// argv as one command line for libghostty, which hands the string
-        /// to a shell. Every word is double-quoted, so paths with spaces
-        /// and flake refs with `#` survive intact.
-        private static func quote(_ argv: [String]) -> String {
-            argv.map { "\"\($0)\"" }.joined(separator: " ")
+        /// Quote argv once at the shell boundary, preserving every literal byte.
+        static func quote(_ argv: [String]) -> String {
+            argv.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ")
         }
     }
 
@@ -195,15 +196,10 @@ enum Muxd {
     /// process and the terminal it tracks. The app renders this and never
     /// reads titles itself.
     struct AgentInfo: Decodable, Equatable {
-        let agent: Agent
+        let agent: String
         let state: AgentState
         /// What the agent says it is doing; may be empty.
         let topic: String
-    }
-
-    enum Agent: String, Decodable {
-        case claude
-        case codex
     }
 
     enum AgentState: String, Decodable {

@@ -201,7 +201,7 @@ where
             reply(&mut writer, &Ok(Opened::Watching)).await?;
             return watch(manager, reader, writer).await;
         }
-        OpenMode::Open { .. } => {}
+        OpenMode::Open { .. } | OpenMode::Attach { .. } => {}
     }
     handle_open(manager, request, reader, writer).await
 }
@@ -271,17 +271,23 @@ where
         mode,
         ..
     } = request;
-    let OpenMode::Open {
-        name,
-        cwd,
-        command,
-        cwd_from,
-    } = mode
-    else {
-        bail!("handle_open on a request that is not an open");
+    let (name, opened) = match mode {
+        OpenMode::Open {
+            name,
+            cwd,
+            command,
+            cwd_from,
+        } => {
+            let cwd = inherited_cwd(&manager, cwd, cwd_from.as_deref());
+            let opened = manager.open(&name, &command, cwd.as_deref(), term.as_deref(), cols, rows);
+            (name, opened)
+        }
+        OpenMode::Attach { name } => {
+            let opened = manager.open_existing(&name);
+            (name, opened)
+        }
+        _ => bail!("handle_open on a request that is not an open"),
     };
-    let cwd = inherited_cwd(&manager, cwd, cwd_from.as_deref());
-    let opened = manager.open(&name, &command, cwd.as_deref(), term.as_deref(), cols, rows);
     let (session, created) = match opened {
         Ok(v) => v,
         Err(e) => {
@@ -415,7 +421,9 @@ type Handshake = std::result::Result<OpenRequest, u32>;
 async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Handshake> {
     let buf = frame::aio::read_message(reader).await.context("request")?;
     let version = peer::decode_prefix::<u32>(&buf).context("request version")?;
-    if version != peer::PROTOCOL_VERSION {
+    // v8 only adds an OpenMode variant; every v7 request/reply remains
+    // byte-compatible. Keep existing clients attached across live upgrade.
+    if version != peer::PROTOCOL_VERSION && version != 7 {
         return Ok(Err(version));
     }
     Ok(Ok(peer::decode(&buf).context("request decode")?))

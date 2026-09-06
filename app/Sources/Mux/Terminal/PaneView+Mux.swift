@@ -9,6 +9,10 @@ import GhosttyKit
 /// of it is in the port, and keeping it out of PaneView+Key.swift and
 /// PaneView+Mouse.swift is what makes those two diffable against ghostty.
 extension PaneView {
+    var requiresExisting: Bool {
+        attach.requireExisting
+    }
+
     // MARK: - Font zoom
 
     /// cmd+= / cmd+- / cmd+0 as +1 / -1 / 0 (reset) for the focused

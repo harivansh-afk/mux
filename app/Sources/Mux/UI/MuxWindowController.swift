@@ -28,6 +28,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     private(set) var sessions: [Session] = []
     private(set) var activeSessionIndex = 0
+    var closedPanes = ClosedPaneHistory()
 
     /// Canvas state (managed by MuxWindowController+Overlays.swift):
     /// the picker floats over the workspace, which never moves for it -
@@ -127,10 +128,11 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     func watch(_ host: String?) {
         guard watches[host] == nil else { return }
         watches[host] = Muxd.Watch(host: host) { [weak self] event in
-            guard let self, let id = UUID(uuidString: event.name),
-                  let pane = pane(id, on: host)
-            else { return }
-            pane.apply(agent: event.agent, cwd: event.cwd)
+            guard let self, let id = UUID(uuidString: event.name) else { return }
+            if event.exited, closedPanes.remove(id, on: host) {
+                saveState()
+            }
+            pane(id, on: host)?.apply(agent: event.agent, cwd: event.cwd)
         }
     }
 
@@ -154,13 +156,14 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         workspace.bounds
     }
 
-    /// The last session closing closes the window.
+    /// Keep an empty window after the last pane closes so it can be reopened.
     func sessionDidEmpty(_ session: Session) {
         guard let index = sessions.firstIndex(where: { $0 === session }) else { return }
         sessions.remove(at: index)
-        guard !sessions.isEmpty else {
-            window.close()
-            return
+        if sessions.isEmpty {
+            sessions = [Session(controller: self)]
+            activeSessionIndex = 0
+            window.makeFirstResponder(nil)
         }
         if index < activeSessionIndex {
             activeSessionIndex -= 1
@@ -177,12 +180,25 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - Session switching
 
+    func reopenClosedTab() {
+        guard let entry = closedPanes.popLast() else { return }
+        let session = Session(controller: self)
+        sessions.removeAll { $0.tree == nil }
+        sessions.append(session)
+        activeSessionIndex = sessions.count - 1
+        session.restore(entry.snapshot)
+        layoutPanes()
+        updateSessionIndicator()
+        saveState()
+    }
+
     /// Follows the focused pane's host and working directory, or the
     /// machine the hosts window named - in which case there is no
     /// directory to inherit.
     func newSession(target: NewPaneTarget = .inherit) {
         let seed = target.seed(from: activeSession?.focusedPane)
         let session = Session(controller: self)
+        sessions.removeAll { $0.tree == nil }
         sessions.append(session)
         activeSessionIndex = sessions.count - 1
         session.addInitialPane(
@@ -209,6 +225,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             previous = id
         }
         let session = Session(controller: self)
+        sessions.removeAll { $0.tree == nil }
         sessions.append(session)
         session.restore(SessionSnapshot(
             tree: tree, panes: panes, focused: first, zoomed: nil
@@ -369,7 +386,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         // The window is the app, so closing it is quitting: save while
         // the sessions are still alive, then detach - every pty survives
         // for the next launch. Killing ptys is only ever a per-pane act
-        // (prefix x), never a side effect of the app going away.
+        // (prefix X), never a side effect of the app going away.
         App.delegate.beginTermination(reason: "window closed")
         for session in sessions {
             session.destroyAllSurfaces()

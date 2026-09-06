@@ -85,11 +85,19 @@ def main():
             log(TAG, "pty owned by the remote daemon, absent from the local one")
             client.kill()
             client.close()
-            client = Pty([mux_attach_bin, "testbox:remote-pane-1"], env_local)
-            client.expect(MARKER, 20, "the replay through the broker")
+            client = Pty([mux_attach_bin, "--require-existing", "testbox:remote-pane-1"], env_local)
+            client.expect(MARKER, 20, "the strict reopen replay through the broker")
             client.kill()
             client.close()
             log(TAG, "killed client reattached through the broker; screen replayed over QUIC")
+            client = Pty([mux_attach_bin, "--require-existing", "testbox:missing"], env_local)
+            client.expect(b"no replacement shell was started", 20, "remote strict reopen rejection")
+            if any(p["name"] == "missing" for p in list_ptys(muxd_bin, env_remote)):
+                fail("strict reopen created a remote replacement shell")
+            if list_ptys(muxd_bin, env_local):
+                fail("strict remote reopen fell back to a local shell")
+            client.kill()
+            client.close()
             code, ok = probe(muxd_bin, env_local, "testbox")
             # Loopback answers in well under a second.
             if code != 0 or ok.get("alias") != "testbox" or ok.get("ok") is not True:

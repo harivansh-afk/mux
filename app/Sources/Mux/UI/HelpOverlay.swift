@@ -25,6 +25,7 @@ final class HelpOverlayView: PanelView {
                 ("h / j / k / l", "focus left / down / up / right"),
                 ("z", "toggle zoom"),
                 ("x", "close pane"),
+                ("X", "kill terminal"),
                 ("r", "resize mode"),
                 ("t", "hosts and ix vms"),
                 ("space / f", "canvas"),
@@ -65,6 +66,8 @@ final class HelpOverlayView: PanelView {
             ]),
             Section(title: "app", rows: [
                 ("cmd+n", "new window"),
+                ("cmd+shift+t", "reopen closed tab"),
+                ("cmd+w", "close tab (keep shell)"),
                 ("cmd+1 .. 9", "select session"),
                 ("cmd+c / cmd+v", "copy / paste"),
             ]),

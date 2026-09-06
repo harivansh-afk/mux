@@ -21,6 +21,17 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// fails the run instead of stalling it.
 pub const PATIENCE: Duration = Duration::from_secs(10);
 
+/// NixOS keeps coreutils in PATH rather than /bin.
+pub fn cat() -> String {
+    let path = std::env::var_os("PATH").expect("test PATH");
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("cat"))
+        .find(|candidate| candidate.is_file())
+        .expect("cat on test PATH")
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Short /tmp path: `sun_path` is 104 bytes on darwin.
 pub fn temp_socket(what: &str) -> PathBuf {
     let path = PathBuf::from(format!("/tmp/muxd-t-{}-{what}.sock", std::process::id()));
