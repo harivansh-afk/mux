@@ -72,7 +72,7 @@ fn evaluate(loaded: &'static LoadedManifest, input: DetectionInput<'_>) -> Detec
 
 struct LoadedManifest {
     manifest: AgentManifest,
-    compiled_rules: Vec<CompiledRule>,
+    compiled_rules: Vec<CompiledGate>,
 }
 
 /// Every bundled manifest, parsed and compiled once per process.
@@ -181,11 +181,6 @@ struct ManifestGate {
     regex: Vec<String>,
     #[serde(default)]
     line_regex: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-struct CompiledRule {
-    gate: CompiledGate,
 }
 
 #[derive(Debug, Clone)]
@@ -493,13 +488,12 @@ fn manifest_gate_from_rule(rule: &ManifestRule) -> ManifestGate {
     }
 }
 
-fn compile_manifest(manifest: &AgentManifest) -> Result<Vec<CompiledRule>, String> {
+fn compile_manifest(manifest: &AgentManifest) -> Result<Vec<CompiledGate>, String> {
     manifest
         .rules
         .iter()
         .map(|rule| {
             compile_gate(&manifest_gate_from_rule(rule))
-                .map(|gate| CompiledRule { gate })
                 .map_err(|err| format!("rule {} could not be compiled: {err}", rule.id))
         })
         .collect()
@@ -540,9 +534,9 @@ fn compile_gate(gate: &ManifestGate) -> Result<CompiledGate, String> {
     })
 }
 
-fn compiled_rule_matches(rule: &CompiledRule, text: &str) -> bool {
+fn compiled_rule_matches(gate: &CompiledGate, text: &str) -> bool {
     let lower_text = text.to_lowercase();
-    compiled_gate_matches(&rule.gate, text, &lower_text)
+    compiled_gate_matches(gate, text, &lower_text)
 }
 
 fn compiled_gate_matches(gate: &CompiledGate, text: &str, lower_text: &str) -> bool {
