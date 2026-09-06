@@ -222,12 +222,7 @@ pub async fn accept_handoff(listener: &UnixListener, manager: &Manager) -> Resul
     let (mut stream, _) = listener.accept().await.context("accept handoff")?;
     let adopted = receive(&mut stream).await?;
     let count = adopted.len();
-    for entry in adopted {
-        let name = entry.pty.name.clone();
-        if let Err(e) = manager.adopt(entry.pty, entry.master) {
-            tracing::warn!(name, error = %format!("{e:#}"), "failed to adopt pty");
-        }
-    }
+    manager.adopt_many(adopted.into_iter().map(|entry| (entry.pty, entry.master)))?;
     // Only now, with every fd owned by a live read loop, is the
     // predecessor free to go.
     stream
