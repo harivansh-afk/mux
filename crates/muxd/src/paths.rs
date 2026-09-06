@@ -65,11 +65,6 @@ pub fn token_dir() -> PathBuf {
     client_state_dir().join("tokens")
 }
 
-/// The override for one host: `~/.local/state/mux/tokens/<alias>`.
-pub fn host_token(alias: &str) -> PathBuf {
-    token_dir().join(alias)
-}
-
 /// Daemon-side state: `~/.local/state/muxd/`.
 pub fn daemon_state_dir() -> PathBuf {
     home().join(".local/state/muxd")
