@@ -74,7 +74,7 @@ enum Muxd {
                 // fall back to the user's shell for a plain local pane.
                 return inPty.map(Self.quote)
             }
-            var parts = ["\"\(attach)\"", "\"\(address)\""]
+            var parts = [attach, address]
             if expectExisting {
                 // A restored or adopted pane believes its pty survived: the
                 // relay prints a notice if the daemon had to create one.
@@ -84,26 +84,24 @@ enum Muxd {
                 // `-- cmd` makes the pty run that command instead of the
                 // shell. No cwd: the pty's working directory is this
                 // machine's and means nothing inside the VM.
-                parts += ["--", Self.quote(inPty)]
-                return parts.joined(separator: " ")
+                parts += ["--"] + inPty
+                return Self.quote(parts)
             }
             if let cwdFrom {
                 // Never send --cwd beside --cwd-from: the daemon would let
                 // it win, and a client-side pwd can be stale (a remote
                 // shell with no OSC 7 never updates it). The live process
                 // is the truth.
-                parts += ["--cwd-from", "\"\(cwdFrom.uuidString)\""]
+                parts += ["--cwd-from", cwdFrom.uuidString]
             } else if let cwd {
-                parts += ["--cwd", "\"\(cwd)\""]
+                parts += ["--cwd", cwd]
             }
-            return parts.joined(separator: " ")
+            return Self.quote(parts)
         }
 
-        /// argv as one command line for libghostty, which hands the string
-        /// to a shell. Every word is double-quoted, so paths with spaces
-        /// and flake refs with `#` survive intact.
-        private static func quote(_ argv: [String]) -> String {
-            argv.map { "\"\($0)\"" }.joined(separator: " ")
+        /// Quote argv once at the shell boundary, preserving every literal byte.
+        static func quote(_ argv: [String]) -> String {
+            argv.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ")
         }
     }
 
