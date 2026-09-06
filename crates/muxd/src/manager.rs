@@ -367,7 +367,8 @@ impl Manager {
         )?;
         drop(ptys);
 
-        tokio::spawn(read_loop(self.clone(), session));
+        tokio::spawn(read_loop(self.clone(), session.clone()));
+        self.schedule_agent(&session);
 
         tracing::info!(name = pty.name, pid = pty.child_pid, "pty adopted");
         Ok(())

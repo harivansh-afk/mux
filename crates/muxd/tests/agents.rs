@@ -20,6 +20,43 @@ mod common;
 use common::PATIENCE;
 
 #[tokio::test]
+async fn an_adopted_idle_agent_is_detected_without_fresh_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let executable = dir.path().join("codex");
+    std::os::unix::fs::symlink("/bin/cat", &executable).expect("link cat");
+    let command = vec![executable.to_string_lossy().into_owned()];
+    let pty = muxd::pty::spawn(&muxd::pty::Spawn {
+        command: &command,
+        cwd: None,
+        term: None,
+        cols: 80,
+        rows: 24,
+    })
+    .expect("spawn silent agent");
+    let manager = Manager::default();
+    let (_, mut events) = manager.watch();
+    manager
+        .adopt(
+            muxd::migrate::MigratePty {
+                name: "idle".into(),
+                command,
+                child_pid: pty.child.as_raw(),
+                cols: 80,
+                rows: 24,
+                screen: b"\x1b]0;A restored conversation\x07".to_vec(),
+            },
+            pty.master.into_inner(),
+        )
+        .expect("adopt");
+    let agent = next_agent(&mut events).await.agent.expect("restored agent");
+    assert_eq!(agent.agent, "codex");
+    assert_eq!(agent.state, "idle");
+    assert_eq!(agent.topic, "A restored conversation");
+    assert!(manager.kill("idle"));
+    let _ = nix::sys::wait::waitpid(pty.child, None);
+}
+
+#[tokio::test]
 async fn npm_codex_launcher_reports_its_title_through_list_and_watch() {
     let dir = tempfile::tempdir().expect("tempdir");
     let script = dir.path().join("codex");
