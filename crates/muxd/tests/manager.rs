@@ -152,6 +152,62 @@ async fn adopting_a_taken_name_is_refused_and_the_original_keeps_its_client() {
 
 // ----------------------------------------------------------------- server
 
+#[tokio::test]
+async fn a_failed_or_cancelled_connection_releases_its_client_slot() {
+    let manager = Manager::default();
+    for cancel in [false, true] {
+        let (mut client, server) = tokio::io::duplex(65536);
+        let (reader, writer) = tokio::io::split(server);
+        let serving = tokio::spawn({
+            let manager = manager.clone();
+            async move {
+                muxd::server::handle_connection(
+                    manager,
+                    reader,
+                    writer,
+                    &muxd::server::Policy::Local,
+                )
+                .await
+            }
+        });
+        write_request(
+            &mut client,
+            &request(
+                None,
+                None,
+                OpenMode::Open {
+                    name: "cleanup".into(),
+                    cwd: None,
+                    command: vec!["/bin/cat".into()],
+                    cwd_from: None,
+                },
+            ),
+        )
+        .await;
+        read_reply(&mut client).await.expect("attached");
+        read_dump(&mut client).await;
+        let session = manager.get("cleanup").expect("pty");
+        assert!(session.info().attached);
+        if cancel {
+            serving.abort();
+            assert!(serving.await.expect_err("cancelled task").is_cancelled());
+        } else {
+            // Invalid zero-length frame makes the receive arm return an error.
+            use tokio::io::AsyncWriteExt as _;
+            client.write_all(&[0; 5]).await.expect("invalid frame");
+            assert!(serving.await.expect("join handler").is_err());
+        }
+        assert!(
+            !session.info().attached,
+            "failed handlers must release silent ptys"
+        );
+        let mut reattached = muxd::manager::attach(&session, 80, 24);
+        write_pty(&session, b"still alive\n").await;
+        recv_output_until(&mut reattached.rx, b"still alive").await;
+        assert!(manager.kill("cleanup"));
+    }
+}
+
 /// Regression: attaching a second client evicts the first, whose handler
 /// then cleared `session.client` unconditionally - nulling the *new*
 /// client's slot. The stolen-from pane went quiet and the pty looked
