@@ -115,7 +115,10 @@ final class CanvasOverlayView: FlippedView, ChromeOverlay {
         }
         items = entries.map { entry in
             let item = WheelItemView(entry: entry)
-            item.onClick = { [weak self] in self?.clicked(item) }
+            item.onClick = { [weak self, weak item] in
+                guard let item else { return }
+                self?.clicked(item)
+            }
             track.addSubview(item)
             return item
         }
@@ -515,4 +518,3 @@ private final class MirrorHostView: FlippedView {
         CATransaction.commit()
     }
 }
-
