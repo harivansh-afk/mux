@@ -28,6 +28,18 @@ The only thing the macos client owns is pane layout
 Terminal content is daemon-owned and survives client disconnect for both local and remote
 Reattach replays the exact screen.
 
+Canvas reads agent titles and activity from the daemon on the pane's host.
+Codex's default terminal title contains its project name. To include the chat
+name, configure Codex's `~/.codex/config.toml` on that host:
+
+```toml
+[tui]
+terminal_title = ["activity", "thread-title", "project-name"]
+```
+
+Add the key to the existing `[tui]` table if present. Restart Codex for the
+configuration to take effect; `/rename` supplies a name for an unnamed chat.
+
 muxd server sends raw PTY byte streams over UDP that are interpreted by the macos client
 
 There are panes and sessions (1 2 3 4 5)
