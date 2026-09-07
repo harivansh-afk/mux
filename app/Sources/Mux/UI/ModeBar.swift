@@ -7,9 +7,8 @@ import AppKit
 /// all on panel_bg.
 ///
 /// Unlike a full-width status strip, the bar is a content-sized box on
-/// panel_bg flush with a bottom corner of the terminal area (mode bar
-/// left, session indicator right); everything outside the box stays
-/// transparent.
+/// panel_bg flush with the bottom-left corner of the terminal area.
+/// The bottom-right session indicator uses a transparent background.
 class ModeBarView: NSView, ChromeOverlay {
     /// One terminal-ish row.
     static let height = Chrome.barHeight
@@ -40,8 +39,10 @@ class ModeBarView: NSView, ChromeOverlay {
 
     fileprivate let label = NSTextField(labelWithString: "")
     private var segments: [ModeBarSegment] = []
+    private let drawsBackground: Bool
 
-    init() {
+    init(drawsBackground: Bool = true) {
+        self.drawsBackground = drawsBackground
         super.init(frame: .zero)
         wantsLayer = true
         label.lineBreakMode = .byTruncatingTail
@@ -110,7 +111,9 @@ class ModeBarView: NSView, ChromeOverlay {
     }
 
     private func applyTheme() {
-        layer?.backgroundColor = ThemeManager.shared.palette.panelBg.cgColor
+        layer?.backgroundColor = drawsBackground
+            ? ThemeManager.shared.palette.panelBg.cgColor
+            : NSColor.clear.cgColor
     }
 
     override func layout() {
