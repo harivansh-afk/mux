@@ -17,7 +17,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// The slab every pane lives on.
     let workspace = FlippedView()
     let modeBar = ModeBarView()
-    let sessionIndicator = ModeBarView(drawsBackground: false)
+    let sessionIndicator = ModeBarView()
     let helpOverlay = HelpOverlayView()
     let canvasOverlay = CanvasOverlayView()
     let hostsWindow = HostsWindowView()
