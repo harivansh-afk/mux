@@ -71,6 +71,11 @@ pub struct AttachedClient {
 }
 
 pub struct PtySession {
+    pub generation: String,
+    pub revision: AtomicU64,
+    pub input_revision: AtomicU64,
+    pub input_lock: tokio::sync::Mutex<()>,
+    pub changes: tokio::sync::watch::Sender<u64>,
     pub name: String,
     pub command: Vec<String>,
     pub terminal: Mutex<ghostty_vt::Terminal>,
@@ -292,6 +297,11 @@ impl Manager {
             bail!("pty limit reached ({MAX_PTYS})");
         }
         let session = Arc::new(PtySession {
+            generation: format!("{:032x}", rand::random::<u128>()),
+            revision: AtomicU64::new(0),
+            input_revision: AtomicU64::new(0),
+            input_lock: tokio::sync::Mutex::new(()),
+            changes: tokio::sync::watch::channel(0).0,
             name: name.to_string(),
             command,
             terminal: Mutex::new(terminal),
@@ -470,6 +480,7 @@ async fn read_loop(manager: Manager, session: Arc<PtySession>) {
                 Ok(Ok(0)) => break, // child side gone
                 Ok(Ok(n)) => {
                     term.feed(&buf[..n]);
+                    session.changed();
                     let client = session.client.lock();
                     Some((n, client.as_ref().map(|c| (c.id, c.tx.clone()))))
                 }
@@ -511,6 +522,7 @@ async fn reap(manager: Manager, session: Arc<PtySession>) {
         wait_child(pid).await
     };
     session.exited.store(true, Ordering::SeqCst);
+    session.changed();
     // Nothing is in the foreground of a dead pty.
     *session.agent.lock() = None;
 
@@ -600,6 +612,7 @@ pub fn attach(session: &Arc<PtySession>, cols: u16, rows: u16) -> Attachment {
     let dump = {
         let mut term = session.terminal.lock();
         term.resize(rows, cols);
+        session.changed();
         let _ = pty::resize(&session.master, cols, rows);
         // Evict any previous client (its forwarder ends when tx drops)
         // and publish the new channel BEFORE rendering.

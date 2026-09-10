@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// client is diagnosable (v1: M2; v2: token+target; v3: this field;
 /// v4: `cwd_from`; v5: `PtyInfo::cwd`; v6: typed `OpenError`; v7:
 /// `PtyInfo::agent`, `OpenMode::Watch`; v8: attach-only reopen).
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// ALPN for muxd's QUIC listener. Each bidirectional stream carries
 /// exactly one protocol run: the same handshake + lane frames as a unix
@@ -77,6 +77,12 @@ pub enum OpenMode {
     Watch,
     /// Reattach a preserved terminal. Never create a process if missing.
     Attach { name: String },
+    /// Read the current viewport without attaching or resizing.
+    Inspect { name: String },
+    /// Stream coalesced viewport snapshots without taking the client slot.
+    Observe { name: String },
+    /// Write only if the inspected terminal and input state still match.
+    Input { name: String, input: PtyInput },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,6 +91,38 @@ pub enum Opened {
     Listed { ptys: Vec<PtyInfo> },
     Killed { existed: bool },
     Watching,
+    Inspected { snapshot: PtySnapshot },
+    Observing,
+    InputWritten { bytes: usize, input_revision: u64 },
+}
+
+/// An incarnation is deliberately renewed at daemon handoff: stale writes fail
+/// closed, while existing interactive clients continue using the v8 contract.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PtySnapshot {
+    pub name: String,
+    pub generation: String,
+    pub revision: u64,
+    pub input_revision: u64,
+    pub pid: i32,
+    pub foreground_pgid: Option<i32>,
+    pub cols: u16,
+    pub rows: u16,
+    pub cursor_row: u16,
+    pub cursor_col: u16,
+    pub text: Vec<String>,
+    pub cwd: Option<String>,
+    pub agent: Option<AgentInfo>,
+    pub exited: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PtyInput {
+    pub generation: String,
+    pub revision: u64,
+    pub input_revision: u64,
+    pub foreground_pgid: i32,
+    pub data: Vec<u8>,
 }
 
 /// Which coding agent a pty's foreground process is and what it is
@@ -307,7 +345,7 @@ mod tests {
         assert_eq!(
             encode(&req),
             [
-                0x08, // version = PROTOCOL_VERSION (varint)
+                0x09, // version = PROTOCOL_VERSION (varint)
                 0x78, // cols = 120 (varint)
                 0x28, // rows = 40
                 0x01, 0x0d, // term: Some, len 13

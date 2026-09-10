@@ -201,6 +201,18 @@ where
             reply(&mut writer, &Ok(Opened::Watching)).await?;
             return watch(manager, reader, writer).await;
         }
+        OpenMode::Inspect { ref name }
+        | OpenMode::Observe { ref name }
+        | OpenMode::Input { ref name, .. } => {
+            let Some(session) = manager.get(name) else {
+                return reply(
+                    &mut writer,
+                    &Err(OpenError::new(ErrorKind::Other, "terminal does not exist")),
+                )
+                .await;
+            };
+            return crate::control::handle(session, request.mode, reader, writer).await;
+        }
         OpenMode::Open { .. } | OpenMode::Attach { .. } => {}
     }
     handle_open(manager, request, reader, writer).await
@@ -359,7 +371,7 @@ where
             };
             match lane {
                 IN_LANE_INPUT => {
-                    pty::write_all(&session_in.master, &payload).await?;
+                    session_in.write_input(&payload).await?;
                 }
                 IN_LANE_CONTROL => match peer::decode::<ClientControl>(&payload) {
                     Ok(ClientControl::Resize { cols, rows }) => {
@@ -394,6 +406,7 @@ async fn resize(
     let redump = {
         let mut term = session.terminal.lock();
         term.resize(rows, cols);
+        session.changed();
         (!live_output.load(std::sync::atomic::Ordering::Relaxed))
             .then(|| term.render_screen_bytes())
     };
@@ -421,9 +434,9 @@ type Handshake = std::result::Result<OpenRequest, u32>;
 async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Handshake> {
     let buf = frame::aio::read_message(reader).await.context("request")?;
     let version = peer::decode_prefix::<u32>(&buf).context("request version")?;
-    // v8 only adds an OpenMode variant; every v7 request/reply remains
-    // byte-compatible. Keep existing clients attached across live upgrade.
-    if version != peer::PROTOCOL_VERSION && version != 7 {
+    // v8/v9 append variants; existing v7/v8 requests and replies retain
+    // their byte layout, including the interactive input/output lanes.
+    if version != peer::PROTOCOL_VERSION && version != 7 && version != 8 {
         return Ok(Err(version));
     }
     Ok(Ok(peer::decode(&buf).context("request decode")?))

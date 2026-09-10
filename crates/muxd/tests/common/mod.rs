@@ -23,11 +23,15 @@ pub const PATIENCE: Duration = Duration::from_secs(10);
 
 /// NixOS keeps coreutils in PATH rather than /bin.
 pub fn cat() -> String {
+    program("cat")
+}
+
+pub fn program(name: &str) -> String {
     let path = std::env::var_os("PATH").expect("test PATH");
     std::env::split_paths(&path)
-        .map(|dir| dir.join("cat"))
+        .map(|dir| dir.join(name))
         .find(|candidate| candidate.is_file())
-        .expect("cat on test PATH")
+        .expect("program on test PATH")
         .to_string_lossy()
         .into_owned()
 }
