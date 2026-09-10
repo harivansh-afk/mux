@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use mux_proto::{
     frame,
     peer::{self, ErrorKind, OpenError, OpenMode, Opened, PtyInput, PtySnapshot},
@@ -18,8 +18,19 @@ pub const MAX_INPUT_BYTES: usize = 8192;
 impl PtySession {
     /// Call with the terminal lock held when changing the viewport.
     pub fn changed(&self) {
-        let revision = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
-        self.changes.send_replace(revision);
+        self.revision.fetch_add(1, Ordering::SeqCst);
+        self.notify_observers();
+    }
+
+    /// Snapshot metadata can change without new terminal output.
+    pub fn notify_observers(&self) {
+        self.changes.send_replace(());
+    }
+
+    fn advance_input(&self) -> u64 {
+        let revision = self.input_revision.fetch_add(1, Ordering::SeqCst) + 1;
+        self.notify_observers();
+        revision
     }
 
     pub fn snapshot(&self) -> PtySnapshot {
@@ -34,7 +45,8 @@ impl PtySession {
             pid: self.child.as_raw(),
             foreground_pgid: nix::unistd::tcgetpgrp(self.master.get_ref())
                 .ok()
-                .map(nix::unistd::Pid::as_raw),
+                .map(nix::unistd::Pid::as_raw)
+                .filter(|pid| *pid > 0),
             cols,
             rows,
             cursor_row: cursor.row,
@@ -49,7 +61,7 @@ impl PtySession {
     /// Interactive and automation writes share this lock, including partial writes.
     pub async fn write_input(&self, data: &[u8]) -> Result<()> {
         let _guard = self.input_lock.lock().await;
-        self.input_revision.fetch_add(1, Ordering::SeqCst);
+        self.advance_input();
         pty::write_all(&self.master, data).await
     }
 
@@ -59,7 +71,8 @@ impl PtySession {
         }
         let _guard = self.input_lock.lock().await;
         let foreground = nix::unistd::tcgetpgrp(self.master.get_ref())?.as_raw();
-        if self.generation != input.generation
+        if foreground <= 0
+            || self.generation != input.generation
             || self.exited.load(Ordering::SeqCst)
             || self.revision.load(Ordering::SeqCst) != input.revision
             || self.input_revision.load(Ordering::SeqCst) != input.input_revision
@@ -68,8 +81,10 @@ impl PtySession {
             bail!("terminal changed since inspection; inspect again before submitting input");
         }
         // Advance before writing: even a partially failed write must never be replayed.
-        let revision = self.input_revision.fetch_add(1, Ordering::SeqCst) + 1;
-        pty::write_all(&self.master, &input.data).await?;
+        let revision = self.advance_input();
+        pty::write_all(&self.master, &input.data)
+            .await
+            .context("input write failed; delivery may be partial; do not retry")?;
         Ok(revision)
     }
 }
@@ -103,7 +118,7 @@ where
                     bytes: input.data.len(),
                     input_revision,
                 }),
-                Ok(Err(e)) => Err(OpenError::new(ErrorKind::Other, e.to_string())),
+                Ok(Err(e)) => Err(OpenError::new(ErrorKind::Other, format!("{e:#}"))),
                 Err(_) => Err(OpenError::new(
                     ErrorKind::Other,
                     "input timed out; delivery may be partial; do not retry",

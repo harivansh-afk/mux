@@ -439,5 +439,14 @@ async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Handshake>
     if version != peer::PROTOCOL_VERSION && version != 7 && version != 8 {
         return Ok(Err(version));
     }
-    Ok(Ok(peer::decode(&buf).context("request decode")?))
+    let request: OpenRequest = peer::decode(&buf).context("request decode")?;
+    let minimum = match request.mode {
+        OpenMode::Open { .. } | OpenMode::List | OpenMode::Kill { .. } | OpenMode::Watch => 7,
+        OpenMode::Attach { .. } => 8,
+        OpenMode::Inspect { .. } | OpenMode::Observe { .. } | OpenMode::Input { .. } => 9,
+    };
+    if version < minimum {
+        return Ok(Err(version));
+    }
+    Ok(Ok(request))
 }
