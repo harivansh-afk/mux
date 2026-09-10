@@ -219,6 +219,10 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
                 if libc::setsid() < 0 {
                     libc::_exit(127);
                 }
+                #[allow(
+                    clippy::useless_conversion,
+                    reason = "ioctl request constants differ across host architectures"
+                )]
                 if libc::ioctl(slave, u64::from(libc::TIOCSCTTY), 0) < 0 {
                     libc::_exit(127);
                 }

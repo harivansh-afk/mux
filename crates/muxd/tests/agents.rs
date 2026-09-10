@@ -23,8 +23,11 @@ use common::PATIENCE;
 async fn an_adopted_idle_agent_is_detected_without_fresh_output() {
     let dir = tempfile::tempdir().expect("tempdir");
     let executable = dir.path().join("codex");
-    std::os::unix::fs::symlink("/bin/cat", &executable).expect("link cat");
-    let command = vec![executable.to_string_lossy().into_owned()];
+    std::os::unix::fs::symlink(common::cat(), &executable).expect("link cat");
+    let mut command = vec![executable.to_string_lossy().into_owned()];
+    if std::fs::canonicalize(common::cat()).is_ok_and(|path| path.ends_with("coreutils")) {
+        command.push("--coreutils-prog=cat".into());
+    }
     let pty = muxd::pty::spawn(&muxd::pty::Spawn {
         command: &command,
         cwd: None,
@@ -72,16 +75,18 @@ async fn npm_codex_launcher_reports_its_title_through_list_and_watch() {
         .expect("open fifo");
     let manager = Manager::default();
     let (_, mut events) = manager.watch();
-    // cat supplies terminal output with the same argv shape as the npm launcher,
-    // without requiring Node or a Codex account on the test host.
+    // A shell reads a FIFO script with the npm launcher's argv shape,
+    // without requiring Node or an agent account on the test host.
+    let launcher = "exec -a node \"$1\" \"$2\"";
     let (session, _) = manager
         .open(
             "npm",
             &[
-                "/bin/bash".into(),
+                common::program("bash"),
                 "-c".into(),
-                "exec -a node /bin/cat \"$1\"".into(),
+                launcher.into(),
                 "launcher".into(),
+                common::program("bash"),
                 script.to_string_lossy().into_owned(),
             ],
             None,
@@ -98,7 +103,7 @@ async fn npm_codex_launcher_reports_its_title_through_list_and_watch() {
         ),
         ("Review title recognition", "idle"),
     ] {
-        write!(input, "\x1b]0;{title}\x07").expect("emit title");
+        writeln!(input, "printf '\\033]0;{title}\\007'").expect("emit title");
         let event = next_event(&mut events, |event| {
             event.agent.as_ref().is_some_and(|a| a.state == state)
         })

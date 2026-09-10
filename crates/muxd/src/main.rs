@@ -118,6 +118,9 @@ fn connect() -> Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(&path) {
         return Ok(stream);
     }
+    if std::env::var_os("MUXD_NO_AUTOSTART").is_some() {
+        bail!("muxd is unavailable at {}", path.display());
+    }
     spawn_daemon(&path, &[])?;
     // A double-spawn race resolves by itself: the loser exits on
     // "already running" and we only need the socket to answer.
@@ -259,6 +262,50 @@ fn kill(target: &str) -> Result<()> {
         }
         other => bail!("unexpected reply: {other:?}"),
     }
+}
+
+fn terminal_control(command: &str, args: &[String]) -> Result<()> {
+    use std::io::Read as _;
+    let [target] = args else {
+        bail!("usage: muxd {command} [host|local]:<name>");
+    };
+    let (host, name) = parse_target(target)?;
+    let mode = match command {
+        "inspect" => OpenMode::Inspect { name },
+        "observe" => OpenMode::Observe { name },
+        "input" => {
+            let mut data = String::new();
+            std::io::stdin().take(65537).read_to_string(&mut data)?;
+            if data.len() > 65536 {
+                bail!("input JSON is too large");
+            }
+            OpenMode::Input {
+                name,
+                input: serde_json::from_str(&data).context("input JSON")?,
+            }
+        }
+        _ => bail!("unknown control command"),
+    };
+    let mut stream = connect()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let opened = exchange(&mut stream, &query(host, mode))?.map_err(|e| anyhow::anyhow!("{e}"))?;
+    match opened {
+        Opened::Inspected { snapshot } => println!("{}", serde_json::to_string(&snapshot)?),
+        Opened::InputWritten { .. } => println!("{}", serde_json::to_string(&opened)?),
+        Opened::Observing => {
+            stream.set_read_timeout(None)?;
+            let mut out = std::io::stdout().lock();
+            while let Some((_, payload)) = frame::read_lane(&mut stream)? {
+                let snapshot: peer::PtySnapshot = peer::decode(&payload)?;
+                serde_json::to_writer(&mut out, &snapshot)?;
+                out.write_all(b"\n")?;
+                out.flush()?;
+            }
+        }
+        other => bail!("unexpected reply: {other:?}"),
+    }
+    Ok(())
 }
 
 /// One line of `muxd probe` output. A struct, not a `json!` literal:
@@ -470,6 +517,9 @@ async fn main() -> Result<()> {
         Some("client-digest") => return client_digest(),
         Some("ls") => return ls(&args[1..]),
         Some("watch") => return watch(&args[1..]),
+        Some(command @ ("inspect" | "observe" | "input")) => {
+            return terminal_control(command, &args[1..])
+        }
         Some("kill") => {
             return kill(
                 args.get(1)

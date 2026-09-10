@@ -23,6 +23,7 @@
 //! drive the listeners in-process on ephemeral ports.
 
 pub mod broker;
+pub mod control;
 pub mod manager;
 pub mod migrate;
 pub mod paths;
