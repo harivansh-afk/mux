@@ -296,7 +296,10 @@ fn terminal_control(command: &str, args: &[String]) -> Result<()> {
         Opened::Observing => {
             stream.set_read_timeout(None)?;
             let mut out = std::io::stdout().lock();
-            while let Some((_, payload)) = frame::read_lane(&mut stream)? {
+            while let Some((lane, payload)) = frame::read_lane(&mut stream)? {
+                if lane != frame::OUT_LANE_EVENTS {
+                    bail!("unexpected observation lane: {lane}");
+                }
                 let snapshot: peer::PtySnapshot = peer::decode(&payload)?;
                 serde_json::to_writer(&mut out, &snapshot)?;
                 out.write_all(b"\n")?;
