@@ -128,8 +128,8 @@ async fn control_preserves_attached_client_and_rejects_replay() {
         let (_, payload) = common::read_frame(&mut observer)
             .await
             .expect("observer snapshot");
-        let observed: PtySnapshot = mux_proto::peer::decode(&payload).unwrap();
-        if observed
+        let screen: PtySnapshot = mux_proto::peer::decode(&payload).unwrap();
+        if screen
             .text
             .iter()
             .any(|line| line.contains("jarvis-control-test"))
