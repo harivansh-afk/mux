@@ -87,6 +87,7 @@ pub struct PtySession {
     /// instead of reaped. See [`wait_adopted`].
     pub adopted: bool,
     pub exited: AtomicBool,
+    pub close_deadline: Mutex<Option<u64>>,
     /// The detector's last reading, and the input it read, so a settled
     /// pty that wrote nothing new costs nothing.
     pub agent: Mutex<Option<AgentInfo>>,
@@ -245,7 +246,12 @@ impl Manager {
     pub fn open_existing(&self, name: &str) -> Result<(Arc<PtySession>, bool)> {
         let session = self.get(name).filter(|s| !s.exited.load(Ordering::SeqCst));
         match session {
-            Some(session) => Ok((session, false)),
+            Some(session) => {
+                if session.close_deadline.lock().is_some() {
+                    bail!("terminal is closed; use reopen within 60 seconds");
+                }
+                Ok((session, false))
+            }
             None => {
                 bail!("saved terminal {name} no longer exists; no replacement shell was started")
             }
@@ -310,6 +316,7 @@ impl Manager {
             child,
             adopted,
             exited: AtomicBool::new(false),
+            close_deadline: Mutex::new(None),
             agent: Mutex::new(None),
             agent_pending: AtomicBool::new(false),
             last_event: Mutex::new(None),
@@ -332,6 +339,9 @@ impl Manager {
     ) -> Result<(Arc<PtySession>, bool)> {
         let mut ptys = self.ptys.lock();
         if let Some(existing) = ptys.get(name) {
+            if existing.close_deadline.lock().is_some() {
+                bail!("terminal is closed; use reopen within 60 seconds");
+            }
             return Ok((existing.clone(), false));
         }
         // Before the fork, not only in insert_locked: a full table must
@@ -391,7 +401,8 @@ impl Manager {
             terminal.feed(&pty.screen);
             let master = tokio::io::unix::AsyncFd::new(master).context("AsyncFd")?;
 
-            Self::insert_locked(
+            let deadline = pty.close_deadline;
+            let session = Self::insert_locked(
                 &mut staged,
                 &pty.name,
                 pty.command,
@@ -400,6 +411,7 @@ impl Manager {
                 nix::unistd::Pid::from_raw(pty.child_pid),
                 true,
             )?;
+            *session.close_deadline.lock() = deadline;
         }
         {
             let mut ptys = self.ptys.lock();
@@ -421,6 +433,9 @@ impl Manager {
             tracing::info!(name, pid = session.child.as_raw(), "pty adopted");
             tokio::spawn(read_loop(self.clone(), session.clone()));
             self.schedule_agent(&session);
+            if let Some(deadline) = *session.close_deadline.lock() {
+                self.schedule_close(&session, deadline);
+            }
         }
         Ok(())
     }
@@ -429,6 +444,17 @@ impl Manager {
         let Some(session) = self.ptys.lock().remove(name) else {
             return false;
         };
+        self.kill_session(&session);
+        true
+    }
+
+    fn kill_session(&self, session: &PtySession) {
+        // Job control puts the foreground job in a different process group.
+        if let Ok(foreground) = nix::unistd::tcgetpgrp(session.master.get_ref()) {
+            if foreground.as_raw() > 0 {
+                let _ = nix::sys::signal::killpg(foreground, nix::sys::signal::Signal::SIGKILL);
+            }
+        }
         // The child is a session leader; nuke its whole process group.
         // And the pid itself: for the moment between fork and setsid it
         // leads no group, and killpg alone answers ESRCH and leaves a
@@ -438,9 +464,64 @@ impl Manager {
         *session.client.lock() = None;
         session.exited.store(true, Ordering::SeqCst);
         *session.agent.lock() = None;
-        self.emit(&session);
-        tracing::info!(name, "pty killed");
-        true
+        self.emit(session);
+        tracing::info!(name = %session.name, "pty killed");
+    }
+
+    /// Only an explicit close arms this lease. Detach and app termination do not.
+    pub fn close(&self, name: &str) -> Result<u64> {
+        self.close_for(name, Duration::from_mins(1))
+    }
+
+    fn close_for(&self, name: &str, retention: Duration) -> Result<u64> {
+        let ptys = self.ptys.lock();
+        let session = ptys.get(name).context("terminal no longer exists")?;
+        let mut deadline = session.close_deadline.lock();
+        // Retrying an uncertain request never extends the lease.
+        let expires = *deadline.get_or_insert_with(|| {
+            unix_millis().saturating_add(u64::try_from(retention.as_millis()).unwrap_or(u64::MAX))
+        });
+        self.schedule_close(session, expires);
+        Ok(expires)
+    }
+
+    fn schedule_close(&self, session: &Arc<PtySession>, deadline: u64) {
+        let manager = self.clone();
+        let name = session.name.clone();
+        let generation = session.generation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(
+                deadline.saturating_sub(unix_millis()),
+            ))
+            .await;
+            let session = {
+                let mut ptys = manager.ptys.lock();
+                let Some(session) = ptys.get(&name) else {
+                    return;
+                };
+                if session.generation != generation
+                    || *session.close_deadline.lock() != Some(deadline)
+                {
+                    return;
+                }
+                ptys.remove(&name).expect("checked session")
+            };
+            manager.kill_session(&session);
+        });
+    }
+
+    /// Reopening is distinct from a relay reconnect, which must not cancel a close.
+    pub fn reopen(&self, name: &str) -> Result<(Arc<PtySession>, bool)> {
+        let ptys = self.ptys.lock();
+        let session = ptys
+            .get(name)
+            .context("saved terminal no longer exists; no replacement shell was started")?;
+        let mut deadline = session.close_deadline.lock();
+        if deadline.is_some_and(|expires| expires <= unix_millis()) {
+            bail!("saved terminal expired; no replacement shell was started");
+        }
+        *deadline = None;
+        Ok((session.clone(), false))
     }
 
     fn remove_if_same(&self, session: &Arc<PtySession>) {
@@ -716,4 +797,136 @@ fn process_args(pid: i32) -> Option<Vec<String>> {
 fn process_cwd(pid: i32) -> Option<String> {
     let path = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
     path.to_str().map(ToString::to_string)
+}
+
+/// Absolute time is used only to carry the remaining lease across a daemon handoff.
+pub fn unix_millis() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod expiry_tests {
+    use super::*;
+
+    fn cat(manager: &Manager, name: &str) -> Arc<PtySession> {
+        let path = std::env::var_os("PATH").expect("PATH");
+        let cat = std::env::split_paths(&path)
+            .map(|dir| dir.join("cat"))
+            .find(|path| path.is_file())
+            .expect("cat");
+        manager
+            .open(
+                name,
+                &[cat.to_string_lossy().into_owned()],
+                None,
+                None,
+                80,
+                24,
+            )
+            .expect("open")
+            .0
+    }
+
+    async fn gone(session: &PtySession) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while crate::migrate::alive(session.child) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("child reaped");
+    }
+
+    #[tokio::test]
+    async fn expiry_reaps_and_does_not_restart_on_retry() {
+        let manager = Manager::default();
+        let session = cat(&manager, "closed");
+        let deadline = manager
+            .close_for("closed", Duration::from_millis(100))
+            .unwrap();
+        assert_eq!(manager.close("closed").unwrap(), deadline);
+        assert!(manager.open_existing("closed").is_err());
+        assert!(manager.open("closed", &[], None, None, 80, 24).is_err());
+        gone(&session).await;
+        assert!(manager.get("closed").is_none());
+        assert!(manager.reopen("closed").is_err());
+    }
+
+    #[tokio::test]
+    async fn reopen_cancels_expiry_but_detach_does_not_arm_it() {
+        let manager = Manager::default();
+        let session = cat(&manager, "reopened");
+        let attachment = attach(&session, 80, 24);
+        session.detach(attachment.id);
+        assert!(session.close_deadline.lock().is_none());
+        manager
+            .close_for("reopened", Duration::from_millis(100))
+            .unwrap();
+        let (reopened, created) = manager.reopen("reopened").unwrap();
+        assert!(!created);
+        assert!(Arc::ptr_eq(&session, &reopened));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(manager.get("reopened").is_some());
+        assert!(crate::migrate::alive(session.child));
+        manager.kill("reopened");
+        gone(&session).await;
+    }
+
+    #[tokio::test]
+    async fn stale_expiry_cannot_kill_a_reclosed_or_replaced_terminal() {
+        let manager = Manager::default();
+        let original = cat(&manager, "same");
+        manager
+            .close_for("same", Duration::from_millis(50))
+            .unwrap();
+        manager.reopen("same").unwrap();
+        manager
+            .close_for("same", Duration::from_millis(250))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(crate::migrate::alive(original.child));
+        manager.kill("same");
+        gone(&original).await;
+        let replacement = cat(&manager, "same");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(crate::migrate::alive(replacement.child));
+        manager.kill("same");
+        gone(&replacement).await;
+    }
+
+    #[tokio::test]
+    async fn adopted_expiry_keeps_the_original_deadline() {
+        let old = Manager::default();
+        let session = cat(&old, "adopted");
+        let deadline = old
+            .close_for("adopted", Duration::from_millis(100))
+            .unwrap();
+        let new = Manager::default();
+        new.adopt(
+            crate::migrate::MigratePty {
+                name: session.name.clone(),
+                command: session.command.clone(),
+                child_pid: session.child.as_raw(),
+                cols: 80,
+                rows: 24,
+                screen: Vec::new(),
+                close_deadline: Some(deadline),
+            },
+            session.master.get_ref().try_clone().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            *new.get("adopted").unwrap().close_deadline.lock(),
+            Some(deadline)
+        );
+        gone(&session).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(new.get("adopted").is_none());
+    }
 }

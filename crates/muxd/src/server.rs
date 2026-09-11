@@ -197,6 +197,13 @@ where
             let existed = manager.kill(name);
             return reply(&mut writer, &Ok(Opened::Killed { existed })).await;
         }
+        OpenMode::Close { ref name } => {
+            let result = manager
+                .close(name)
+                .map(|expires_at_ms| Opened::Closed { expires_at_ms })
+                .map_err(|error| OpenError::new(ErrorKind::Other, error.to_string()));
+            return reply(&mut writer, &result).await;
+        }
         OpenMode::Watch => {
             reply(&mut writer, &Ok(Opened::Watching)).await?;
             return watch(manager, reader, writer).await;
@@ -213,7 +220,7 @@ where
             };
             return crate::control::handle(session, request.mode, reader, writer).await;
         }
-        OpenMode::Open { .. } | OpenMode::Attach { .. } => {}
+        OpenMode::Open { .. } | OpenMode::Attach { .. } | OpenMode::Reopen { .. } => {}
     }
     handle_open(manager, request, reader, writer).await
 }
@@ -266,6 +273,30 @@ impl Drop for ClientGuard {
     }
 }
 
+fn open_terminal(manager: &Manager, request: OpenRequest) -> Result<(Arc<PtySession>, bool)> {
+    match request.mode {
+        OpenMode::Open {
+            name,
+            cwd,
+            command,
+            cwd_from,
+        } => {
+            let cwd = inherited_cwd(manager, cwd, cwd_from.as_deref());
+            manager.open(
+                &name,
+                &command,
+                cwd.as_deref(),
+                request.term.as_deref(),
+                request.cols,
+                request.rows,
+            )
+        }
+        OpenMode::Reopen { name } => manager.reopen(&name),
+        OpenMode::Attach { name } => manager.open_existing(&name),
+        _ => bail!("request is not an open"),
+    }
+}
+
 async fn handle_open<R, W>(
     manager: Manager,
     request: OpenRequest,
@@ -276,30 +307,8 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
-    let OpenRequest {
-        cols,
-        rows,
-        term,
-        mode,
-        ..
-    } = request;
-    let (name, opened) = match mode {
-        OpenMode::Open {
-            name,
-            cwd,
-            command,
-            cwd_from,
-        } => {
-            let cwd = inherited_cwd(&manager, cwd, cwd_from.as_deref());
-            let opened = manager.open(&name, &command, cwd.as_deref(), term.as_deref(), cols, rows);
-            (name, opened)
-        }
-        OpenMode::Attach { name } => {
-            let opened = manager.open_existing(&name);
-            (name, opened)
-        }
-        _ => bail!("handle_open on a request that is not an open"),
-    };
+    let (cols, rows) = (request.cols, request.rows);
+    let opened = open_terminal(&manager, request);
     let (session, created) = match opened {
         Ok(v) => v,
         Err(e) => {
@@ -308,6 +317,7 @@ where
         }
     };
 
+    let name = session.name.clone();
     let attachment = manager::attach(&session, cols, rows);
     let client_id = attachment.id;
     let _client = ClientGuard {
@@ -434,9 +444,9 @@ type Handshake = std::result::Result<OpenRequest, u32>;
 async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Handshake> {
     let buf = frame::aio::read_message(reader).await.context("request")?;
     let version = peer::decode_prefix::<u32>(&buf).context("request version")?;
-    // v8/v9 append variants; existing v7/v8 requests and replies retain
+    // v8-v10 append variants; existing v7-v9 requests and replies retain
     // their byte layout, including the interactive input/output lanes.
-    if version != peer::PROTOCOL_VERSION && version != 7 && version != 8 {
+    if version != peer::PROTOCOL_VERSION && version != 7 && version != 8 && version != 9 {
         return Ok(Err(version));
     }
     Ok(Ok(peer::decode(&buf).context("request decode")?))

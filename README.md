@@ -44,11 +44,12 @@ muxd server sends raw PTY byte streams over UDP that are interpreted by the maco
 
 There are panes and sessions (1 2 3 4 5)
 
-**⌘W** or **prefix x** closes a pane while its shell and programs keep running
-on the owning muxd (macOS locally, or Spark for a remote pane). **⌘⇧T** reopens
-the most recently closed pane as a focused session attached to that exact
-terminal. Repeat to reopen earlier panes. Closed identities persist across app
-restarts; closing the final pane leaves an empty window ready to reopen.
+**⌘W** or **prefix x** preserves the closed terminal for **60 seconds** on its
+owning muxd (macOS locally, or Spark for a remote pane), then terminates it.
+**⌘⇧T** reopens the same live terminal within that window and cancels its expiry.
+App restarts and daemon upgrades do not renew the deadline. Closing the final
+pane leaves an empty window ready to reopen. App quit and connection loss retain
+normal session recovery; only explicit pane close starts the countdown.
 
 **prefix X** or File → Kill Terminal explicitly kills a terminal. Killing or
 exiting the shell cannot be undone. An unavailable host is retried; a missing

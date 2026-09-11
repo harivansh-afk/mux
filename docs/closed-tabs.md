@@ -2,60 +2,36 @@
 
 Research and design decision, 2026-09-05.
 
-## Decision
+## Current lifecycle (2026-09-11)
 
-Ordinary pane close should detach the app from the terminal and leave its shell
-and programs running in the owning muxd. Command-Shift-T should attach to that
-same terminal identity on that same host. This works with both macOS muxd and
-Linux muxd on Spark using the existing PTY ownership model and an attach-only
-protocol operation.
+Explicit pane close retains a terminal for at most 60 seconds. The app calls
+`muxd close host:uuid` and waits for the owning daemon to acknowledge its absolute
+deadline before releasing the view and relay. A failed request leaves the pane
+visible. Retrying close never renews a deadline.
 
-The existing daemon already distinguishes connection EOF from terminal death:
-[`server.rs`](../crates/muxd/src/server.rs) detaches on client EOF;
-[`manager.rs`](../crates/muxd/src/manager.rs) retains the PTY, keeps consuming its
-output into the terminal emulator, and removes it when the process exits.
-Its `attach` operation returns a rendered screen/scrollback snapshot before
-streaming subsequent output. The process itself stays alive, including its
-environment, unsaved editor buffers, open files, and jobs.
+The PTY manager owns the timer and termination. It publishes its existing exit
+event so the app removes closed history. History also saves the deadline and
+refuses expired entries locally, including after an app restart. Expiry targets
+the original terminal generation, so an old timer cannot kill a replacement
+terminal using the same name.
 
-## User-visible contract
+`OpenMode::Reopen` cancels the lease and looks up the existing terminal without
+creating a shell. Ordinary Open/Attach requests cannot cancel a close, so an
+automatic relay reconnect cannot extend retention. The relay sends Reopen on
+its initial user-requested attachment and uses Attach after a successful reopen.
+The manager serializes reopen against expiry and rejects an elapsed deadline.
 
-- Close means detach. Release the app-side terminal view and connection, and
-  persist the host and terminal identity in the closed-pane history.
-- Reopen means attach to that identity, newest closed pane first. Persist history
-  alongside session state so an app restart does not forget detached terminals.
-- Reopen must use attach-only semantics. A missing terminal must never silently
-  become a newly spawned shell, including the race where it exits after a list
-  response but before attachment.
-- An unavailable host or failed connection is retryable. Reopen transfers the
-  saved identity into a persistent open pane which displays the failure and
-  retries. Closing that waiting pane puts it back into closed history. Neither
-  path substitutes a local shell or loses the saved identity.
-- Explicit kill remains a distinct destructive action and is not an undoable
-  close. A shell that exits naturally likewise cannot be reattached. Stale history
-  needs a visible failure or pruning after a definitive missing-terminal response.
-- History eviction or clearing metadata must not silently kill detached work.
-  Detached sessions remain discoverable through the daemon's existing session
-  listing and can be explicitly attached or killed.
+Only explicit close arms a timer. Connection loss, app quit, slow-client detach,
+and daemon handoff keep their existing recovery semantics.
 
-These are intended semantics for the implementation, not evidence of completed
-UI verification.
+Protocol v10 appends Close/Reopen and the deadline reply. The daemon continues
+accepting v7-v9 interactive requests. Both host daemons must be upgraded before
+the app can use the new close command. Migration v2 carries each close deadline;
+the new receiver accepts v1 handoffs as terminals without a pending close.
+A handoff preserves the original expiry instead of starting another 60 seconds.
 
-## Rollout
-
-Protocol v8 adds `OpenMode::Attach { name }`, which only looks up an existing
-live PTY. It never enters the spawn path. The v8 daemon also accepts unchanged
-v7 requests, so older attached clients can reconnect after its live upgrade.
-The new attach-only operation requires updating the owning daemon as well as
-the local broker and app; upgrade Spark's muxd before using reopen there.
-An older remote daemon produces a visible version mismatch and retry rather
-than creating a replacement. The migration payload is unchanged.
-
-Closed history is optional metadata in the existing v3 app snapshot. It has no
-automatic eviction or expiry, since forgetting entries could strand running
-jobs or make orphan recovery reopen intentionally closed panes. Explicit kill
-and observed process exits release terminals; daemon PTY limits still apply.
-Reopened panes carry the attach-only flag into their own persisted snapshots.
+The earlier unlimited-retention contract below is superseded by this lifecycle.
+The process-preservation rationale still applies during the 60-second window.
 
 ## Why saving the screen is insufficient
 
@@ -103,8 +79,8 @@ facility, not disk checkpointing or a cross-platform Mux solution.
 Closing releases the app's rendering and transport resources. The daemon still
 owns the terminal state and PTY, and the shell and its programs still occupy
 memory and can consume CPU, disk, network, or GPU resources according to their
-workload. This design makes no zero-resource claim and adds no hidden automatic
-kill or suspension policy.
+workload. Explicitly closed terminals incur those costs for at most 60 seconds;
+expiry terminates them. There is no suspension or disk checkpoint.
 
 Client restarts and successful muxd live upgrades can preserve access to these
 sessions. A machine reboot, forced daemon shutdown without successful handoff,

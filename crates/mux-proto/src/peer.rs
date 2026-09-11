@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 /// dropping the connection, so skew between a running daemon and a newer
 /// client is diagnosable (v1: M2; v2: token+target; v3: this field;
 /// v4: `cwd_from`; v5: `PtyInfo::cwd`; v6: typed `OpenError`; v7:
-/// `PtyInfo::agent`, `OpenMode::Watch`; v8: attach-only reopen).
-pub const PROTOCOL_VERSION: u32 = 9;
+/// `PtyInfo::agent`, `OpenMode::Watch`; v8: attach-only reopen; v9: inspection/input; v10: close expiry).
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// ALPN for muxd's QUIC listener. Each bidirectional stream carries
 /// exactly one protocol run: the same handshake + lane frames as a unix
@@ -83,6 +83,10 @@ pub enum OpenMode {
     Observe { name: String },
     /// Write only if the inspected terminal and input state still match.
     Input { name: String, input: PtyInput },
+    /// Preserve an explicitly closed terminal for at most 60 seconds.
+    Close { name: String },
+    /// Cancel a close deadline and attach, without creating a replacement.
+    Reopen { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,6 +98,7 @@ pub enum Opened {
     Inspected { snapshot: PtySnapshot },
     Observing,
     InputWritten { bytes: usize, input_revision: u64 },
+    Closed { expires_at_ms: u64 },
 }
 
 /// An incarnation is deliberately renewed at daemon handoff: stale writes fail
@@ -345,7 +350,7 @@ mod tests {
         assert_eq!(
             encode(&req),
             [
-                0x09, // version = PROTOCOL_VERSION (varint)
+                0x0a, // version = PROTOCOL_VERSION (varint)
                 0x78, // cols = 120 (varint)
                 0x28, // rows = 40
                 0x01, 0x0d, // term: Some, len 13

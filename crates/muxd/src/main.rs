@@ -251,6 +251,17 @@ fn watch(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn close(target: &str) -> Result<()> {
+    let (host, name) = parse_target(target)?;
+    match ask(host, OpenMode::Close { name })? {
+        Opened::Closed { expires_at_ms } => {
+            println!("{expires_at_ms}");
+            Ok(())
+        }
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
 fn kill(target: &str) -> Result<()> {
     let (host, name) = parse_target(target)?;
     match ask(host, OpenMode::Kill { name })? {
@@ -519,6 +530,12 @@ async fn main() -> Result<()> {
         Some("watch") => return watch(&args[1..]),
         Some(command @ ("inspect" | "observe" | "input")) => {
             return terminal_control(command, &args[1..])
+        }
+        Some("close") => {
+            return close(
+                args.get(1)
+                    .context("usage: muxd close [host|local]:<name>")?,
+            )
         }
         Some("kill") => {
             return kill(

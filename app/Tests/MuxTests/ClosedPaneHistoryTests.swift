@@ -70,6 +70,19 @@ final class ClosedPaneHistoryTests: XCTestCase {
         XCTAssertEqual(history.popLast()?.pane.fontDelta, 2)
     }
 
+    func testExpiredHistoryCannotReopenAndRestartDoesNotRenewDeadline() throws {
+        var history = ClosedPaneHistory()
+        let id = UUID()
+        let deadline = Date().addingTimeInterval(-1)
+        history.record(id: id, pane: PaneSnapshot(target: "spark"), expiresAt: deadline)
+        XCTAssertTrue(history.isEmpty)
+        let data = try JSONEncoder().encode(history.entries)
+        let entries = try JSONDecoder().decode([ClosedPaneHistory.Entry].self, from: data)
+        var restored = ClosedPaneHistory(entries: entries)
+        XCTAssertEqual(restored.entries.first?.expiresAt, deadline)
+        XCTAssertNil(restored.popLast())
+    }
+
     func testShortcutRequiresCommandShiftT() throws {
         func event(_ text: String, _ flags: NSEvent.ModifierFlags) throws -> NSEvent {
             try XCTUnwrap(NSEvent.keyEvent(

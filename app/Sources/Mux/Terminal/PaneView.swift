@@ -356,7 +356,11 @@ final class PaneView: NSView {
         }
     }
 
-    /// Kill the pane's pty: a deliberate close, not a detach.
+    /// Preserve the terminal for 60 seconds on its owning daemon.
+    func closeRemote(then completion: @escaping (Date?) -> Void) {
+        Muxd.close(attach.address, then: completion)
+    }
+
     func killRemote() {
         Muxd.kill(attach.address)
     }

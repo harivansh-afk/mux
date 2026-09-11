@@ -36,6 +36,7 @@ final class Session {
     private(set) var panes: [UUID: PaneView] = [:]
     private(set) var focusedID: UUID?
     private(set) var zoomedID: UUID?
+    private var closingPanes: Set<UUID> = []
 
     init(controller: MuxWindowController) {
         self.controller = controller
@@ -181,23 +182,28 @@ final class Session {
         closePane(pane)
     }
 
-    /// Persist the closed identity before tearing down its client. The
-    /// same daemon pty (and every process behind it) stays alive.
+    /// The daemon acknowledges a 60-second lease before we release the relay.
     func closePane(_ pane: PaneView) {
-        guard contains(pane) else { return }
-        guard Muxd.attachBinary != nil else {
-            let alert = NSAlert()
-            alert.messageText = "This build cannot preserve terminals"
-            alert.informativeText = "Use the bundled Mux.app, which includes mux-attach."
-            alert.runModal()
-            return
+        guard contains(pane), closingPanes.insert(pane.id).inserted else { return }
+        pane.closeRemote { [weak self, weak pane] expiresAt in
+            guard let self, let pane else { return }
+            closingPanes.remove(pane.id)
+            guard contains(pane) else { return }
+            guard let expiresAt else {
+                let alert = NSAlert()
+                alert.messageText = "Could not close terminal"
+                alert.informativeText = "The daemon did not confirm the 60-second expiry. Try again when connected."
+                alert.runModal()
+                return
+            }
+            controller?.closedPanes.record(
+                id: pane.id,
+                pane: PaneSnapshot(cwd: pane.pwd, target: pane.target, fontDelta: pane.fontDelta),
+                expiresAt: expiresAt
+            )
+            removePane(pane)
+            pane.destroySurface()
         }
-        controller?.closedPanes.record(
-            id: pane.id,
-            pane: PaneSnapshot(cwd: pane.pwd, target: pane.target, fontDelta: pane.fontDelta)
-        )
-        removePane(pane)
-        pane.destroySurface()
     }
 
     func killFocusedPane() {

@@ -108,9 +108,20 @@ enum Muxd {
         }
     }
 
-    /// Kill a pane's pty (a deliberate close, not a detach). For an ix
-    /// pane that ends the `ix shell` the pty is running, and with it the
-    /// session on the VM.
+    /// Arm expiry on the owning daemon before dropping the pane's relay.
+    static func close(_ address: String, then completion: @escaping (Date?) -> Void) {
+        guard let daemon = daemonBinary else {
+            completion(nil)
+            return
+        }
+        Subprocess.run(daemon, ["close", address]) { output in
+            let milliseconds = output.flatMap {
+                Double($0.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            completion(milliseconds.map { Date(timeIntervalSince1970: $0 / 1000) })
+        }
+    }
+
     static func kill(_ address: String) {
         guard let daemon = daemonBinary else { return }
         Subprocess.run(daemon, ["kill", address]) { _ in }

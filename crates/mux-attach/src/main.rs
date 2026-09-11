@@ -287,14 +287,14 @@ fn run_attach(attach: &Attach) -> Result<()> {
     // pane is different - its relay dying makes the app treat the pane
     // as closed and erase it from the layout, so a pane that is believed
     // to exist reports the failure into its terminal and keeps trying.
-    let first = connect().and_then(|stream| open_session(attach, stream, size));
+    let first = connect().and_then(|stream| open_session(attach, stream, size, true));
     let (stream, created) = match first {
         Ok(opened) => opened,
         Err(e) if attach.expect_existing => {
             print_notice(&format!("cannot attach ({e:#}); retrying"));
             let _raw = RawModeGuard::enable();
             spawn_input_threads(&uplink, &stdin_closed, size);
-            let stream = reconnect(attach, &stdin_closed);
+            let stream = reconnect(attach, &stdin_closed, true);
             return relay_loop(attach, stream, &uplink, &stdin_closed);
         }
         Err(e) => return Err(e),
@@ -330,7 +330,7 @@ fn relay_loop(
             Relay::DaemonGone if stdin_closed.load(Ordering::SeqCst) => exit(0),
             Relay::DaemonGone => {}
         }
-        stream = reconnect(attach, stdin_closed);
+        stream = reconnect(attach, stdin_closed, false);
     }
 }
 
@@ -352,6 +352,7 @@ fn open_session(
     attach: &Attach,
     mut stream: UnixStream,
     size: (u16, u16),
+    reopening: bool,
 ) -> Result<(UnixStream, bool)> {
     let (cols, rows) = size;
     let request = OpenRequest {
@@ -363,7 +364,11 @@ fn open_session(
         target: attach.target.clone(),
         // Same name every time: the daemon attaches us to the existing
         // pty and replays its screen.
-        mode: if attach.require_existing {
+        mode: if attach.require_existing && reopening {
+            OpenMode::Reopen {
+                name: attach.name.clone(),
+            }
+        } else if attach.require_existing {
             OpenMode::Attach {
                 name: attach.name.clone(),
             }
@@ -397,7 +402,7 @@ fn handshake(stream: &mut UnixStream, request: &OpenRequest) -> Result<Opened> {
 /// Wait out a daemon that went away and reattach by name. Waits forever:
 /// exiting instead would make the app erase the pane, so a long outage
 /// is announced in the terminal rather than fatal.
-fn reconnect(attach: &Attach, stdin_closed: &AtomicBool) -> UnixStream {
+fn reconnect(attach: &Attach, stdin_closed: &AtomicBool, reopening: bool) -> UnixStream {
     let started = Instant::now();
     let mut backoff = RECONNECT_BACKOFF;
     let mut notified = false;
@@ -420,7 +425,7 @@ fn reconnect(attach: &Attach, stdin_closed: &AtomicBool) -> UnixStream {
             connect().ok()
         };
         if let Some(socket) = socket {
-            match open_session(attach, socket, winsize()) {
+            match open_session(attach, socket, winsize(), reopening) {
                 Ok((stream, created)) => {
                     // A reconnect always expected the pty to survive: the
                     // daemon creating one means the shell was lost.

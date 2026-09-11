@@ -130,6 +130,7 @@ async fn adopting_a_taken_name_is_refused_and_the_original_keeps_its_client() {
         cols: 80,
         rows: 24,
         screen: Vec::new(),
+        close_deadline: None,
     };
     assert!(
         manager.adopt(inherited, spare.master).is_err(),
@@ -263,7 +264,7 @@ async fn a_failed_or_cancelled_connection_releases_its_client_slot() {
                 OpenMode::Open {
                     name: "cleanup".into(),
                     cwd: None,
-                    command: vec!["/bin/cat".into()],
+                    command: vec![common::cat()],
                     cwd_from: None,
                 },
             ),
