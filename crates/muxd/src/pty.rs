@@ -271,6 +271,63 @@ pub fn resize(master: &AsyncFd<OwnedFd>, cols: u16, rows: u16) -> Result<()> {
     Ok(())
 }
 
+/// End every job-control group in this terminal's Unix session. Background
+/// jobs may ignore SIGHUP, so killing only the shell/foreground is insufficient.
+pub fn terminate_session(child: Pid) {
+    use nix::sys::signal::{kill, killpg, Signal};
+    use nix::unistd::{getpgid, getsid};
+
+    let mut groups = std::collections::BTreeSet::new();
+    for pid in process_ids() {
+        if getsid(Some(pid)).ok() == Some(child) {
+            if let Ok(group) = getpgid(Some(pid)) {
+                if group.as_raw() > 0 && group != child {
+                    groups.insert(group);
+                }
+            }
+        }
+    }
+    // Keep the session leader alive until its jobs have been signalled.
+    for group in groups {
+        let _ = killpg(group, Signal::SIGKILL);
+    }
+    let _ = killpg(child, Signal::SIGKILL);
+    // Covers the interval between fork and setsid too.
+    let _ = kill(child, Signal::SIGKILL);
+}
+
+#[cfg(target_os = "linux")]
+fn process_ids() -> Vec<Pid> {
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
+        .map(Pid::from_raw)
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn process_ids() -> Vec<Pid> {
+    // SAFETY: null/zero asks libproc for the required PID count.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    let Ok(count) = usize::try_from(count) else {
+        return Vec::new();
+    };
+    let mut pids = vec![0_i32; count + 512];
+    let Ok(bytes) = i32::try_from(pids.len() * std::mem::size_of::<i32>()) else {
+        return Vec::new();
+    };
+    // SAFETY: the buffer has exactly 'bytes' writable bytes. libproc returns
+    // the number of PIDs written; extra capacity accommodates concurrent forks.
+    let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    pids.truncate(usize::try_from(count).unwrap_or(0));
+    pids.into_iter()
+        .filter(|pid| *pid > 0)
+        .map(Pid::from_raw)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::pane_inherits;
