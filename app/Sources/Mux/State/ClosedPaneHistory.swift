@@ -6,6 +6,7 @@ struct ClosedPaneHistory {
     struct Entry: Codable {
         let id: UUID
         let pane: PaneSnapshot
+        var expiresAt: Date?
 
         var snapshot: SessionSnapshot {
             SessionSnapshot(tree: .leaf(id), panes: [id: pane], focused: id, zoomed: nil)
@@ -16,7 +17,7 @@ struct ClosedPaneHistory {
 
     init(entries: [Entry] = []) {
         for entry in entries {
-            record(id: entry.id, pane: entry.pane)
+            record(id: entry.id, pane: entry.pane, expiresAt: entry.expiresAt ?? .distantPast)
         }
     }
 
@@ -24,15 +25,21 @@ struct ClosedPaneHistory {
         entries.contains { $0.id == id && $0.pane.daemon == host }
     }
 
-    var isEmpty: Bool {
-        entries.isEmpty
+    func expired(on host: String?, at now: Date = Date()) -> [Entry] {
+        entries.filter { $0.pane.daemon == host && ($0.expiresAt ?? .distantPast) <= now }
     }
 
-    mutating func record(id: UUID, pane: PaneSnapshot) {
+    var isEmpty: Bool {
+        !entries.contains { ($0.expiresAt ?? .distantPast) > Date() }
+    }
+
+    mutating func record(
+        id: UUID, pane: PaneSnapshot, expiresAt: Date
+    ) {
         remove(id, on: pane.daemon)
         var saved = pane
         saved.requireExisting = true
-        entries.append(Entry(id: id, pane: saved))
+        entries.append(Entry(id: id, pane: saved, expiresAt: expiresAt))
     }
 
     @discardableResult
@@ -43,6 +50,7 @@ struct ClosedPaneHistory {
     }
 
     mutating func popLast() -> Entry? {
-        entries.popLast()
+        entries.removeAll { ($0.expiresAt ?? .distantPast) <= Date() }
+        return entries.popLast()
     }
 }

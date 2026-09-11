@@ -47,6 +47,7 @@ async fn an_adopted_idle_agent_is_detected_without_fresh_output() {
                 cols: 80,
                 rows: 24,
                 screen: b"\x1b]0;A restored conversation\x07".to_vec(),
+                close_deadline: None,
             },
             pty.master.into_inner(),
         )

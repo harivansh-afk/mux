@@ -51,7 +51,7 @@ use tokio::net::{UnixListener, UnixStream};
 use crate::manager::Manager;
 use crate::{paths, pty};
 
-pub const MIGRATE_VERSION: u32 = 1;
+pub const MIGRATE_VERSION: u32 = 2;
 pub const MAX_MIGRATE_FDS: usize = 256;
 /// The successor's "they are mine now" byte, written once every pty in
 /// the payload has been adopted. The predecessor does not exit until it
@@ -69,12 +69,55 @@ pub struct MigratePty {
     /// `render_screen_bytes()` of the old daemon's terminal at handoff;
     /// the new daemon feeds it into a fresh VT before reading the fd.
     pub screen: Vec<u8>,
+    pub close_deadline: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MigratePayload {
     pub version: u32,
     pub ptys: Vec<MigratePty>,
+}
+
+// Preserve live terminals during the first upgrade from a pre-expiry daemon.
+#[derive(Deserialize)]
+struct LegacyPty {
+    name: String,
+    command: Vec<String>,
+    child_pid: i32,
+    cols: u16,
+    rows: u16,
+    screen: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+struct LegacyPayload {
+    version: u32,
+    ptys: Vec<LegacyPty>,
+}
+
+fn decode_payload(bytes: &[u8]) -> Result<MigratePayload> {
+    let version: u32 = mux_proto::peer::decode_prefix(bytes)?;
+    if version != 1 {
+        return mux_proto::peer::decode(bytes).context("decode payload");
+    }
+    let legacy: LegacyPayload = mux_proto::peer::decode(bytes)?;
+    debug_assert_eq!(legacy.version, 1);
+    Ok(MigratePayload {
+        version: MIGRATE_VERSION,
+        ptys: legacy
+            .ptys
+            .into_iter()
+            .map(|pty| MigratePty {
+                name: pty.name,
+                command: pty.command,
+                child_pid: pty.child_pid,
+                cols: pty.cols,
+                rows: pty.rows,
+                screen: pty.screen,
+                close_deadline: None,
+            })
+            .collect(),
+    })
 }
 
 /// Predecessor signal to payload. Generous: the predecessor only has to
@@ -261,8 +304,7 @@ async fn receive(stream: &mut UnixStream) -> Result<Vec<Adopted>> {
         body.extend_from_slice(&rest);
     }
 
-    let payload: MigratePayload =
-        mux_proto::peer::decode(&body[..len]).context("decode payload")?;
+    let payload = decode_payload(&body[..len])?;
     if payload.version != MIGRATE_VERSION {
         bail!("handoff version {} != {MIGRATE_VERSION}", payload.version);
     }
@@ -388,6 +430,7 @@ pub fn hand_off(manager: &Manager, socket: &Path) -> Result<usize> {
             cols: size.cols,
             rows: size.rows,
             screen: terminal.render_screen_bytes(),
+            close_deadline: *session.close_deadline.lock(),
         });
         fds.push(master);
     }
@@ -465,6 +508,45 @@ mod tests {
         // Our own socket is not a predecessor.
         assert_eq!(socket_owner(&path), None);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn legacy_handoff_decodes_without_a_close_deadline() {
+        // Tuple fields pin the v1 postcard layout independently of today's structs.
+        let bytes = mux_proto::peer::encode(&(
+            1_u32,
+            vec![(
+                "legacy".to_string(),
+                vec!["cat".to_string()],
+                123_i32,
+                80_u16,
+                24_u16,
+                b"screen".to_vec(),
+            )],
+        ));
+        let payload = decode_payload(&bytes).expect("legacy payload");
+        assert_eq!(payload.version, MIGRATE_VERSION);
+        assert_eq!(payload.ptys[0].name, "legacy");
+        assert_eq!(payload.ptys[0].child_pid, 123);
+        assert_eq!(payload.ptys[0].close_deadline, None);
+    }
+
+    #[test]
+    fn close_deadline_survives_the_handoff_codec() {
+        let payload = MigratePayload {
+            version: MIGRATE_VERSION,
+            ptys: vec![MigratePty {
+                name: "closed".into(),
+                command: vec![],
+                child_pid: 123,
+                cols: 80,
+                rows: 24,
+                screen: b"screen".to_vec(),
+                close_deadline: Some(1_800_000_000_000),
+            }],
+        };
+        let bytes = mux_proto::peer::encode(&payload);
+        assert_eq!(decode_payload(&bytes).expect("current payload"), payload);
     }
 
     #[test]

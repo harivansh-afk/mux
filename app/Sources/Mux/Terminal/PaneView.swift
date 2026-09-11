@@ -98,6 +98,7 @@ final class PaneView: NSView {
     private(set) var focused: Bool = false
 
     // MARK: - Keyboard / IME state (used by PaneView+Key.swift and
+
     // PaneView+TextInput.swift)
 
     /// In-progress IME composition (preedit) text.
@@ -356,7 +357,7 @@ final class PaneView: NSView {
         }
     }
 
-    /// Kill the pane's pty: a deliberate close, not a detach.
+    /// Kill the terminal immediately.
     func killRemote() {
         Muxd.kill(attach.address)
     }
