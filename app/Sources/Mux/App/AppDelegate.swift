@@ -1,14 +1,9 @@
 import AppKit
 import UserNotifications
 
-/// The app itself, reachable from anywhere. mux installs exactly one
-/// delegate in main.swift, before any of this code can run, so this is
-/// the only place the cast belongs.
+/// Own the one delegate installed at startup; callers never downcast NSApp.delegate.
 enum App {
-    static var delegate: AppDelegate {
-        // astlog-ignore: no-delegate-cast
-        NSApp.delegate as! AppDelegate
-    }
+    static let delegate = AppDelegate()
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -24,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Before the snapshot is loaded: an unclean previous exit freezes
         // the pre-crash state file for post-mortem and recovery.
         let unclean = CrashMarker.checkAndArm()
-        AppLog.log("launch unclean_previous_exit=\(unclean) attach_binary=\(Muxd.attachBinary ?? "MISSING (panes fall back to plain shells)")")
+        AppLog.log("launch unclean_previous_exit=\(unclean) attach_binary=\(Muxd.attachBinary)")
 
         buildMenu()
 
@@ -57,16 +52,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let snapshot = SnapshotStore.load(),
            !snapshot.sessions.isEmpty || !(snapshot.closedPanes ?? []).isEmpty
         {
-            // A bare SwiftPM build normally falls back to a local shell.
-            // That cannot substitute for terminals promised exact reattachment.
-            if snapshot.requiresRelay, Muxd.attachBinary == nil {
-                let alert = NSAlert()
-                alert.messageText = "Open the bundled Mux.app to restore these terminals"
-                alert.informativeText = "This build lacks mux-attach. Your saved terminals have not been changed."
-                alert.runModal()
-                NSApp.terminate(nil)
-                return
-            }
             let panes = snapshot.sessions.flatMap { $0.panes.keys.map(\.uuidString) }
             AppLog.log("restoring sessions=\(snapshot.sessions.count) panes=\(panes.joined(separator: ","))")
             restore(snapshot)
@@ -108,7 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                 }
                 guard !orphans.isEmpty else { return }
-                AppLog.log("adopting \(orphans.count) orphaned pty(s) from \(host ?? "local"): \(orphans.keys.map(\.uuidString).joined(separator: ","))")
+                let names = orphans.keys.map(\.uuidString).joined(separator: ",")
+                AppLog.log("adopting \(orphans.count) orphaned pty(s) from \(host ?? "local"): \(names)")
                 controller.addRecoverySession(orphans)
             }
         }

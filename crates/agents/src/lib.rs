@@ -10,59 +10,66 @@
 //! (Apache-2.0, LICENSE-upstream); the manifests are copied as data so a
 //! newer upstream rule set is a file copy.
 
-pub mod engine;
+mod engine;
 
 pub use engine::{detect, Detection, DetectionInput};
 
-/// One of the agents with a bundled manifest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Agent {
-    Pi,
-    Claude,
-    Codex,
-    Gemini,
-    Cursor,
-    Devin,
-    Antigravity,
-    Cline,
-    OpenCode,
-    GithubCopilot,
-    Kimi,
-    Kiro,
-    Droid,
-    Amp,
-    Grok,
-    Hermes,
-    Kilo,
-    Qodercli,
-    Qwen,
-    Maki,
+// Each row owns the variant, manifest file, wire label and command aliases.
+macro_rules! agents {
+    ($($variant:ident => $file:literal: $label:literal $(| $alias:literal)*),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Agent { $($variant),+ }
+
+        impl Agent {
+            pub const ALL: &[Self] = &[$(Self::$variant),+];
+
+            pub fn label(self) -> &'static str {
+                match self { $(Self::$variant => $label),+ }
+            }
+
+            fn manifest(self) -> &'static str {
+                match self {
+                    $(Self::$variant => include_str!(concat!("manifests/", $file, ".toml"))),+
+                }
+            }
+        }
+
+        fn parse_agent_label(name: &str) -> Option<Agent> {
+            let name = name.trim().to_lowercase();
+            let name = [".exe", ".cmd", ".bat", ".ps1", ".js"].into_iter()
+                .find_map(|suffix| name.strip_suffix(suffix)).unwrap_or(&name);
+            match name {
+                $($label $(| $alias)* => Some(Agent::$variant),)+
+                _ => None,
+            }
+        }
+    };
+}
+
+agents! {
+    Pi => "pi": "pi",
+    Claude => "claude": "claude" | "claude-code",
+    Codex => "codex": "codex",
+    Gemini => "gemini": "gemini",
+    Cursor => "cursor": "cursor" | "cursor-agent",
+    Devin => "devin": "devin" | "devin-cli" | "devin cli",
+    Antigravity => "antigravity": "agy" | "antigravity" | "antigravity-cli",
+    Cline => "cline": "cline",
+    OpenCode => "opencode": "opencode" | "opencode2" | "open-code",
+    GithubCopilot => "github-copilot": "copilot" | "github-copilot" | "ghcs",
+    Kimi => "kimi": "kimi" | "kimi-code" | "kimi code",
+    Kiro => "kiro": "kiro" | "kiro-cli",
+    Droid => "droid": "droid",
+    Amp => "amp": "amp" | "amp-local",
+    Grok => "grok": "grok" | "grok-build",
+    Hermes => "hermes": "hermes" | "hermes-agent",
+    Kilo => "kilo": "kilo" | "kilo-code" | "kilo code",
+    Qodercli => "qodercli": "qodercli" | "qoderclicn" | "qoder" | "qodercn",
+    Qwen => "qwen": "qwen" | "qwen-code" | "qwen code",
+    Maki => "maki": "maki",
 }
 
 impl Agent {
-    pub const ALL: [Self; 20] = [
-        Self::Pi,
-        Self::Claude,
-        Self::Codex,
-        Self::Gemini,
-        Self::Cursor,
-        Self::Devin,
-        Self::Antigravity,
-        Self::Cline,
-        Self::OpenCode,
-        Self::GithubCopilot,
-        Self::Kimi,
-        Self::Kiro,
-        Self::Droid,
-        Self::Amp,
-        Self::Grok,
-        Self::Hermes,
-        Self::Kilo,
-        Self::Qodercli,
-        Self::Qwen,
-        Self::Maki,
-    ];
-
     /// The agent behind a process name (`claude`, `codex`, a path to
     /// either, `codex.exe`); None for shells and everything else.
     #[must_use]
@@ -80,12 +87,6 @@ impl Agent {
             "node" | "nodejs" | "bun" => Self::from_process_name(argv.get(1)?),
             _ => None,
         })
-    }
-
-    /// The manifest id, and what the wire calls the agent.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        agent_label(self)
     }
 }
 
@@ -131,64 +132,6 @@ pub fn topic(title: &str) -> String {
         return scalars.as_str().trim().to_string();
     }
     title.to_string()
-}
-
-pub(crate) fn agent_label(agent: Agent) -> &'static str {
-    match agent {
-        Agent::Pi => "pi",
-        Agent::Claude => "claude",
-        Agent::Codex => "codex",
-        Agent::Gemini => "gemini",
-        Agent::Cursor => "cursor",
-        Agent::Devin => "devin",
-        Agent::Antigravity => "agy",
-        Agent::Cline => "cline",
-        Agent::OpenCode => "opencode",
-        Agent::GithubCopilot => "copilot",
-        Agent::Kimi => "kimi",
-        Agent::Kiro => "kiro",
-        Agent::Droid => "droid",
-        Agent::Amp => "amp",
-        Agent::Grok => "grok",
-        Agent::Hermes => "hermes",
-        Agent::Kilo => "kilo",
-        Agent::Qodercli => "qodercli",
-        Agent::Qwen => "qwen",
-        Agent::Maki => "maki",
-    }
-}
-
-pub(crate) fn parse_agent_label(agent: &str) -> Option<Agent> {
-    let mut name = agent.trim().to_lowercase();
-    for suffix in [".exe", ".cmd", ".bat", ".ps1", ".js"] {
-        if let Some(stem) = name.strip_suffix(suffix) {
-            name = stem.to_string();
-            break;
-        }
-    }
-    match name.as_str() {
-        "pi" => Some(Agent::Pi),
-        "claude" | "claude-code" => Some(Agent::Claude),
-        "codex" => Some(Agent::Codex),
-        "gemini" => Some(Agent::Gemini),
-        "cursor" | "cursor-agent" => Some(Agent::Cursor),
-        "devin" | "devin-cli" | "devin cli" => Some(Agent::Devin),
-        "agy" | "antigravity" | "antigravity-cli" => Some(Agent::Antigravity),
-        "cline" => Some(Agent::Cline),
-        "opencode" | "opencode2" | "open-code" => Some(Agent::OpenCode),
-        "copilot" | "github-copilot" | "ghcs" => Some(Agent::GithubCopilot),
-        "kimi" | "kimi-code" | "kimi code" => Some(Agent::Kimi),
-        "kiro" | "kiro-cli" => Some(Agent::Kiro),
-        "droid" => Some(Agent::Droid),
-        "amp" | "amp-local" => Some(Agent::Amp),
-        "grok" | "grok-build" => Some(Agent::Grok),
-        "hermes" | "hermes-agent" => Some(Agent::Hermes),
-        "kilo" | "kilo-code" | "kilo code" => Some(Agent::Kilo),
-        "qodercli" | "qoderclicn" | "qoder" | "qodercn" => Some(Agent::Qodercli),
-        "qwen" | "qwen-code" | "qwen code" => Some(Agent::Qwen),
-        "maki" => Some(Agent::Maki),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -247,7 +190,7 @@ mod tests {
 
     #[test]
     fn every_agent_has_a_bundled_manifest() {
-        for agent in Agent::ALL {
+        for &agent in Agent::ALL {
             let input = DetectionInput {
                 screen: "",
                 osc_title: "",
