@@ -98,6 +98,7 @@ final class PaneView: NSView {
     private(set) var focused: Bool = false
 
     // MARK: - Keyboard / IME state (used by PaneView+Key.swift and
+
     // PaneView+TextInput.swift)
 
     /// In-progress IME composition (preedit) text.

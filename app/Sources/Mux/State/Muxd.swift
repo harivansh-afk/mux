@@ -303,7 +303,9 @@ enum Muxd {
     static func list(host alias: String?, then completion: @escaping ([PtyListing]?) -> Void) {
         guard let daemon = daemonBinary else { return completion(nil) }
         var args = ["ls", "--json"]
-        if let alias { args.append(alias) }
+        if let alias {
+            args.append(alias)
+        }
         Subprocess.run(daemon, args) { output in
             guard let output else { return completion(nil) }
             completion(jsonLines(output))
