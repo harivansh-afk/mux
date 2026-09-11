@@ -25,12 +25,16 @@ struct ClosedPaneHistory {
         entries.contains { $0.id == id && $0.pane.daemon == host }
     }
 
+    func expired(on host: String?, at now: Date = Date()) -> [Entry] {
+        entries.filter { $0.pane.daemon == host && ($0.expiresAt ?? .distantPast) <= now }
+    }
+
     var isEmpty: Bool {
         !entries.contains { ($0.expiresAt ?? .distantPast) > Date() }
     }
 
     mutating func record(
-        id: UUID, pane: PaneSnapshot, expiresAt: Date = Date().addingTimeInterval(60)
+        id: UUID, pane: PaneSnapshot, expiresAt: Date
     ) {
         remove(id, on: pane.daemon)
         var saved = pane

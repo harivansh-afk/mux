@@ -511,6 +511,45 @@ mod tests {
     }
 
     #[test]
+    fn legacy_handoff_decodes_without_a_close_deadline() {
+        // Tuple fields pin the v1 postcard layout independently of today's structs.
+        let bytes = mux_proto::peer::encode(&(
+            1_u32,
+            vec![(
+                "legacy".to_string(),
+                vec!["cat".to_string()],
+                123_i32,
+                80_u16,
+                24_u16,
+                b"screen".to_vec(),
+            )],
+        ));
+        let payload = decode_payload(&bytes).expect("legacy payload");
+        assert_eq!(payload.version, MIGRATE_VERSION);
+        assert_eq!(payload.ptys[0].name, "legacy");
+        assert_eq!(payload.ptys[0].child_pid, 123);
+        assert_eq!(payload.ptys[0].close_deadline, None);
+    }
+
+    #[test]
+    fn close_deadline_survives_the_handoff_codec() {
+        let payload = MigratePayload {
+            version: MIGRATE_VERSION,
+            ptys: vec![MigratePty {
+                name: "closed".into(),
+                command: vec![],
+                child_pid: 123,
+                cols: 80,
+                rows: 24,
+                screen: b"screen".to_vec(),
+                close_deadline: Some(1_800_000_000_000),
+            }],
+        };
+        let bytes = mux_proto::peer::encode(&payload);
+        assert_eq!(decode_payload(&bytes).expect("current payload"), payload);
+    }
+
+    #[test]
     fn nothing_listening_is_no_owner() {
         assert_eq!(socket_owner(Path::new("/nonexistent/muxd.sock")), None);
     }

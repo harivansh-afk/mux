@@ -30,7 +30,11 @@ the app can use the new close command. Migration v2 carries each close deadline;
 the new receiver accepts v1 handoffs as terminals without a pending close.
 A handoff preserves the original expiry instead of starting another 60 seconds.
 
-The earlier unlimited-retention contract below is superseded by this lifecycle.
+Legacy closed entries without a deadline are expired history. On a successful
+daemon listing, the app terminates those that remain detached and prunes entries
+that no longer exist. It excludes them from orphan recovery.
+
+The earlier unlimited-retention contract is superseded by this lifecycle.
 The process-preservation rationale still applies during the 60-second window.
 
 ## Why saving the screen is insufficient

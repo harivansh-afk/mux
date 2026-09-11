@@ -188,7 +188,7 @@ final class Session {
         pane.closeRemote { [weak self, weak pane] expiresAt in
             guard let self, let pane else { return }
             closingPanes.remove(pane.id)
-            guard contains(pane) else { return }
+            guard let owner = controller?.session(owning: pane) else { return }
             guard let expiresAt else {
                 let alert = NSAlert()
                 alert.messageText = "Could not close terminal"
@@ -201,7 +201,7 @@ final class Session {
                 pane: PaneSnapshot(cwd: pane.pwd, target: pane.target, fontDelta: pane.fontDelta),
                 expiresAt: expiresAt
             )
-            removePane(pane)
+            owner.removePane(pane)
             pane.destroySurface()
         }
     }

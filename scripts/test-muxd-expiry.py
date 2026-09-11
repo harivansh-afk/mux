@@ -9,7 +9,7 @@ import time
 
 from muxd_harness import (
     Daemon, Pty, find_binaries, kill_process_group, list_ptys, log,
-    run, sandbox_env, spawn_daemon, wait_until,
+    run, sandbox_env, socket_answers, spawn_daemon, wait_until,
 )
 
 
@@ -20,7 +20,7 @@ def main():
     muxd, relay = binaries
     with tempfile.TemporaryDirectory(prefix="muxexpire-", dir="/tmp") as home:
         socket = os.path.join(home, "d.sock")
-        env = sandbox_env(home, socket, MUXD_MIGRATE_SOCKET=os.path.join(home, "m.sock"))
+        env = sandbox_env(home, socket, MUXD_MIGRATE_SOCKET=os.path.join(home, "m.sock"), MUXD_NO_AUTOSTART="1")
         clients = []
         successor = handle = None
         with Daemon(muxd, home, socket, env=env) as daemon:
@@ -52,7 +52,8 @@ def main():
                     muxd, socket, env, os.path.join(home, "successor.log"), ["--upgrade"]
                 )
                 daemon.proc.wait(timeout=15)
-                wait_until(lambda: len(list_ptys(muxd, env)) == 3, "handoff")
+                wait_until(lambda: socket_answers(socket), "successor socket")
+                assert len(list_ptys(muxd, env)) == 3, list_ptys(muxd, env)
                 for name, pid in pids.items():
                     assert json.loads(run([muxd, "inspect", f"local:{name}"], env).stdout)["pid"] == pid
                 assert int(run([muxd, "close", "local:closed"], env).stdout) == deadline
@@ -75,6 +76,11 @@ def main():
                 clients[0].send(b"still-alive\n")
                 clients[0].expect(b"still-alive", 10, "reopened terminal remains usable")
                 log("expiry", f"PASS: expired in {elapsed:.3f}s across upgrade; reopen and detach survived")
+            except Exception:
+                print(daemon.log())
+                if os.path.exists(os.path.join(home, "successor.log")):
+                    print(open(os.path.join(home, "successor.log")).read())
+                raise
             finally:
                 for client in clients:
                     client.kill()

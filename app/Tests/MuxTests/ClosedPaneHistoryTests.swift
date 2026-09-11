@@ -83,6 +83,17 @@ final class ClosedPaneHistoryTests: XCTestCase {
         XCTAssertNil(restored.popLast())
     }
 
+    func testLegacyHistoryExpiresAndCleanupIsScopedToHost() throws {
+        let id = UUID()
+        let entries = [ClosedPaneHistory.Entry(id: id, pane: PaneSnapshot(target: "spark"), expiresAt: nil)]
+        let data = try JSONEncoder().encode(entries)
+        let decoded = try JSONDecoder().decode([ClosedPaneHistory.Entry].self, from: data)
+        var history = ClosedPaneHistory(entries: decoded)
+        XCTAssertEqual(history.expired(on: "spark").map(\.id), [id])
+        XCTAssertTrue(history.expired(on: nil).isEmpty)
+        XCTAssertNil(history.popLast())
+    }
+
     func testShortcutRequiresCommandShiftT() throws {
         func event(_ text: String, _ flags: NSEvent.ModifierFlags) throws -> NSEvent {
             try XCTUnwrap(NSEvent.keyEvent(
@@ -101,5 +112,11 @@ final class ClosedPaneHistoryTests: XCTestCase {
         XCTAssertTrue(try PrefixEngine.isCloseTab(event("w", [.command])))
         XCTAssertFalse(try PrefixEngine.isCloseTab(event("W", [.command, .shift])))
         XCTAssertFalse(try PrefixEngine.isCloseTab(event("w", [.command, .option])))
+    }
+}
+
+private extension ClosedPaneHistory {
+    mutating func record(id: UUID, pane: PaneSnapshot) {
+        record(id: id, pane: pane, expiresAt: .distantFuture)
     }
 }

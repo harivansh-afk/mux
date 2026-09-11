@@ -290,6 +290,18 @@ extension MuxWindowController {
     /// One daemon's answer, applied to the panes it speaks for. A listing
     /// names its pane by UUID; what it carries is the pane's to apply.
     func applyListings(_ listings: [Muxd.PtyListing], host: String?) {
+        // Old history has no daemon deadline. Retire it without adopting it as
+        // orphaned work; never kill a terminal currently attached elsewhere.
+        for entry in closedPanes.expired(on: host) {
+            if let listing = listings.first(where: { $0.name == entry.id.uuidString }) {
+                if !listing.attached {
+                    Muxd.kill("\(host ?? "local"):\(entry.id.uuidString)")
+                }
+            } else {
+                closedPanes.remove(entry.id, on: host)
+                saveState()
+            }
+        }
         for listing in listings {
             guard let id = UUID(uuidString: listing.name), let pane = pane(id, on: host) else { continue }
             pane.apply(agent: listing.agent, cwd: listing.cwd)
