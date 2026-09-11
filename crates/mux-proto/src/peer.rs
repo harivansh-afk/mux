@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 /// dropping the connection, so skew between a running daemon and a newer
 /// client is diagnosable (v1: M2; v2: token+target; v3: this field;
 /// v4: `cwd_from`; v5: `PtyInfo::cwd`; v6: typed `OpenError`; v7:
-/// `PtyInfo::agent`, `OpenMode::Watch`; v8: attach-only reopen; v9: inspection/input; v10: close expiry).
+/// `PtyInfo::agent`, `OpenMode::Watch`; v8: attach-only reopen;
+/// v9: non-attaching inspection, observation and checked input;
+/// v10: bounded close and explicit reopen.
 pub const PROTOCOL_VERSION: u32 = 10;
 
 /// ALPN for muxd's QUIC listener. Each bidirectional stream carries
@@ -36,7 +38,7 @@ pub const SOCKET_ENV: &str = "MUXD_SOCKET";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenRequest {
-    /// Must be `PROTOCOL_VERSION`; first field, so even a differently
+    /// The client's protocol version; first field, so even a differently
     /// shaped future request still yields a meaningful version check.
     pub version: u32,
     pub cols: u16,

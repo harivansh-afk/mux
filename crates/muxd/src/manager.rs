@@ -75,7 +75,7 @@ pub struct PtySession {
     pub revision: AtomicU64,
     pub input_revision: AtomicU64,
     pub input_lock: tokio::sync::Mutex<()>,
-    pub changes: tokio::sync::watch::Sender<u64>,
+    pub changes: tokio::sync::watch::Sender<()>,
     pub name: String,
     pub command: Vec<String>,
     pub terminal: Mutex<ghostty_vt::Terminal>,
@@ -215,6 +215,7 @@ impl Manager {
             return;
         }
         *previous = Some(event.clone());
+        session.notify_observers();
         // No receivers is the common case and not an error.
         let _ = self.events.send(event);
     }
@@ -307,7 +308,7 @@ impl Manager {
             revision: AtomicU64::new(0),
             input_revision: AtomicU64::new(0),
             input_lock: tokio::sync::Mutex::new(()),
-            changes: tokio::sync::watch::channel(0).0,
+            changes: tokio::sync::watch::channel(()).0,
             name: name.to_string(),
             command,
             terminal: Mutex::new(terminal),
@@ -603,9 +604,9 @@ async fn reap(manager: Manager, session: Arc<PtySession>) {
         wait_child(pid).await
     };
     session.exited.store(true, Ordering::SeqCst);
-    session.changed();
     // Nothing is in the foreground of a dead pty.
     *session.agent.lock() = None;
+    session.changed();
 
     // Take (not clone) the client so the last sender drops after Exit:
     // the forwarder drains remaining output, sees the channel close, and

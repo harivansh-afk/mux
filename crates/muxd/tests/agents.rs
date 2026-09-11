@@ -52,7 +52,17 @@ async fn an_adopted_idle_agent_is_detected_without_fresh_output() {
             pty.master.into_inner(),
         )
         .expect("adopt");
+    let session = manager.get("idle").expect("adopted session");
+    let initial = session.snapshot();
+    let mut observations = session.changes.subscribe();
     let agent = next_agent(&mut events).await.agent.expect("restored agent");
+    tokio::time::timeout(PATIENCE, observations.changed())
+        .await
+        .expect("observer notified without new output")
+        .expect("session alive");
+    let observed = session.snapshot();
+    assert_eq!(observed.revision, initial.revision);
+    assert_eq!(observed.agent.as_ref(), Some(&agent));
     assert_eq!(agent.agent, "codex");
     assert_eq!(agent.state, "idle");
     assert_eq!(agent.topic, "A restored conversation");
