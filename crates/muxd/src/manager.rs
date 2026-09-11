@@ -450,18 +450,7 @@ impl Manager {
     }
 
     fn kill_session(&self, session: &PtySession) {
-        // Job control puts the foreground job in a different process group.
-        if let Ok(foreground) = nix::unistd::tcgetpgrp(session.master.get_ref()) {
-            if foreground.as_raw() > 0 {
-                let _ = nix::sys::signal::killpg(foreground, nix::sys::signal::Signal::SIGKILL);
-            }
-        }
-        // The child is a session leader; nuke its whole process group.
-        // And the pid itself: for the moment between fork and setsid it
-        // leads no group, and killpg alone answers ESRCH and leaves a
-        // shell running that nothing in the table can reach any more.
-        let _ = nix::sys::signal::killpg(session.child, nix::sys::signal::Signal::SIGKILL);
-        let _ = nix::sys::signal::kill(session.child, nix::sys::signal::Signal::SIGKILL);
+        pty::terminate_session(session.child);
         *session.client.lock() = None;
         session.exited.store(true, Ordering::SeqCst);
         *session.agent.lock() = None;
@@ -648,7 +637,7 @@ async fn wait_child(pid: nix::unistd::Pid) -> i32 {
         }
         if std::time::Instant::now() >= deadline {
             // setsid at spawn makes the child its own group leader.
-            let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
+            pty::terminate_session(pid);
             let status = tokio::task::spawn_blocking(move || waitpid(pid, None)).await;
             return match status {
                 Ok(Ok(WaitStatus::Exited(_, code))) => code,
@@ -899,6 +888,46 @@ mod expiry_tests {
         assert!(crate::migrate::alive(replacement.child));
         manager.kill("same");
         gone(&replacement).await;
+    }
+
+    #[tokio::test]
+    async fn expiry_terminates_a_background_job_that_ignores_hangup() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("background.pid");
+        let command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "set -m; (trap '' HUP; exec sleep 300) & echo $! > \"$1\"; wait".into(),
+            "expiry-test".into(),
+            pidfile.to_string_lossy().into_owned(),
+        ];
+        let manager = Manager::default();
+        let (session, _) = manager.open("jobs", &command, None, None, 80, 24).unwrap();
+        let pid = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(pid) = std::fs::read_to_string(&pidfile)
+                    .ok()
+                    .and_then(|text| text.trim().parse::<i32>().ok())
+                {
+                    break nix::unistd::Pid::from_raw(pid);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_ne!(nix::unistd::getpgid(Some(pid)).unwrap(), session.child);
+        manager
+            .close_for("jobs", Duration::from_millis(50))
+            .unwrap();
+        gone(&session).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while crate::migrate::alive(pid) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("background job reaped");
     }
 
     #[tokio::test]
