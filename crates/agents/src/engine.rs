@@ -1,17 +1,16 @@
 //! The state engine: per-agent TOML manifests of rules over the terminal
 //! title and the screen tail, evaluated by priority.
 //!
-//! The schema, validation, gates and regions are the upstream engine's
-//! (Apache-2.0, see LICENSE-upstream) kept verbatim so its manifests load
-//! unchanged; the remote catalog, local overrides and explain output are
-//! gone. `detect` is the one entry point.
+//! Loads the upstream manifest schema (Apache-2.0, see LICENSE-upstream)
+//! without rewriting the bundled data. Rules are validated and compiled
+//! once; only compiled rules live for the duration of the daemon.
 
 use std::sync::OnceLock;
 
 use regex::Regex;
 use serde::Deserialize;
 
-use crate::{agent_label, parse_agent_label, Agent, AgentState};
+use crate::{parse_agent_label, Agent, AgentState};
 
 /// The manifest schema version this engine understands.
 const MANIFEST_ENGINE_VERSION: u32 = 3;
@@ -29,99 +28,60 @@ pub struct DetectionInput<'a> {
 
 /// What the rules said about one pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Detection {
-    /// None only with `skip_state_update`: the screen is a viewer.
+pub struct Detection<'a> {
+    /// None preserves the previous state while a viewer covers the live screen.
     pub state: Option<AgentState>,
-    /// The matched rule says the screen is a viewer (transcript, model
-    /// picker) over the live state: keep the previous state.
-    pub skip_state_update: bool,
     /// The matched rule's id, for tests and logs.
-    pub rule: Option<&'static str>,
+    pub rule: Option<&'a str>,
 }
 
 /// Run the agent's manifest over the input. A known agent with no
 /// matching rule is idle, as upstream decided.
-pub fn detect(agent: Agent, input: DetectionInput<'_>) -> Detection {
-    loaded_manifest(agent).map_or(IDLE, |loaded| evaluate(loaded, input))
+pub fn detect(agent: Agent, input: DetectionInput<'_>) -> Detection<'static> {
+    static LOADED: OnceLock<Vec<Vec<Rule>>> = OnceLock::new();
+    let rules = LOADED.get_or_init(|| Agent::ALL.iter().map(|&agent| load(agent)).collect());
+    // The enum and ALL are generated in the same order by the registry.
+    evaluate(&rules[agent as usize], input)
 }
 
-const IDLE: Detection = Detection {
-    state: Some(AgentState::Idle),
-    skip_state_update: false,
-    rule: None,
-};
-
-fn evaluate(loaded: &'static LoadedManifest, input: DetectionInput<'_>) -> Detection {
-    let mut best: Option<&'static ManifestRule> = None;
-    for (rule, compiled) in loaded.manifest.rules.iter().zip(&loaded.compiled_rules) {
-        if !compiled_rule_matches(compiled, region(input, &rule.region)) {
-            continue;
-        }
-        if best.is_none_or(|previous| rule.priority > previous.priority) {
+fn evaluate<'a>(rules: &'a [Rule], input: DetectionInput<'_>) -> Detection<'a> {
+    let mut best: Option<&Rule> = None;
+    for rule in rules {
+        if best.is_none_or(|previous| rule.priority > previous.priority)
+            && compiled_rule_matches(&rule.gate, region(input, &rule.region))
+        {
             best = Some(rule);
         }
     }
-    best.map_or(IDLE, |rule| Detection {
-        state: rule
-            .state
-            .map_or(Some(AgentState::Idle), ManifestState::state),
-        skip_state_update: rule.skip_state_update,
-        rule: Some(rule.id.as_str()),
-    })
+    Detection {
+        state: best.map_or(Some(AgentState::Idle), |rule| rule.state),
+        rule: best.map(|rule| rule.id.as_str()),
+    }
 }
 
-struct LoadedManifest {
-    manifest: AgentManifest,
-    compiled_rules: Vec<CompiledGate>,
+struct Rule {
+    id: String,
+    state: Option<AgentState>,
+    priority: i32,
+    region: String,
+    gate: CompiledGate,
 }
 
-/// Every bundled manifest, parsed and compiled once per process.
-fn loaded_manifest(agent: Agent) -> Option<&'static LoadedManifest> {
-    static LOADED: OnceLock<Vec<(Agent, LoadedManifest)>> = OnceLock::new();
-    LOADED
-        .get_or_init(|| {
-            Agent::ALL
-                .into_iter()
-                .filter_map(|agent| {
-                    let manifest = bundled_manifest(agent)?;
-                    let compiled_rules = compile_manifest(&manifest).unwrap_or_else(|err| {
-                        panic!(
-                            "bundled {} manifest could not be compiled: {err}",
-                            agent_label(agent)
-                        )
-                    });
-                    Some((
-                        agent,
-                        LoadedManifest {
-                            manifest,
-                            compiled_rules,
-                        },
-                    ))
-                })
-                .collect()
-        })
-        .iter()
-        .find(|(candidate, _)| *candidate == agent)
-        .map(|(_, loaded)| loaded)
-}
-
-fn bundled_manifest(agent: Agent) -> Option<AgentManifest> {
-    let id = agent_label(agent);
-    let (_, content) = BUNDLED_MANIFESTS
-        .iter()
-        .find(|(manifest_id, _)| *manifest_id == id)?;
-    let manifest = parse_manifest(content)
-        .unwrap_or_else(|err| panic!("bundled {id} manifest is invalid: {err}"));
+fn load(agent: Agent) -> Vec<Rule> {
+    let manifest: AgentManifest = toml::from_str(agent.manifest())
+        .unwrap_or_else(|err| panic!("bundled {} manifest is invalid: {err}", agent.label()));
     assert!(
         manifest_matches_agent(&manifest, agent),
-        "bundled {id} manifest declares another agent"
+        "wrong agent in {} manifest",
+        agent.label()
     );
-    Some(manifest)
+    compile_manifest(manifest)
+        .unwrap_or_else(|err| panic!("bundled {} manifest is invalid: {err}", agent.label()))
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct AgentManifest {
+struct AgentManifest {
     id: String,
     #[serde(rename = "version")]
     _version: Option<String>,
@@ -134,7 +94,7 @@ pub(crate) struct AgentManifest {
     rules: Vec<ManifestRule>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(clippy::struct_excessive_bools)] // the upstream schema, kept as is
 struct ManifestRule {
@@ -166,7 +126,7 @@ struct ManifestRule {
     line_regex: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ManifestGate {
     #[serde(default)]
@@ -183,7 +143,7 @@ struct ManifestGate {
     line_regex: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct CompiledGate {
     all: Vec<CompiledGate>,
     any: Vec<CompiledGate>,
@@ -219,29 +179,6 @@ fn default_region() -> String {
     "whole_recent".to_string()
 }
 
-const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
-    ("amp", include_str!("manifests/amp.toml")),
-    ("agy", include_str!("manifests/antigravity.toml")),
-    ("claude", include_str!("manifests/claude.toml")),
-    ("cline", include_str!("manifests/cline.toml")),
-    ("codex", include_str!("manifests/codex.toml")),
-    ("cursor", include_str!("manifests/cursor.toml")),
-    ("devin", include_str!("manifests/devin.toml")),
-    ("droid", include_str!("manifests/droid.toml")),
-    ("gemini", include_str!("manifests/gemini.toml")),
-    ("grok", include_str!("manifests/grok.toml")),
-    ("hermes", include_str!("manifests/hermes.toml")),
-    ("kilo", include_str!("manifests/kilo.toml")),
-    ("kimi", include_str!("manifests/kimi.toml")),
-    ("kiro", include_str!("manifests/kiro.toml")),
-    ("maki", include_str!("manifests/maki.toml")),
-    ("opencode", include_str!("manifests/opencode.toml")),
-    ("pi", include_str!("manifests/pi.toml")),
-    ("qodercli", include_str!("manifests/qodercli.toml")),
-    ("qwen", include_str!("manifests/qwen.toml")),
-    ("copilot", include_str!("manifests/github-copilot.toml")),
-];
-
 const MAX_RULES_PER_MANIFEST: usize = 128;
 const MAX_GATE_DEPTH: usize = 8;
 const MAX_TOTAL_GATES: usize = 512;
@@ -249,13 +186,7 @@ const MAX_MATCHERS_PER_GATE: usize = 32;
 const MAX_TOTAL_MATCHERS: usize = 1024;
 const MAX_MATCHER_CHARS: usize = 512;
 
-pub(crate) fn parse_manifest(content: &str) -> Result<AgentManifest, String> {
-    let manifest = toml::from_str::<AgentManifest>(content).map_err(|err| err.to_string())?;
-    validate_manifest(&manifest)?;
-    Ok(manifest)
-}
-
-fn validate_manifest(manifest: &AgentManifest) -> Result<(), String> {
+fn compile_manifest(manifest: AgentManifest) -> Result<Vec<Rule>, String> {
     if let Some(required) = manifest.min_engine_version {
         if required > MANIFEST_ENGINE_VERSION {
             return Err(format!(
@@ -274,7 +205,8 @@ fn validate_manifest(manifest: &AgentManifest) -> Result<(), String> {
     }
 
     let mut complexity = ManifestComplexity::default();
-    for rule in &manifest.rules {
+    let mut rules = Vec::with_capacity(manifest.rules.len());
+    for rule in manifest.rules {
         if rule.id.trim().is_empty() {
             return Err("manifest rule id must not be empty".to_string());
         }
@@ -304,11 +236,31 @@ fn validate_manifest(manifest: &AgentManifest) -> Result<(), String> {
                 rule.id, TOP_NON_EMPTY_LINES_ENGINE_VERSION
             ));
         }
-        validate_rule_gate(rule, &mut complexity)
-            .map_err(|err| format!("rule {} has invalid matcher gates: {err}", rule.id))?;
+        let gate = compile_gate(
+            ManifestGate {
+                all: rule.all,
+                any: rule.any,
+                not_gate: rule.not_gate,
+                contains: rule.contains,
+                regex: rule.regex,
+                line_regex: rule.line_regex,
+            },
+            false,
+            0,
+            &mut complexity,
+        )
+        .map_err(|err| format!("rule {} has invalid matcher gates: {err}", rule.id))?;
+        rules.push(Rule {
+            id: rule.id,
+            state: rule
+                .state
+                .map_or(Some(AgentState::Idle), ManifestState::state),
+            priority: rule.priority,
+            region: rule.region,
+            gate,
+        });
     }
-
-    Ok(())
+    Ok(rules)
 }
 
 #[derive(Default)]
@@ -317,86 +269,64 @@ struct ManifestComplexity {
     total_matchers: usize,
 }
 
-fn validate_rule_gate(
-    rule: &ManifestRule,
-    complexity: &mut ManifestComplexity,
-) -> Result<(), String> {
-    validate_gate(&manifest_gate_from_rule(rule), "rule", 0, complexity)
-}
-
-fn validate_gate(
-    gate: &ManifestGate,
-    context: &str,
+fn compile_gate(
+    gate: ManifestGate,
+    negated: bool,
     depth: usize,
     complexity: &mut ManifestComplexity,
-) -> Result<(), String> {
+) -> Result<CompiledGate, String> {
     if depth > MAX_GATE_DEPTH {
-        return Err(format!("{context} exceeds max gate depth {MAX_GATE_DEPTH}"));
+        return Err(format!("gate exceeds max depth {MAX_GATE_DEPTH}"));
     }
     complexity.total_gates += 1;
     if complexity.total_gates > MAX_TOTAL_GATES {
         return Err(format!("manifest exceeds max gate count {MAX_TOTAL_GATES}"));
     }
-    validate_matcher_limits(gate, context, complexity)?;
-    if !gate_has_positive_matcher(gate) {
-        return Err(format!("{context} must contain a positive matcher"));
+    validate_matcher_limits(&gate, complexity)?;
+    if !(gate_has_positive_matcher(&gate) || negated && !gate.not_gate.is_empty()) {
+        return Err("gate must contain a positive matcher, or a nested not in a not gate".into());
     }
-    validate_regex_patterns(&gate.regex, context, "regex")?;
-    validate_regex_patterns(&gate.line_regex, context, "line_regex")?;
-    for nested in &gate.all {
-        validate_gate(nested, "all gate", depth + 1, complexity)?;
-    }
-    for nested in &gate.any {
-        validate_gate(nested, "any gate", depth + 1, complexity)?;
-    }
-    for nested in &gate.not_gate {
-        if !gate_has_any_matcher(nested) {
-            return Err(format!("{context} contains an empty not gate"));
-        }
-        validate_not_gate(nested, depth + 1, complexity)?;
-    }
-    Ok(())
+    Ok(CompiledGate {
+        all: gate
+            .all
+            .into_iter()
+            .map(|gate| compile_gate(gate, false, depth + 1, complexity))
+            .collect::<Result<_, _>>()?,
+        any: gate
+            .any
+            .into_iter()
+            .map(|gate| compile_gate(gate, false, depth + 1, complexity))
+            .collect::<Result<_, _>>()?,
+        not_gate: gate
+            .not_gate
+            .into_iter()
+            .map(|gate| compile_gate(gate, true, depth + 1, complexity))
+            .collect::<Result<_, _>>()?,
+        contains: gate
+            .contains
+            .into_iter()
+            .map(|needle| needle.to_lowercase())
+            .collect(),
+        regex: compile_regexes(gate.regex)?,
+        line_regex: compile_regexes(gate.line_regex)?,
+    })
 }
 
-fn validate_not_gate(
-    gate: &ManifestGate,
-    depth: usize,
-    complexity: &mut ManifestComplexity,
-) -> Result<(), String> {
-    if depth > MAX_GATE_DEPTH {
-        return Err(format!("not gate exceeds max gate depth {MAX_GATE_DEPTH}"));
-    }
-    complexity.total_gates += 1;
-    if complexity.total_gates > MAX_TOTAL_GATES {
-        return Err(format!("manifest exceeds max gate count {MAX_TOTAL_GATES}"));
-    }
-    validate_matcher_limits(gate, "not gate", complexity)?;
-    if !gate_has_any_matcher(gate) {
-        return Err("not gate must contain a matcher".to_string());
-    }
-    validate_regex_patterns(&gate.regex, "not gate", "regex")?;
-    validate_regex_patterns(&gate.line_regex, "not gate", "line_regex")?;
-    for nested in &gate.all {
-        validate_gate(nested, "not all gate", depth + 1, complexity)?;
-    }
-    for nested in &gate.any {
-        validate_gate(nested, "not any gate", depth + 1, complexity)?;
-    }
-    for nested in &gate.not_gate {
-        validate_not_gate(nested, depth + 1, complexity)?;
-    }
-    Ok(())
+fn compile_regexes(patterns: Vec<String>) -> Result<Vec<Regex>, String> {
+    patterns
+        .into_iter()
+        .map(|pattern| Regex::new(&pattern).map_err(|err| err.to_string()))
+        .collect()
 }
 
 fn validate_matcher_limits(
     gate: &ManifestGate,
-    context: &str,
     complexity: &mut ManifestComplexity,
 ) -> Result<(), String> {
     let matcher_count = gate.contains.len() + gate.regex.len() + gate.line_regex.len();
     if matcher_count > MAX_MATCHERS_PER_GATE {
         return Err(format!(
-            "{context} has {matcher_count} direct matchers, max is {MAX_MATCHERS_PER_GATE}"
+            "gate has {matcher_count} direct matchers, max is {MAX_MATCHERS_PER_GATE}"
         ));
     }
     complexity.total_matchers += matcher_count;
@@ -413,18 +343,9 @@ fn validate_matcher_limits(
     {
         if value.chars().count() > MAX_MATCHER_CHARS {
             return Err(format!(
-                "{context} matcher exceeds max length {MAX_MATCHER_CHARS}"
+                "gate matcher exceeds max length {MAX_MATCHER_CHARS}"
             ));
         }
-    }
-    Ok(())
-}
-
-fn validate_regex_patterns(patterns: &[String], context: &str, field: &str) -> Result<(), String> {
-    for pattern in patterns {
-        Regex::new(pattern).map_err(|err| {
-            format!("{context} contains invalid {field} pattern {pattern:?}: {err}")
-        })?;
     }
     Ok(())
 }
@@ -435,10 +356,6 @@ fn gate_has_positive_matcher(gate: &ManifestGate) -> bool {
         || !gate.line_regex.is_empty()
         || !gate.all.is_empty()
         || !gate.any.is_empty()
-}
-
-fn gate_has_any_matcher(gate: &ManifestGate) -> bool {
-    gate_has_positive_matcher(gate) || !gate.not_gate.is_empty()
 }
 
 fn validate_region_name(spec: &str) -> Result<(), String> {
@@ -467,7 +384,7 @@ fn validate_region_name(spec: &str) -> Result<(), String> {
 }
 
 fn manifest_matches_agent(manifest: &AgentManifest, agent: Agent) -> bool {
-    let id = agent_label(agent);
+    let id = agent.label();
     manifest.id == id
         || manifest.aliases.iter().any(|alias| alias == id)
         || parse_agent_label(&manifest.id) == Some(agent)
@@ -477,115 +394,33 @@ fn manifest_matches_agent(manifest: &AgentManifest, agent: Agent) -> bool {
             .any(|alias| parse_agent_label(alias) == Some(agent))
 }
 
-fn manifest_gate_from_rule(rule: &ManifestRule) -> ManifestGate {
-    ManifestGate {
-        all: rule.all.clone(),
-        any: rule.any.clone(),
-        not_gate: rule.not_gate.clone(),
-        contains: rule.contains.clone(),
-        regex: rule.regex.clone(),
-        line_regex: rule.line_regex.clone(),
-    }
-}
-
-fn compile_manifest(manifest: &AgentManifest) -> Result<Vec<CompiledGate>, String> {
-    manifest
-        .rules
-        .iter()
-        .map(|rule| {
-            compile_gate(&manifest_gate_from_rule(rule))
-                .map_err(|err| format!("rule {} could not be compiled: {err}", rule.id))
-        })
-        .collect()
-}
-
-fn compile_gate(gate: &ManifestGate) -> Result<CompiledGate, String> {
-    Ok(CompiledGate {
-        all: gate
-            .all
-            .iter()
-            .map(compile_gate)
-            .collect::<Result<_, _>>()?,
-        any: gate
-            .any
-            .iter()
-            .map(compile_gate)
-            .collect::<Result<_, _>>()?,
-        not_gate: gate
-            .not_gate
-            .iter()
-            .map(compile_gate)
-            .collect::<Result<_, _>>()?,
-        contains: gate
-            .contains
-            .iter()
-            .map(|needle| needle.to_lowercase())
-            .collect(),
-        regex: gate
-            .regex
-            .iter()
-            .map(|pattern| Regex::new(pattern).map_err(|err| err.to_string()))
-            .collect::<Result<_, _>>()?,
-        line_regex: gate
-            .line_regex
-            .iter()
-            .map(|pattern| Regex::new(pattern).map_err(|err| err.to_string()))
-            .collect::<Result<_, _>>()?,
-    })
-}
-
 fn compiled_rule_matches(gate: &CompiledGate, text: &str) -> bool {
     let lower_text = text.to_lowercase();
     compiled_gate_matches(gate, text, &lower_text)
 }
 
 fn compiled_gate_matches(gate: &CompiledGate, text: &str, lower_text: &str) -> bool {
-    if !gate
-        .contains
+    gate.contains
         .iter()
         .all(|needle| lower_text.contains(needle))
-    {
-        return false;
-    }
-
-    if !gate.regex.iter().all(|regex| regex.is_match(text)) {
-        return false;
-    }
-
-    if !gate
-        .line_regex
-        .iter()
-        .all(|regex| text.lines().any(|line| regex.is_match(line)))
-    {
-        return false;
-    }
-
-    if !gate
-        .all
-        .iter()
-        .all(|nested| compiled_gate_matches(nested, text, lower_text))
-    {
-        return false;
-    }
-
-    if !gate.any.is_empty()
+        && gate.regex.iter().all(|regex| regex.is_match(text))
+        && gate
+            .line_regex
+            .iter()
+            .all(|regex| text.lines().any(|line| regex.is_match(line)))
+        && gate
+            .all
+            .iter()
+            .all(|nested| compiled_gate_matches(nested, text, lower_text))
+        && (gate.any.is_empty()
+            || gate
+                .any
+                .iter()
+                .any(|nested| compiled_gate_matches(nested, text, lower_text)))
         && !gate
-            .any
+            .not_gate
             .iter()
             .any(|nested| compiled_gate_matches(nested, text, lower_text))
-    {
-        return false;
-    }
-
-    if gate
-        .not_gate
-        .iter()
-        .any(|nested| compiled_gate_matches(nested, text, lower_text))
-    {
-        return false;
-    }
-
-    true
 }
 
 fn region<'a>(input: DetectionInput<'a>, spec: &str) -> &'a str {

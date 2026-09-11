@@ -7,7 +7,12 @@ use std::fmt::Write as _;
 
 use super::*;
 
-fn detect_with(agent: Agent, screen: &str, osc_title: &str, osc_progress: &str) -> Detection {
+fn detect_with(
+    agent: Agent,
+    screen: &str,
+    osc_title: &str,
+    osc_progress: &str,
+) -> Detection<'static> {
     detect(
         agent,
         DetectionInput {
@@ -18,19 +23,17 @@ fn detect_with(agent: Agent, screen: &str, osc_title: &str, osc_progress: &str) 
     )
 }
 
-fn detect_screen(agent: Agent, screen: &str) -> Detection {
+fn detect_screen(agent: Agent, screen: &str) -> Detection<'static> {
     detect_with(agent, screen, "", "")
 }
 
-fn detect_manifest(manifest: &str, screen: &str) -> Detection {
-    let manifest = parse_manifest(manifest).expect("test manifest parses");
-    let compiled_rules = compile_manifest(&manifest).expect("test manifest compiles");
-    let loaded: &'static LoadedManifest = Box::leak(Box::new(LoadedManifest {
-        manifest,
-        compiled_rules,
-    }));
+fn parse_manifest(content: &str) -> Result<Vec<Rule>, String> {
+    compile_manifest(toml::from_str(content).map_err(|err| err.to_string())?)
+}
+
+fn detect_manifest<'a>(rules: &'a [Rule], screen: &str) -> Detection<'a> {
     evaluate(
-        loaded,
+        rules,
         DetectionInput {
             screen,
             osc_title: "",
@@ -76,15 +79,16 @@ priority = 20
 line_regex = ["^exact line$"]
 "#;
 
-    let high = detect_manifest(manifest, "match win");
+    let manifest = parse_manifest(manifest).expect("test manifest compiles");
+    let high = detect_manifest(&manifest, "match win");
     assert_eq!(high.state, Some(AgentState::Working));
     assert_eq!(high.rule, Some("high_nested_gates"));
 
-    let not_gate = detect_manifest(manifest, "match win blocked");
+    let not_gate = detect_manifest(&manifest, "match win blocked");
     assert_eq!(not_gate.state, Some(AgentState::Idle));
     assert_eq!(not_gate.rule, Some("low_contains"));
 
-    let line = detect_manifest(manifest, "before\nexact line\nafter");
+    let line = detect_manifest(&manifest, "before\nexact line\nafter");
     assert_eq!(line.state, Some(AgentState::Blocked));
     assert_eq!(line.rule, Some("line_regex"));
 }
@@ -107,12 +111,8 @@ contains = ["ready"]
 
 #[test]
 fn all_bundled_manifests_parse_and_validate() {
-    for agent in Agent::ALL {
-        assert!(
-            bundled_manifest(agent).is_some(),
-            "missing bundled manifest for {}",
-            agent_label(agent)
-        );
+    for &agent in Agent::ALL {
+        assert!(!load(agent).is_empty(), "{} has no rules", agent.label());
     }
 }
 
@@ -544,7 +544,6 @@ fn codex_transcript_viewer_outranks_working_fallback() {
 
     assert_eq!(result.state, None);
     assert_eq!(result.rule, Some("transcript_viewer"));
-    assert!(result.skip_state_update);
 }
 
 #[test]
@@ -587,4 +586,49 @@ fn codex_osc_working_beats_weak_blocker_screen() {
     let result = detect_with(Agent::Codex, screen, "⠋ llm-proxy", "");
     assert_eq!(result.state, Some(AgentState::Working));
     assert_eq!(result.rule, Some("osc_title_working"));
+}
+
+#[test]
+fn equal_priority_keeps_the_first_matching_rule() {
+    let rules = parse_manifest(
+        r#"
+id = "codex"
+[[rules]]
+id = "does_not_match"
+state = "blocked"
+contains = ["absent"]
+[[rules]]
+id = "first"
+state = "working"
+contains = ["ready"]
+[[rules]]
+id = "second"
+state = "idle"
+contains = ["ready"]
+"#,
+    )
+    .expect("valid rules");
+    let result = detect_manifest(&rules, "ready");
+    assert_eq!(result.state, Some(AgentState::Working));
+    assert_eq!(result.rule, Some("first"));
+}
+
+#[test]
+fn negative_only_gates_are_valid_only_inside_not() {
+    let base = "id = 'codex'\n[[rules]]\nid = 'nested'\nstate = 'working'\n";
+    let nested = "not = [{ not = [{ contains = ['ready'] }] }]";
+    assert!(parse_manifest(&format!("{base}{nested}")).is_err());
+    let rules = parse_manifest(&format!("{base}contains = ['prompt']\n{nested}"))
+        .expect("a not gate may contain only another not gate");
+    assert_eq!(
+        detect_manifest(&rules, "prompt ready").state,
+        Some(AgentState::Working)
+    );
+    assert_eq!(
+        detect_manifest(&rules, "prompt").state,
+        Some(AgentState::Idle)
+    );
+    for gate in ["not = [{}]", "all = [{ not = [{ contains = ['ready'] }] }]"] {
+        assert!(parse_manifest(&format!("{base}contains = ['prompt']\n{gate}")).is_err());
+    }
 }

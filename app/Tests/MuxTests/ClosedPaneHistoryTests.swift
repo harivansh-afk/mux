@@ -30,7 +30,6 @@ final class ClosedPaneHistoryTests: XCTestCase {
         history.record(id: id, pane: PaneSnapshot(target: "ix:dev"))
         let snapshot = AppSnapshot(frame: [], sessions: [], activeSession: 0, closedPanes: history.entries)
         let decoded = try XCTUnwrap(SnapshotStore.decode(JSONEncoder().encode(snapshot)))
-        XCTAssertTrue(decoded.requiresRelay)
         var restored = ClosedPaneHistory(entries: decoded.closedPanes ?? [])
         XCTAssertTrue(restored.contains(id, on: nil))
         XCTAssertFalse(restored.contains(id, on: "spark"))
@@ -40,7 +39,6 @@ final class ClosedPaneHistoryTests: XCTestCase {
         XCTAssertEqual(entry.pane.target, "ix:dev")
         let reopened = AppSnapshot(frame: [], sessions: [entry.snapshot], activeSession: 0)
         let active = try XCTUnwrap(SnapshotStore.decode(JSONEncoder().encode(reopened)))
-        XCTAssertTrue(active.requiresRelay)
         XCTAssertEqual(active.sessions[0].panes[id]?.requireExisting, true)
     }
 

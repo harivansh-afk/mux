@@ -7,23 +7,27 @@ A macOS-native terminal multiplexer
 A pane is a machine-agnostic concept
 Raw bytestreams sent over QUIC transport when remote and unix socket when local
 
-Two parts:
-
-1. The macos client ui -> stateless
-2. muxd daemon
+The macOS app owns layout and recovery metadata; muxd owns terminal processes.
 
 ## Layout
 
 - `app/` - Mux.app (Swift/AppKit). Builds on macOS only.
 - `crates/mux-proto` - lane framing + shell control types, wire-compatible with ix.
 - `crates/muxd` - session daemon (ix-console fork): PTYs, headless ghostty-vt, detach/reattach, live-fd self-upgrade.
-- `crates/mux-attach` - stdio relay; the command every remote pane runs.
+- `crates/mux-attach` - stdio relay; the command every pane runs.
 - `crates/ghostty-vt` - headless VT wrapper + `render_reattach` (zig shim, from ix).
 - `scripts/fetch-ghosttykit.sh` - prebuilt GhosttyKit.xcframework + resources.
 
+## Building the app
+
+Run `just app` on macOS to build the complete bundle. Mux requires `muxd` and
+`mux-attach` in its bundle and checks both before loading saved state. A bare
+SwiftPM executable is not a supported launch mode; `swift test --package-path app`
+still runs the app tests.
+
 ## State model
 
-The only thing the macos client owns is pane layout
+The app saves pane layout, font zoom, targets, and closed-pane recovery metadata.
 
 Terminal content is daemon-owned and survives client disconnect for both local and remote
 Reattach replays the exact screen.
@@ -40,7 +44,8 @@ terminal_title = ["activity", "thread-title", "project-name"]
 Add the key to the existing `[tui]` table if present. Restart Codex for the
 configuration to take effect; `/rename` supplies a name for an unnamed chat.
 
-muxd server sends raw PTY byte streams over UDP that are interpreted by the macos client
+Remote PTY bytes travel over QUIC; local panes use a Unix socket. The app renders
+the stream through GhosttyKit.
 
 There are panes and sessions (1 2 3 4 5)
 

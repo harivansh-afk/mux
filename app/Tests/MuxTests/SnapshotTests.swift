@@ -13,7 +13,6 @@ final class SnapshotTests: XCTestCase {
         """
         let snapshot = try XCTUnwrap(SnapshotStore.decode(Data(json.utf8)))
         XCTAssertNil(snapshot.closedPanes)
-        XCTAssertFalse(snapshot.requiresRelay)
     }
 
     private let paneA = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!

@@ -34,11 +34,6 @@ struct AppSnapshot: Codable {
     var activeSession: Int
     /// Optional for compatibility with existing v3 snapshots.
     var closedPanes: [ClosedPaneHistory.Entry]?
-
-    var requiresRelay: Bool {
-        !(closedPanes ?? []).isEmpty
-            || sessions.contains { $0.panes.values.contains { $0.requireExisting == true } }
-    }
 }
 
 /// v2: an array of windows, each with its own sessions. mux is
