@@ -4,8 +4,8 @@ import AppKit
 /// A bordered box listing `local`, the aliases from hosts.json with the
 /// address the daemon dials and a live probe status (a machine that is off
 /// reads differently from one that rejected our key), and the ix VMs the CLI
-/// reports. Enter splits right into the highlighted machine, H/J/K/L split in
-/// a direction, c opens a new session there, n creates a VM, y copies this
+/// reports. Enter splits right into the highlighted machine, H/J/K/L split
+/// along a full layout edge, c opens a new session there, n creates a VM, y copies this
 /// client's identity digest - the thing the user pastes into a host's
 /// authorized list.
 ///

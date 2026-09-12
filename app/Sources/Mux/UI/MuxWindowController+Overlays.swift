@@ -131,9 +131,9 @@ extension MuxWindowController {
     /// Rows that cannot host a pane are not selectable, so a nil selection
     /// means there is nothing to open (which is not the same as `local`,
     /// hence NewPaneTarget rather than a bare string).
-    func commitHostsWindow(direction: SplitDirection, before: Bool = false) {
+    func commitHostsWindow(direction: SplitDirection, before: Bool = false, atRoot: Bool = false) {
         guard let target = hostsWindow.selectedHost else { return }
-        activeSession?.split(direction: direction, before: before, target: target)
+        activeSession?.split(direction: direction, before: before, atRoot: atRoot, target: target)
     }
 
     func newSessionOnHostsSelection() {

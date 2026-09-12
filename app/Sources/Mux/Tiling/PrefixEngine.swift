@@ -259,13 +259,13 @@ final class PrefixEngine {
         switch key {
         case "j", "\u{F701}": controller.hostsWindow.move(by: 1)
         case "k", "\u{F700}": controller.hostsWindow.move(by: -1)
-        // Enter is the common case (split right); the capitals aim it. Every
-        // one of them commits and leaves the mode, so the pane you asked for
-        // is focused with nothing in front of it.
-        case "\r", "L": commitHosts(direction: .horizontal)
-        case "H": commitHosts(direction: .horizontal, before: true)
-        case "J": commitHosts(direction: .vertical)
-        case "K": commitHosts(direction: .vertical, before: true)
+        // Enter splits the focused pane right; capitals span the full edge.
+        // Each commits the selection, focuses the new pane and leaves the mode.
+        case "\r": commitHosts(direction: .horizontal)
+        case "H": commitHosts(direction: .horizontal, before: true, atRoot: true)
+        case "J": commitHosts(direction: .vertical, atRoot: true)
+        case "K": commitHosts(direction: .vertical, before: true, atRoot: true)
+        case "L": commitHosts(direction: .horizontal, atRoot: true)
         case "c":
             controller.newSessionOnHostsSelection()
             setMode(.normal)
@@ -310,8 +310,8 @@ final class PrefixEngine {
     }
 
     /// Commit before the mode change tears the window down.
-    private func commitHosts(direction: SplitDirection, before: Bool = false) {
-        controller?.commitHostsWindow(direction: direction, before: before)
+    private func commitHosts(direction: SplitDirection, before: Bool = false, atRoot: Bool = false) {
+        controller?.commitHostsWindow(direction: direction, before: before, atRoot: atRoot)
         setMode(.normal)
     }
 

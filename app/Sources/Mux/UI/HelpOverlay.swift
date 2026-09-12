@@ -52,7 +52,7 @@ final class HelpOverlayView: PanelView {
                 ("prefix t", "open hosts"),
                 ("j / k", "choose host or vm"),
                 ("enter", "split right into it"),
-                ("H / J / K / L", "split left/down/up/right"),
+                ("H / J / K / L", "split full left / down / up / right"),
                 ("c", "new session there"),
                 ("n", "new ix vm"),
                 ("t", "template for new vms"),
