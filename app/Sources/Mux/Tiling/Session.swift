@@ -159,6 +159,7 @@ final class Session {
         from pane: PaneView? = nil,
         direction: SplitDirection,
         before: Bool = false,
+        atRoot: Bool = false,
         target: NewPaneTarget = .inherit,
         ptyCommand: [String]? = nil
     ) {
@@ -171,9 +172,13 @@ final class Session {
             target: seed.target, ptyCommand: ptyCommand,
             fontDelta: source.fontDelta
         )
-        self.tree = tree.inserting(
-            newPane.id, at: source.id, direction: direction, newFirst: before
-        )
+        if atRoot {
+            self.tree = tree.insertingAtRoot(newPane.id, direction: direction, newFirst: before)
+        } else {
+            self.tree = tree.inserting(
+                newPane.id, at: source.id, direction: direction, newFirst: before
+            )
+        }
         commit(focus: newPane)
     }
 

@@ -61,6 +61,22 @@ public extension SplitNode {
         }
     }
 
+    /// Add a pane spanning an entire edge, preserving this layout as its sibling.
+    func insertingAtRoot(
+        _ newLeaf: UUID,
+        direction: SplitDirection,
+        ratio: Double = 0.5,
+        newFirst: Bool = false
+    ) -> SplitNode {
+        let new = SplitNode.leaf(newLeaf)
+        return .split(SplitBranch(
+            direction: direction,
+            ratio: ratio,
+            first: newFirst ? new : self,
+            second: newFirst ? self : new
+        ))
+    }
+
     /// Replace the leaf `target` with a split of (target, newLeaf).
     /// `newFirst` puts the new leaf on the left/top side.
     func inserting(
@@ -72,14 +88,7 @@ public extension SplitNode {
     ) -> SplitNode {
         switch self {
         case let .leaf(id) where id == target:
-            let old = SplitNode.leaf(id)
-            let new = SplitNode.leaf(newLeaf)
-            return .split(SplitBranch(
-                direction: direction,
-                ratio: ratio,
-                first: newFirst ? new : old,
-                second: newFirst ? old : new
-            ))
+            return insertingAtRoot(newLeaf, direction: direction, ratio: ratio, newFirst: newFirst)
         case .leaf:
             return self
         case var .split(b):

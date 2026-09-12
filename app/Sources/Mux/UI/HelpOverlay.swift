@@ -21,6 +21,7 @@ final class HelpOverlayView: PanelView {
                 ("ctrl+b ctrl+b", "send ctrl+b through"),
                 ("'", "split right"),
                 ("-", "split down"),
+                ("H / J / K / L", "split full left / down / up / right"),
                 ("arrows", "move focus"),
                 ("h / j / k / l", "focus left / down / up / right"),
                 ("z", "toggle zoom"),

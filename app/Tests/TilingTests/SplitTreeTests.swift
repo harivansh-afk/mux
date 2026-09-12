@@ -16,6 +16,36 @@ final class SplitTreeTests: XCTestCase {
         XCTAssertEqual(left.leaves, [b, a])
     }
 
+    func testRootSplitsSpanEachEdgeAndPreserveTheNestedLayout() throws {
+        let a = UUID(), b = UUID(), c = UUID(), added = UUID()
+        let original = SplitNode.leaf(a)
+            .inserting(b, at: a, direction: .horizontal, ratio: 0.3)
+            .inserting(c, at: b, direction: .vertical, ratio: 0.7)
+        for axis in [SplitDirection.horizontal, .vertical] {
+            for before in [true, false] {
+                let result = original.insertingAtRoot(added, direction: axis, newFirst: before)
+                let rects = result.layout(in: bounds)
+                let pane = try XCTUnwrap(rects[added])
+                if axis == .horizontal {
+                    XCTAssertEqual(pane.height, bounds.height)
+                    XCTAssertEqual(pane.minY, bounds.minY)
+                    XCTAssertEqual(before ? pane.minX : pane.maxX, before ? bounds.minX : bounds.maxX)
+                } else {
+                    XCTAssertEqual(pane.width, bounds.width)
+                    XCTAssertEqual(pane.minX, bounds.minX)
+                    XCTAssertEqual(before ? pane.minY : pane.maxY, before ? bounds.minY : bounds.maxY)
+                }
+                guard case let .split(branch) = result else {
+                    return XCTFail("expected a new root split")
+                }
+                let sibling = before ? branch.second : branch.first
+                XCTAssertEqual(sibling.layout(in: bounds), original.layout(in: bounds))
+                XCTAssertEqual(result.removing(added)?.layout(in: bounds), original.layout(in: bounds))
+                XCTAssertEqual(Set(result.leaves), Set([a, b, c, added]))
+            }
+        }
+    }
+
     func testInsertAtAMissingTargetChangesNothing() {
         let a = UUID()
         XCTAssertEqual(SplitNode.leaf(a).inserting(UUID(), at: UUID(), direction: .vertical).leaves, [a])

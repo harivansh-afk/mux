@@ -321,6 +321,11 @@ final class PrefixEngine {
         // Splits: ' right, - down.
         case "'": session?.split(direction: .horizontal)
         case "-": session?.split(direction: .vertical)
+        // Capitals split along the entire layout edge.
+        case "H": session?.split(direction: .horizontal, before: true, atRoot: true)
+        case "J": session?.split(direction: .vertical, atRoot: true)
+        case "K": session?.split(direction: .vertical, before: true, atRoot: true)
+        case "L": session?.split(direction: .horizontal, atRoot: true)
         // Focus movement: arrows and h/j/k/l both cover all four directions.
         case "h", "\u{F702}": session?.focusDirection(.left)
         case "j", "\u{F701}": session?.focusDirection(.down)
