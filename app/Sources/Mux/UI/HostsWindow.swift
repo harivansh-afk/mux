@@ -5,9 +5,9 @@ import AppKit
 /// address the daemon dials and a live probe status (a machine that is off
 /// reads differently from one that rejected our key), and the ix VMs the CLI
 /// reports. Enter splits right into the highlighted machine, H/J/K/L split
-/// along a full layout edge, c opens a new session there, n creates a VM, y copies this
-/// client's identity digest - the thing the user pastes into a host's
-/// authorized list.
+/// the focused pane, and ctrl+h/j/k/l split along a full layout edge.
+/// c opens a new session there, n creates a VM, y copies this client's
+/// identity digest for a host's authorized list.
 ///
 /// `t` swaps the list for the ix templates a new VM is built from; enter
 /// there persists the default and comes back. All queries fire on open and

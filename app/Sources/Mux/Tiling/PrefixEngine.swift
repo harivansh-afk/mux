@@ -245,7 +245,7 @@ final class PrefixEngine {
             }
 
         case .hosts:
-            return handleHostsKey(key)
+            return handleHostsKey(key, control: hasCtrl)
 
         case .hostsTemplate:
             return handleTemplateKey(key)
@@ -254,18 +254,26 @@ final class PrefixEngine {
 
     /// The machines list. The window never takes focus: every key it
     /// answers to arrives here.
-    private func handleHostsKey(_ key: String) -> NSEvent? {
+    private func handleHostsKey(_ key: String, control: Bool) -> NSEvent? {
         guard let controller else { return nil }
+        if control {
+            switch key {
+            case "h", "\u{08}": commitHosts(direction: .horizontal, before: true, atRoot: true)
+            case "j", "\u{0a}": commitHosts(direction: .vertical, atRoot: true)
+            case "k", "\u{0b}": commitHosts(direction: .vertical, before: true, atRoot: true)
+            case "l", "\u{0c}": commitHosts(direction: .horizontal, atRoot: true)
+            default: break
+            }
+            return nil
+        }
         switch key {
         case "j", "\u{F701}": controller.hostsWindow.move(by: 1)
         case "k", "\u{F700}": controller.hostsWindow.move(by: -1)
-        // Enter splits the focused pane right; capitals span the full edge.
-        // Each commits the selection, focuses the new pane and leaves the mode.
-        case "\r": commitHosts(direction: .horizontal)
-        case "H": commitHosts(direction: .horizontal, before: true, atRoot: true)
-        case "J": commitHosts(direction: .vertical, atRoot: true)
-        case "K": commitHosts(direction: .vertical, before: true, atRoot: true)
-        case "L": commitHosts(direction: .horizontal, atRoot: true)
+        // Enter and capitals split the focused pane on the selected host.
+        case "\r", "L": commitHosts(direction: .horizontal)
+        case "H": commitHosts(direction: .horizontal, before: true)
+        case "J": commitHosts(direction: .vertical)
+        case "K": commitHosts(direction: .vertical, before: true)
         case "c":
             controller.newSessionOnHostsSelection()
             setMode(.normal)
