@@ -19,6 +19,7 @@ e2e:
     cargo build -p muxd -p mux-attach
     python3 scripts/test-muxd-e2e.py
     python3 scripts/test-muxd-upgrade.py
+    python3 scripts/test-muxd-expiry.py
     python3 scripts/test-muxd-quic-e2e.py
 
 # Everything CI gates on (Swift steps need the toolchain; see .forgejo/workflows/ci.yml)

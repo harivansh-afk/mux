@@ -36,6 +36,7 @@ final class Session {
     private(set) var panes: [UUID: PaneView] = [:]
     private(set) var focusedID: UUID?
     private(set) var zoomedID: UUID?
+    private var closingPanes: Set<UUID> = []
 
     init(controller: MuxWindowController) {
         self.controller = controller
@@ -50,7 +51,8 @@ final class Session {
             panes: panes.mapValues {
                 PaneSnapshot(
                     cwd: $0.pwd, target: $0.target,
-                    fontDelta: $0.fontDelta == 0 ? nil : $0.fontDelta
+                    fontDelta: $0.fontDelta == 0 ? nil : $0.fontDelta,
+                    requireExisting: $0.requiresExisting ? true : nil
                 )
             },
             focused: focusedID,
@@ -109,12 +111,12 @@ final class Session {
         id: UUID = UUID(), workingDirectory: String? = nil, cwdFrom: UUID? = nil,
         target: String? = nil, ptyCommand: [String]? = nil,
         initialFrame: CGRect = .zero, fontDelta: Int = 0,
-        expectExisting: Bool = false
+        expectExisting: Bool = false, requireExisting: Bool = false
     ) -> PaneView {
         let pane = PaneView(
             attach: Muxd.Attach(
                 paneID: id, target: target, ptyCommand: ptyCommand,
-                expectExisting: expectExisting
+                expectExisting: expectExisting, requireExisting: requireExisting
             ),
             workingDirectory: workingDirectory, cwdFrom: cwdFrom,
             initialFrame: initialFrame, fontDelta: fontDelta
@@ -140,7 +142,8 @@ final class Session {
             _ = makePane(
                 id: id, workingDirectory: meta?.cwd, target: meta?.target,
                 initialFrame: (snapshot.zoomed == id) ? bounds : (rects[id] ?? bounds),
-                fontDelta: meta?.fontDelta ?? 0, expectExisting: true
+                fontDelta: meta?.fontDelta ?? 0, expectExisting: true,
+                requireExisting: meta?.requireExisting ?? false
             )
         }
         tree = snapshot.tree
@@ -156,6 +159,7 @@ final class Session {
         from pane: PaneView? = nil,
         direction: SplitDirection,
         before: Bool = false,
+        atRoot: Bool = false,
         target: NewPaneTarget = .inherit,
         ptyCommand: [String]? = nil
     ) {
@@ -168,18 +172,51 @@ final class Session {
             target: seed.target, ptyCommand: ptyCommand,
             fontDelta: source.fontDelta
         )
-        self.tree = tree.inserting(
-            newPane.id, at: source.id, direction: direction, newFirst: before
-        )
+        if atRoot {
+            self.tree = tree.insertingAtRoot(newPane.id, direction: direction, newFirst: before)
+        } else {
+            self.tree = tree.inserting(
+                newPane.id, at: source.id, direction: direction, newFirst: before
+            )
+        }
         commit(focus: newPane)
     }
 
     func closeFocusedPane() {
         guard let pane = focusedPane else { return }
-        AppLog.log("kill pane=\(pane.id.uuidString) (prefix x)")
+        closePane(pane)
+    }
+
+    /// The daemon acknowledges a 60-second lease before we release the relay.
+    func closePane(_ pane: PaneView) {
+        guard contains(pane), closingPanes.insert(pane.id).inserted else { return }
+        pane.closeRemote { [weak self, weak pane] expiresAt in
+            guard let self, let pane else { return }
+            closingPanes.remove(pane.id)
+            guard let owner = controller?.session(owning: pane) else { return }
+            guard let expiresAt else {
+                let alert = NSAlert()
+                alert.messageText = "Could not close terminal"
+                alert.informativeText = "The daemon did not confirm the 60-second expiry. Try again when connected."
+                alert.runModal()
+                return
+            }
+            controller?.closedPanes.record(
+                id: pane.id,
+                pane: PaneSnapshot(cwd: pane.pwd, target: pane.target, fontDelta: pane.fontDelta),
+                expiresAt: expiresAt
+            )
+            owner.removePane(pane)
+            pane.destroySurface()
+        }
+    }
+
+    func killFocusedPane() {
+        guard let pane = focusedPane else { return }
+        AppLog.log("kill pane=\(pane.id.uuidString) (explicit kill)")
         pane.killRemote()
-        pane.destroySurface()
         removePane(pane)
+        pane.destroySurface()
     }
 
     func removePane(_ pane: PaneView) {

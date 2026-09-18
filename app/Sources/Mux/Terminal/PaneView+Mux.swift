@@ -9,6 +9,15 @@ import GhosttyKit
 /// of it is in the port, and keeping it out of PaneView+Key.swift and
 /// PaneView+Mouse.swift is what makes those two diffable against ghostty.
 extension PaneView {
+    /// Preserve the terminal for 60 seconds on its owning daemon.
+    func closeRemote(then completion: @escaping (Date?) -> Void) {
+        Muxd.close(attach.address, then: completion)
+    }
+
+    var requiresExisting: Bool {
+        attach.requireExisting
+    }
+
     // MARK: - Font zoom
 
     /// cmd+= / cmd+- / cmd+0 as +1 / -1 / 0 (reset) for the focused

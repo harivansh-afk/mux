@@ -73,8 +73,32 @@ final class PrefixEngine {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
+            if Self.isReopenClosedTab(event) {
+                reopenClosedTab()
+                return nil
+            }
+            if Self.isCloseTab(event) {
+                closeTab()
+                return nil
+            }
             return handle(event)
         }
+    }
+
+    func reopenClosedTab() {
+        guard let controller, !controller.closedPanes.isEmpty else { return }
+        setMode(.normal)
+        controller.reopenClosedTab()
+    }
+
+    func closeTab() {
+        setMode(.normal)
+        controller?.activeSession?.closeFocusedPane()
+    }
+
+    func killTerminal() {
+        setMode(.normal)
+        controller?.activeSession?.killFocusedPane()
     }
 
     deinit {
@@ -122,6 +146,16 @@ final class PrefixEngine {
         let key = event.charactersIgnoringModifiers ?? ""
         let hasCtrl = event.modifierFlags.contains(.control)
         let hasCmd = event.modifierFlags.contains(.command)
+
+        // Direct session selection works from every mode, before the
+        // terminal or an overlay can consume the number key.
+        if event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+           key.count == 1, let number = Int(key), (1 ... 9).contains(number)
+        {
+            setMode(.normal)
+            controller?.selectSession(number - 1)
+            return nil
+        }
 
         switch mode {
         case .normal:
@@ -211,7 +245,7 @@ final class PrefixEngine {
             }
 
         case .hosts:
-            return handleHostsKey(key)
+            return handleHostsKey(key, control: hasCtrl)
 
         case .hostsTemplate:
             return handleTemplateKey(key)
@@ -220,14 +254,22 @@ final class PrefixEngine {
 
     /// The machines list. The window never takes focus: every key it
     /// answers to arrives here.
-    private func handleHostsKey(_ key: String) -> NSEvent? {
+    private func handleHostsKey(_ key: String, control: Bool) -> NSEvent? {
         guard let controller else { return nil }
+        if control {
+            switch key {
+            case "h", "\u{08}": commitHosts(direction: .horizontal, before: true, atRoot: true)
+            case "j", "\u{0a}": commitHosts(direction: .vertical, atRoot: true)
+            case "k", "\u{0b}": commitHosts(direction: .vertical, before: true, atRoot: true)
+            case "l", "\u{0c}": commitHosts(direction: .horizontal, atRoot: true)
+            default: break
+            }
+            return nil
+        }
         switch key {
         case "j", "\u{F701}": controller.hostsWindow.move(by: 1)
         case "k", "\u{F700}": controller.hostsWindow.move(by: -1)
-        // Enter is the common case (split right); the capitals aim it. Every
-        // one of them commits and leaves the mode, so the pane you asked for
-        // is focused with nothing in front of it.
+        // Enter and capitals split the focused pane on the selected host.
         case "\r", "L": commitHosts(direction: .horizontal)
         case "H": commitHosts(direction: .horizontal, before: true)
         case "J": commitHosts(direction: .vertical)
@@ -276,8 +318,8 @@ final class PrefixEngine {
     }
 
     /// Commit before the mode change tears the window down.
-    private func commitHosts(direction: SplitDirection, before: Bool = false) {
-        controller?.commitHostsWindow(direction: direction, before: before)
+    private func commitHosts(direction: SplitDirection, before: Bool = false, atRoot: Bool = false) {
+        controller?.commitHostsWindow(direction: direction, before: before, atRoot: atRoot)
         setMode(.normal)
     }
 
@@ -287,6 +329,11 @@ final class PrefixEngine {
         // Splits: ' right, - down.
         case "'": session?.split(direction: .horizontal)
         case "-": session?.split(direction: .vertical)
+        // Capitals split along the entire layout edge.
+        case "H": session?.split(direction: .horizontal, before: true, atRoot: true)
+        case "J": session?.split(direction: .vertical, atRoot: true)
+        case "K": session?.split(direction: .vertical, before: true, atRoot: true)
+        case "L": session?.split(direction: .horizontal, atRoot: true)
         // Focus movement: arrows and h/j/k/l both cover all four directions.
         case "h", "\u{F702}": session?.focusDirection(.left)
         case "j", "\u{F701}": session?.focusDirection(.down)
@@ -294,6 +341,7 @@ final class PrefixEngine {
         case "l", "\u{F703}": session?.focusDirection(.right)
         case "z": session?.toggleZoom()
         case "x": session?.closeFocusedPane()
+        case "X": session?.killFocusedPane()
         case "r": setMode(.resize)
         case "t": setMode(.hosts)
         // Space: the canvas is the navigation surface, it gets the

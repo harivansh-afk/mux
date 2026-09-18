@@ -1,14 +1,9 @@
 import AppKit
 import UserNotifications
 
-/// The app itself, reachable from anywhere. mux installs exactly one
-/// delegate in main.swift, before any of this code can run, so this is
-/// the only place the cast belongs.
+/// Own the one delegate installed at startup; callers never downcast NSApp.delegate.
 enum App {
-    static var delegate: AppDelegate {
-        // astlog-ignore: no-delegate-cast
-        NSApp.delegate as! AppDelegate
-    }
+    static let delegate = AppDelegate()
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -24,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Before the snapshot is loaded: an unclean previous exit freezes
         // the pre-crash state file for post-mortem and recovery.
         let unclean = CrashMarker.checkAndArm()
-        AppLog.log("launch unclean_previous_exit=\(unclean) attach_binary=\(Muxd.attachBinary ?? "MISSING (panes fall back to plain shells)")")
+        AppLog.log("launch unclean_previous_exit=\(unclean) attach_binary=\(Muxd.attachBinary)")
 
         buildMenu()
 
@@ -54,7 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // previous install may not speak this build's protocol.
         Muxd.upgradeStaleDaemon()
 
-        if let snapshot = SnapshotStore.load(), !snapshot.sessions.isEmpty {
+        if let snapshot = SnapshotStore.load(),
+           !snapshot.sessions.isEmpty || !(snapshot.closedPanes ?? []).isEmpty
+        {
             let panes = snapshot.sessions.flatMap { $0.panes.keys.map(\.uuidString) }
             AppLog.log("restoring sessions=\(snapshot.sessions.count) panes=\(panes.joined(separator: ","))")
             restore(snapshot)
@@ -73,7 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// what makes a lost or stale state.json recoverable: the shells
     /// are alive on the daemon either way.
     private func adoptOrphanedPanes() {
-        let targets: [String?] = [nil] + HostsConfig.aliases().map(Optional.some)
+        let savedHosts = controller?.closedPanes.entries.map(\.pane.daemon) ?? []
+        let targets = Set([nil] + HostsConfig.aliases().map(Optional.some) + savedHosts)
         for host in targets {
             Muxd.list(host: host) { [weak self] listings in
                 guard let self, let controller, let listings, !listings.isEmpty else { return }
@@ -86,7 +84,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Only pane-shaped names: the pane UUID namespace is
                     // the app's, anything else is not ours to adopt.
                     guard let id = UUID(uuidString: listing.name),
-                          !listing.exited, !listing.attached, !known.contains(id)
+                          !listing.exited, !listing.attached, !known.contains(id),
+                          !controller.closedPanes.contains(id, on: host)
                     else { continue }
                     orphans[id] = PaneSnapshot(
                         cwd: listing.cwd,
@@ -94,7 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                 }
                 guard !orphans.isEmpty else { return }
-                AppLog.log("adopting \(orphans.count) orphaned pty(s) from \(host ?? "local"): \(orphans.keys.map(\.uuidString).joined(separator: ","))")
+                let names = orphans.keys.map(\.uuidString).joined(separator: ",")
+                AppLog.log("adopting \(orphans.count) orphaned pty(s) from \(host ?? "local"): \(names)")
                 controller.addRecoverySession(orphans)
             }
         }
@@ -187,13 +187,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SnapshotStore.save(AppSnapshot(
             frame: controller.window.frame.values,
             sessions: sessions,
-            activeSession: controller.activeSessionIndex
+            activeSession: controller.activeSessionIndex,
+            closedPanes: controller.closedPanes.entries
         ))
     }
 
     /// Rebuild the single window from a snapshot.
     private func restore(_ snapshot: AppSnapshot) {
         guard let controller = makeWindow() else { return }
+        controller.closedPanes = ClosedPaneHistory(entries: snapshot.closedPanes ?? [])
+        for entry in controller.closedPanes.entries {
+            controller.watch(entry.pane.daemon)
+        }
         if let frame = NSRect(values: snapshot.frame) {
             restoreFrame(frame, on: controller.window)
         }
@@ -226,6 +231,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func newSession(_: Any?) {
         controller?.newSession()
+    }
+
+    @objc func reopenClosedTab(_: Any?) {
+        prefixEngine.reopenClosedTab()
+    }
+
+    @objc func closeTab(_: Any?) {
+        prefixEngine.closeTab()
+    }
+
+    @objc func killTerminal(_: Any?) {
+        prefixEngine.killTerminal()
     }
 
     @objc func copyFromPane(_: Any?) {
@@ -278,6 +295,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenuItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "n")
+        fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeTab(_:)), keyEquivalent: "w")
+        let reopen = fileMenu.addItem(
+            withTitle: "Reopen Closed Tab", action: #selector(reopenClosedTab(_:)), keyEquivalent: "t"
+        )
+        reopen.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(withTitle: "Kill Terminal", action: #selector(killTerminal(_:)), keyEquivalent: "")
         fileMenuItem.submenu = fileMenu
         main.addItem(fileMenuItem)
 

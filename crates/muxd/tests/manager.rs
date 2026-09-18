@@ -125,11 +125,12 @@ async fn adopting_a_taken_name_is_refused_and_the_original_keeps_its_client() {
     let _slave = spare.slave;
     let inherited = MigratePty {
         name: "taken".to_string(),
-        command: vec!["/bin/cat".to_string()],
+        command: vec![common::cat()],
         child_pid: nix::unistd::getpid().as_raw(),
         cols: 80,
         rows: 24,
         screen: Vec::new(),
+        close_deadline: None,
     };
     assert!(
         manager.adopt(inherited, spare.master).is_err(),
@@ -151,6 +152,147 @@ async fn adopting_a_taken_name_is_refused_and_the_original_keeps_its_client() {
 }
 
 // ----------------------------------------------------------------- server
+
+#[tokio::test]
+async fn a_v7_client_can_reattach_after_daemon_upgrade() {
+    let manager = Manager::default();
+    let session = open_cat(&manager, "legacy");
+    let socket = temp_socket("v7-reopen");
+    let listener = muxd::server::bind(&socket).await.expect("bind");
+    let serving = tokio::spawn(muxd::server::serve(manager.clone(), listener));
+    let mut client = connect(&socket).await;
+    let mut legacy = request(
+        None,
+        None,
+        OpenMode::Open {
+            name: "legacy".into(),
+            cwd: None,
+            command: vec![],
+            cwd_from: None,
+        },
+    );
+    legacy.version = 7;
+    write_request(&mut client, &legacy).await;
+    assert_eq!(
+        read_reply(&mut client).await.unwrap(),
+        attached("legacy", false)
+    );
+    read_dump(&mut client).await;
+    assert_eq!(manager.get("legacy").unwrap().child, session.child);
+    write_frame(&mut client, IN_LANE_INPUT, b"old-client-still-works\n").await;
+    read_output_until(&mut client, b"old-client-still-works").await;
+    manager.kill("legacy");
+    serving.abort();
+    let _ = std::fs::remove_file(&socket);
+}
+
+#[tokio::test]
+async fn attach_only_preserves_identity_and_never_creates_a_missing_terminal() {
+    let manager = Manager::default();
+    let socket = temp_socket("reopen");
+    let listener = muxd::server::bind(&socket).await.expect("bind");
+    let serving = tokio::spawn(muxd::server::serve(manager.clone(), listener));
+    let session = open_cat(&manager, "saved");
+    let pid = session.child;
+    let mut before = muxd::manager::attach(&session, 80, 24);
+    write_pty(&session, b"before-close\n").await;
+    recv_output_until(&mut before.rx, b"before-close").await;
+    session.detach(before.id);
+    drop(before);
+
+    let mut client = connect(&socket).await;
+    write_request(
+        &mut client,
+        &request(
+            None,
+            None,
+            OpenMode::Attach {
+                name: "saved".into(),
+            },
+        ),
+    )
+    .await;
+    assert_eq!(
+        read_reply(&mut client).await.unwrap(),
+        attached("saved", false)
+    );
+    assert!(contains(&read_dump(&mut client).await, b"before-close"));
+    assert_eq!(manager.get("saved").unwrap().child, pid);
+    write_frame(&mut client, IN_LANE_INPUT, b"after-reopen\n").await;
+    read_output_until(&mut client, b"after-reopen").await;
+    assert!(manager.kill("saved"));
+
+    for name in ["saved", "never-existed"] {
+        let mut missing = connect(&socket).await;
+        write_request(
+            &mut missing,
+            &request(None, None, OpenMode::Attach { name: name.into() }),
+        )
+        .await;
+        let error = read_reply(&mut missing).await.expect_err("must not spawn");
+        assert!(error.detail.contains("no replacement shell was started"));
+        assert!(manager.get(name).is_none());
+    }
+    assert!(manager.list().is_empty());
+    serving.abort();
+    let _ = std::fs::remove_file(&socket);
+}
+
+#[tokio::test]
+async fn a_failed_or_cancelled_connection_releases_its_client_slot() {
+    let manager = Manager::default();
+    for cancel in [false, true] {
+        let (mut client, server) = tokio::io::duplex(65536);
+        let (reader, writer) = tokio::io::split(server);
+        let serving = tokio::spawn({
+            let manager = manager.clone();
+            async move {
+                muxd::server::handle_connection(
+                    manager,
+                    reader,
+                    writer,
+                    &muxd::server::Policy::Local,
+                )
+                .await
+            }
+        });
+        write_request(
+            &mut client,
+            &request(
+                None,
+                None,
+                OpenMode::Open {
+                    name: "cleanup".into(),
+                    cwd: None,
+                    command: vec![common::cat()],
+                    cwd_from: None,
+                },
+            ),
+        )
+        .await;
+        read_reply(&mut client).await.expect("attached");
+        read_dump(&mut client).await;
+        let session = manager.get("cleanup").expect("pty");
+        assert!(session.info().attached);
+        if cancel {
+            serving.abort();
+            assert!(serving.await.expect_err("cancelled task").is_cancelled());
+        } else {
+            // Invalid zero-length frame makes the receive arm return an error.
+            use tokio::io::AsyncWriteExt as _;
+            client.write_all(&[0; 5]).await.expect("invalid frame");
+            assert!(serving.await.expect("join handler").is_err());
+        }
+        assert!(
+            !session.info().attached,
+            "failed handlers must release silent ptys"
+        );
+        let mut reattached = muxd::manager::attach(&session, 80, 24);
+        write_pty(&session, b"still alive\n").await;
+        recv_output_until(&mut reattached.rx, b"still alive").await;
+        assert!(manager.kill("cleanup"));
+    }
+}
 
 /// Regression: attaching a second client evicts the first, whose handler
 /// then cleared `session.client` unconditionally - nulling the *new*
@@ -221,6 +363,41 @@ async fn a_v5_client_is_told_to_upgrade_in_words_it_can_decode() {
 
 // ---------------------------------------------------------------- upgrade
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_adoption_is_not_acknowledged_or_partially_installed() {
+    let predecessor = Manager::default();
+    let first = open_cat(&predecessor, "a-free");
+    let second = open_cat(&predecessor, "z-taken");
+    let successor = Manager::default();
+    let existing = open_cat(&successor, "z-taken");
+    let socket = temp_socket("adopt-failure");
+    let listener = muxd::migrate::bind_listener(&socket).expect("bind");
+    let adopting = tokio::spawn({
+        let successor = successor.clone();
+        async move { muxd::migrate::accept_handoff(&listener, &successor).await }
+    });
+    let handed = tokio::task::spawn_blocking({
+        let predecessor = predecessor.clone();
+        let socket = socket.clone();
+        move || muxd::migrate::hand_off(&predecessor, &socket)
+    })
+    .await
+    .expect("handoff task");
+    let adopted = adopting.await.expect("adopt task");
+    let installed = successor.get("a-free").is_some();
+    // Clean up before assertions, including on the broken implementation.
+    predecessor.kill(&first.name);
+    predecessor.kill(&second.name);
+    successor.kill(&existing.name);
+    let _ = std::fs::remove_file(socket);
+    assert!(
+        handed.is_err(),
+        "a failed adoption must keep the predecessor alive"
+    );
+    assert!(adopted.is_err(), "report the failed adoption");
+    assert!(!installed, "failed handoffs must install no ptys");
+}
+
 /// The self-upgrade handoff, both halves in one process: the predecessor
 /// snapshots and sends its live ptys over `SCM_RIGHTS`, the successor
 /// adopts them, and the child on the far end of the inherited fd is the
@@ -242,6 +419,9 @@ async fn a_self_upgrade_carries_the_pty_its_screen_and_its_child() {
     let mut before = muxd::manager::attach(&session, 80, 24);
     write_pty(&session, b"before-upgrade\n").await;
     recv_output_until(&mut before.rx, b"before-upgrade").await;
+    // An intentionally closed tab has no client when the upgrade happens.
+    session.detach(before.id);
+    drop(before);
 
     let socket = temp_socket("handoff");
     let listener = muxd::migrate::bind_listener(&socket).expect("migration listener");
@@ -267,6 +447,11 @@ async fn a_self_upgrade_carries_the_pty_its_screen_and_its_child() {
     );
 
     let adopted = successor.get("carried").expect("adopted pty");
+    let (reopened, created) = successor
+        .open_existing("carried")
+        .expect("reopen closed terminal");
+    assert!(!created);
+    assert!(Arc::ptr_eq(&adopted, &reopened));
     assert_eq!(adopted.child, child, "the shell was never restarted");
     assert!(adopted.adopted, "an inherited child is not ours to waitpid");
     let screen = adopted.terminal.lock().render_screen_bytes();
@@ -340,7 +525,7 @@ async fn a_handoff_the_successor_never_acknowledges_leaves_the_ptys_alone() {
 /// A pty running `/bin/cat` under `name`.
 fn open_cat(manager: &Manager, name: &str) -> Arc<PtySession> {
     let (session, created) = manager
-        .open(name, &["/bin/cat".to_string()], None, None, 80, 24)
+        .open(name, &[common::cat()], None, None, 80, 24)
         .expect("open pty");
     assert!(created, "{name} is a fresh pty");
     session
@@ -414,7 +599,7 @@ async fn open_pane(stream: &mut UnixStream, name: &str) -> OpenReply {
     let mode = OpenMode::Open {
         name: name.to_string(),
         cwd: None,
-        command: vec!["/bin/cat".to_string()],
+        command: vec![common::cat()],
         cwd_from: None,
     };
     write_request(stream, &request(None, None, mode)).await;

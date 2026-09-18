@@ -1,20 +1,17 @@
 import Foundation
 
-/// The two helper binaries bundled beside the app binary: `mux-attach`, the
-/// stdio relay every pane runs, and `muxd`, the session daemon. A dev build
-/// without the bundle step has neither, and every caller degrades to
-/// something that still works.
+/// Bundled helpers: every pane runs through mux-attach and is owned by muxd.
+/// Startup checks the complete bundle before loading or changing saved state.
 enum Muxd {
-    /// The relay. nil (dev builds without the bundle step) falls back to a
-    /// plain local shell - panes then don't survive the app, but everything
-    /// else works.
-    static let attachBinary: String? = bundled("mux-attach")
+    private static let helperDirectory = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS")
+    static let attachBinary = helperDirectory.appendingPathComponent("mux-attach").path
+    static let daemonBinary = helperDirectory.appendingPathComponent("muxd").path
 
-    /// The daemon, which is also how the app asks about daemons: `probe`,
-    /// `ls`, `kill` and `client-digest` are one-shot queries on the local
-    /// socket, `watch` a long-running one. The serving daemon is started
-    /// by the relay.
-    static let daemonBinary: String? = bundled("muxd")
+    static func missingHelpers(in directory: URL = helperDirectory) -> [String] {
+        ["mux-attach", "muxd"].filter {
+            !FileManager.default.isExecutableFile(atPath: directory.appendingPathComponent($0).path)
+        }
+    }
 
     /// Everything about one pane's pty that the relay needs to be told.
     /// The command line and the kill are the only two things anyone does
@@ -45,6 +42,7 @@ enum Muxd {
         /// exist, so the relay is told to call out a `created` reply (the
         /// daemon lost the shell) instead of silently starting fresh.
         let expectExisting: Bool
+        var requireExisting: Bool = false
 
         /// The pty to attach to: `<alias>:<id>` for a pane hosted on
         /// another machine, `local:<id>` otherwise. An `ix:<vm>` pane is
@@ -58,24 +56,20 @@ enum Muxd {
         }
 
         /// The pane's launch command, as libghostty wants it: one string
-        /// handed to a shell. nil means "the user's shell", the dev
-        /// fallback when no relay binary is bundled. `cwdFrom` names the
+        /// handed to a shell. `cwdFrom` names the
         /// pty (a split's source pane, same daemon) whose live working
         /// directory the new shell inherits, resolved daemon-side - no
         /// shell integration needed, and it wins over `cwd`, which only
         /// seeds panes with no live source (restore, recovery).
-        func commandLine(cwd: String?, cwdFrom: UUID? = nil) -> String? {
+        func commandLine(cwd: String?, cwdFrom: UUID? = nil) -> String {
             // An ix pane runs `ix shell <vm>` in its pty unless the caller
             // named something else to run there (VM creation runs `ix new`
             // instead, and the shell it drops you into is the pane).
             let inPty = ptyCommand ?? IX.vm(of: target).map { [IX.binary, "shell", $0] }
-            guard let attach = attachBinary else {
-                // No relay bundled: run it directly (no persistence), or
-                // fall back to the user's shell for a plain local pane.
-                return inPty.map(Self.quote)
-            }
-            var parts = ["\"\(attach)\"", "\"\(address)\""]
-            if expectExisting {
+            var parts = [attachBinary, address]
+            if requireExisting {
+                parts.append("--require-existing")
+            } else if expectExisting {
                 // A restored or adopted pane believes its pty survived: the
                 // relay prints a notice if the daemon had to create one.
                 parts.append("--expect-existing")
@@ -84,35 +78,39 @@ enum Muxd {
                 // `-- cmd` makes the pty run that command instead of the
                 // shell. No cwd: the pty's working directory is this
                 // machine's and means nothing inside the VM.
-                parts += ["--", Self.quote(inPty)]
-                return parts.joined(separator: " ")
+                parts += ["--"] + inPty
+                return Self.quote(parts)
             }
             if let cwdFrom {
                 // Never send --cwd beside --cwd-from: the daemon would let
                 // it win, and a client-side pwd can be stale (a remote
                 // shell with no OSC 7 never updates it). The live process
                 // is the truth.
-                parts += ["--cwd-from", "\"\(cwdFrom.uuidString)\""]
+                parts += ["--cwd-from", cwdFrom.uuidString]
             } else if let cwd {
-                parts += ["--cwd", "\"\(cwd)\""]
+                parts += ["--cwd", cwd]
             }
-            return parts.joined(separator: " ")
+            return Self.quote(parts)
         }
 
-        /// argv as one command line for libghostty, which hands the string
-        /// to a shell. Every word is double-quoted, so paths with spaces
-        /// and flake refs with `#` survive intact.
-        private static func quote(_ argv: [String]) -> String {
-            argv.map { "\"\($0)\"" }.joined(separator: " ")
+        /// Quote argv once at the shell boundary, preserving every literal byte.
+        static func quote(_ argv: [String]) -> String {
+            argv.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ")
         }
     }
 
-    /// Kill a pane's pty (a deliberate close, not a detach). For an ix
-    /// pane that ends the `ix shell` the pty is running, and with it the
-    /// session on the VM.
+    /// Arm expiry on the owning daemon before dropping the pane's relay.
+    static func close(_ address: String, then completion: @escaping (Date?) -> Void) {
+        Subprocess.run(daemonBinary, ["close", address]) { output in
+            let milliseconds = output.flatMap {
+                Double($0.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            completion(milliseconds.map { Date(timeIntervalSince1970: $0 / 1000) })
+        }
+    }
+
     static func kill(_ address: String) {
-        guard let daemon = daemonBinary else { return }
-        Subprocess.run(daemon, ["kill", address]) { _ in }
+        Subprocess.run(daemonBinary, ["kill", address]) { _ in }
     }
 
     /// One host's live state, from `muxd probe <alias>`.
@@ -152,12 +150,11 @@ enum Muxd {
     /// bounded). Waited for here, on purpose: panes born during the
     /// handoff would dial the daemon being replaced.
     static func upgradeStaleDaemon() {
-        guard let daemon = daemonBinary else { return }
-        let probe: Probe = jsonLines(Subprocess.output(daemon, ["probe", "local"])).last
+        let probe: Probe = jsonLines(Subprocess.output(daemonBinary, ["probe", "local"])).last
             ?? .failed("error")
         guard probe.failure == "version-mismatch" else { return }
         AppLog.log("local muxd speaks another protocol version; upgrading: \(probe.error ?? "")")
-        let upgraded: Probe = jsonLines(Subprocess.output(daemon, ["upgrade"])).last
+        let upgraded: Probe = jsonLines(Subprocess.output(daemonBinary, ["upgrade"])).last
             ?? .failed("no answer")
         if upgraded.ok {
             AppLog.log("muxd upgraded in \(upgraded.rttMs ?? 0)ms, serving \(upgraded.ptys ?? 0) pty(s)")
@@ -170,10 +167,7 @@ enum Muxd {
     /// errors: the overlay shows the kind so a wrong pin reads differently
     /// from a machine that is simply off.
     static func probe(alias: String, then completion: @escaping (Probe) -> Void) {
-        guard let daemon = daemonBinary else {
-            return completion(.failed("no daemon"))
-        }
-        Subprocess.run(daemon, ["probe", alias]) { output in
+        Subprocess.run(daemonBinary, ["probe", alias]) { output in
             completion(jsonLines(output).last ?? .failed("error"))
         }
     }
@@ -195,15 +189,10 @@ enum Muxd {
     /// process and the terminal it tracks. The app renders this and never
     /// reads titles itself.
     struct AgentInfo: Decodable, Equatable {
-        let agent: Agent
+        let agent: String
         let state: AgentState
         /// What the agent says it is doing; may be empty.
         let topic: String
-    }
-
-    enum Agent: String, Decodable {
-        case claude
-        case codex
     }
 
     enum AgentState: String, Decodable {
@@ -268,12 +257,11 @@ enum Muxd {
         }
 
         private func start() {
-            guard let daemon = daemonBinary else { return }
             var args = ["watch", "--json"]
             if let alias {
                 args.append(alias)
             }
-            stream = Subprocess.Stream(daemon, args, onLine: { [weak self] line in
+            stream = Subprocess.Stream(daemonBinary, args, onLine: { [weak self] line in
                 guard let self, let event: WatchEvent = decode(line) else { return }
                 // A line means the daemon is there: the next outage gets
                 // the short retry again.
@@ -291,13 +279,14 @@ enum Muxd {
     }
 
     /// List the ptys a daemon serves for us: the local one, or `alias`
-    /// via the local daemon's broker. nil when muxd is missing or the
-    /// host did not answer; an empty array is a daemon with no ptys.
+    /// via the local daemon's broker. nil when the host did not answer;
+    /// an empty array is a daemon with no ptys.
     static func list(host alias: String?, then completion: @escaping ([PtyListing]?) -> Void) {
-        guard let daemon = daemonBinary else { return completion(nil) }
         var args = ["ls", "--json"]
-        if let alias { args.append(alias) }
-        Subprocess.run(daemon, args) { output in
+        if let alias {
+            args.append(alias)
+        }
+        Subprocess.run(daemonBinary, args) { output in
             guard let output else { return completion(nil) }
             completion(jsonLines(output))
         }
@@ -305,10 +294,9 @@ enum Muxd {
 
     /// This client's identity digest (`sha256:<64 hex>`), which the user
     /// pastes into the host's authorized list to let this machine in. nil
-    /// when muxd is not bundled or cannot answer.
+    /// when muxd cannot answer.
     static func clientDigest(then completion: @escaping (String?) -> Void) {
-        guard let daemon = daemonBinary else { return completion(nil) }
-        Subprocess.run(daemon, ["client-digest"]) { output in
+        Subprocess.run(daemonBinary, ["client-digest"]) { output in
             let digest = output?.trimmingCharacters(in: .whitespacesAndNewlines)
             completion(digest?.hasPrefix("sha256:") == true ? digest : nil)
         }
@@ -326,12 +314,6 @@ enum Muxd {
     static func decode<T: Decodable>(_ line: Substring) -> T? {
         guard line.hasPrefix("{") else { return nil }
         return try? JSONDecoder().decode(T.self, from: Data(line.utf8))
-    }
-
-    private static func bundled(_ name: String) -> String? {
-        guard let dir = Bundle.main.executableURL?.deletingLastPathComponent() else { return nil }
-        let path = dir.appendingPathComponent(name).path
-        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
     }
 }
 

@@ -183,7 +183,11 @@ private func closeSurface(_ userdata: UnsafeMutableRawPointer?, processAlive ali
     // else.
     _ = onMain(paneView(userdata)) { view in
         AppLog.log("closeSurface pane=\(view.id.uuidString) processAlive=\(alive)")
-        view.controller?.removePane(view)
+        if alive {
+            view.controller?.session(owning: view)?.closePane(view)
+        } else {
+            view.controller?.removePane(view)
+        }
     }
 }
 

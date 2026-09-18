@@ -62,6 +62,10 @@ pub struct Terminal {
 unsafe impl Send for Terminal {}
 
 impl Terminal {
+    pub fn size(&self) -> (u16, u16) {
+        (self.cols, self.rows)
+    }
+
     /// Create a new terminal with the given dimensions.
     ///
     /// Dimensions are clamped to a minimum of 1×1 (see [`resize`]).

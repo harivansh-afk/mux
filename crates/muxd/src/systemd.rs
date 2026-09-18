@@ -9,6 +9,11 @@
 //! stopping; under `NotifyAccess=all` any process in the unit may say it.
 //! Between them, `nixos-rebuild switch` reloads the unit instead of
 //! restarting it and no shell on the host notices (nix/module.nix).
+//!
+//! The socket is the daemon's alone: pty.rs strips `NOTIFY_SOCKET` from
+//! every pane, because under `NotifyAccess=all` a `STOPPING=1` from any
+//! process in the cgroup (postgres says it on shutdown) is taken as the
+//! service stopping, and the unit is killed once the stop timeout runs out.
 
 use std::os::unix::net::UnixDatagram;
 use std::path::Path;

@@ -30,19 +30,30 @@ from muxd_harness import (
 TAG = "upgrade"
 NOTICE = b"[mux]"
 
-def child_of(parent: int, name: str) -> int:
-    """The pid of `parent`'s child running `name` (a fresh fork of muxd)."""
+def process_is(pid: int, executable: str) -> bool:
+    if sys.platform == "linux":
+        # Linux comm is mutable and truncated to 15 bytes. NixOS's
+        # multicall cat sets it to its full argv[0], so inspect the image.
+        try:
+            return os.path.samefile(f"/proc/{pid}/exe", executable)
+        except OSError:
+            return False
+    comm = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, text=True).stdout
+    return os.path.basename(comm.strip()) in {os.path.basename(executable), os.path.basename(os.path.realpath(executable))}
+
+def child_of(parent: int, executable: str) -> int:
+    """The child running cat, including NixOS's multicall coreutils binary."""
     found = []
 
     def seen() -> bool:
         out = subprocess.run(["ps", "-eo", "pid=,ppid=,comm="], capture_output=True, text=True, check=True).stdout
         for line in out.splitlines():
             fields = line.split(None, 2)
-            if len(fields) == 3 and int(fields[1]) == parent and os.path.basename(fields[2].strip()) == name:
+            if len(fields) == 3 and int(fields[1]) == parent and process_is(int(fields[0]), executable):
                 found.append(int(fields[0]))
                 return True
         return False
-    wait_until(seen, f"a {name} child of pid {parent}", timeout=5)
+    wait_until(seen, f"a cat child of pid {parent}", timeout=5)
     return found[0]
 
 def pid_alive(pid: int) -> bool:
@@ -55,6 +66,9 @@ def pid_alive(pid: int) -> bool:
     return True
 
 def run(muxd_bin, mux_attach_bin, home, socket_path):
+    cat = shutil.which("cat")
+    if cat is None:
+        fail("cat is required on the test PATH")
     env = sandbox_env(home, socket_path, MUXD_MIGRATE_SOCKET=os.path.join(home, "m.sock"))
     log_a = os.path.join(home, "a.log")
     log_b = os.path.join(home, "b.log")
@@ -64,12 +78,12 @@ def run(muxd_bin, mux_attach_bin, home, socket_path):
     try:
         wait_until(lambda: socket_answers(socket_path), "daemon A to listen")
         log(TAG, f"daemon A listening (pid {daemon_a.pid})")
-        client = Pty([mux_attach_bin, "local:t1", "--", "/bin/cat"], env)
+        client = Pty([mux_attach_bin, "local:t1", "--", cat], env)
         client.send(b"marker-one\n")
         client.expect(b"marker-one", 20, "the pty to echo marker-one")
         log(TAG, "client attached; pty echoed marker-one")
-        child_pid = child_of(daemon_a.pid, "cat")
-        log(TAG, f"child /bin/cat is pid {child_pid}")
+        child_pid = child_of(daemon_a.pid, cat)
+        log(TAG, f"child cat is pid {child_pid}")
         before_upgrade = len(client.buffer)
         daemon_b, file_b = spawn_daemon(muxd_bin, socket_path, env, log_b, extra_args=["--upgrade"])
         log(TAG, f"daemon B started with --upgrade (pid {daemon_b.pid})")
@@ -77,14 +91,13 @@ def run(muxd_bin, mux_attach_bin, home, socket_path):
         if code != 0:
             fail(f"daemon A exited {code}, expected 0")
         log(TAG, "daemon A handed off and exited 0")
-        comm = subprocess.run(["ps", "-p", str(child_pid), "-o", "comm="], capture_output=True, text=True).stdout
-        if not pid_alive(child_pid) or os.path.basename(comm.strip()) != "cat":
-            fail(f"child {child_pid} did not survive the upgrade as /bin/cat")
+        if not pid_alive(child_pid) or not process_is(child_pid, cat):
+            fail(f"child {child_pid} did not survive the upgrade as {cat}")
         log(TAG, f"child pid unchanged: {child_pid} still alive")
         wait_until(lambda: socket_answers(socket_path), "daemon B to listen")
         ptys = list_ptys(muxd_bin, env)
         migrated = next((p for p in ptys if p["name"] == "t1"), None)
-        if migrated is None or "/bin/cat" not in migrated["command"]:
+        if migrated is None or cat not in migrated["command"]:
             fail(f"daemon B does not serve the migrated pty: {ptys}")
         log(TAG, "daemon B serves the migrated pty")
         # marker-one is already in the buffer from before the upgrade, so
@@ -97,6 +110,10 @@ def run(muxd_bin, mux_attach_bin, home, socket_path):
         if NOTICE in client.buffer[before_upgrade:]:
             fail(f"reconnect printed a notice it should not have:\n{client.tail()}")
         log(TAG, "client reconnected with no notice; replay repainted marker-one")
+        client.kill()
+        client.close()
+        client = Pty([mux_attach_bin, "--require-existing", "local:t1"], env)
+        client.expect(b"marker-one", 20, "strict reopen after the upgrade")
         after_replay = len(client.buffer)
         client.send(b"marker-two\n")
         client.expect(b"marker-two", 20, "new input to reach the child through daemon B")

@@ -18,7 +18,7 @@ final class PaneView: NSView {
 
     /// Which pty this pane is, and how the relay reaches it. Everything
     /// the command line is built from lives in Muxd.Attach.
-    private let attach: Muxd.Attach
+    let attach: Muxd.Attach
 
     /// Where this pane's terminal lives: nil local, a host alias, or
     /// `ix:<vm>`. Chrome, snapshots and split inheritance read it.
@@ -98,6 +98,7 @@ final class PaneView: NSView {
     private(set) var focused: Bool = false
 
     // MARK: - Keyboard / IME state (used by PaneView+Key.swift and
+
     // PaneView+TextInput.swift)
 
     /// In-progress IME composition (preedit) text.
@@ -183,8 +184,8 @@ final class PaneView: NSView {
         // trigger the responder chain, and a left mouse-down that only
         // transfers pane focus must be consumed before it becomes a
         // selection in the newly focused pane.
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyUp, .leftMouseDown]) {
-            [weak self] event in self?.localEventHandler(event)
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyUp, .leftMouseDown]) { [weak self] event in
+            self?.localEventHandler(event)
         }
 
         // The UTTypes that can be dragged onto this view.
@@ -192,17 +193,8 @@ final class PaneView: NSView {
 
         guard let app = GhosttyRuntime.shared?.app else { return }
 
-        // M2: every pane is a daemon pty named by the pane id. Attach
-        // reconnects and replays; a missing pty is created at the saved
-        // cwd. Terminal content survives the app by construction. M3: a
-        // pane on a host alias is the same pty one hop away (the local
-        // daemon relays the attach), and an `ix:<vm>` pane is a local pty
-        // whose command is `ix shell` instead of the user's shell.
         let command = attach.commandLine(cwd: workingDirectory, cwdFrom: cwdFrom)
-        // The one unlogged hop used to be right here: whether the surface
-        // was actually given the attach command. A pane that silently ran
-        // a bare shell instead was indistinguishable from a working one.
-        AppLog.log("spawn pane=\(id.uuidString) cmd=\(command ?? "<user shell>")")
+        AppLog.log("spawn pane=\(id.uuidString) cmd=\(command)")
 
         // A remote pane's cwd names a path on the remote host: it travels
         // as --cwd and is never handed to the local surface.
@@ -219,7 +211,7 @@ final class PaneView: NSView {
         cfg.context = GHOSTTY_SURFACE_CONTEXT_SPLIT
 
         surface = Self.withOptionalCString(localWorkingDirectory) { wdPtr in
-            Self.withOptionalCString(command) { cmdPtr -> ghostty_surface_t? in
+            command.withCString { cmdPtr -> ghostty_surface_t? in
                 cfg.working_directory = wdPtr
                 cfg.command = cmdPtr
                 return withUnsafePointer(to: cfg) { ghostty_surface_new(app, $0) }
@@ -348,7 +340,7 @@ final class PaneView: NSView {
 
     /// Free the surface explicitly (kills the local child - the relay).
     /// The daemon pty behind it survives; call killRemote() too when the
-    /// user actually closes the pane.
+    /// user explicitly kills the terminal.
     func destroySurface() {
         if let surface {
             ghostty_surface_free(surface)
@@ -356,7 +348,7 @@ final class PaneView: NSView {
         }
     }
 
-    /// Kill the pane's pty: a deliberate close, not a detach.
+    /// Kill the terminal immediately.
     func killRemote() {
         Muxd.kill(attach.address)
     }

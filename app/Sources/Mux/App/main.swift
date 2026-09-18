@@ -17,8 +17,17 @@ if getenv("GHOSTTY_RESOURCES_DIR") == nil {
     }
 }
 
-let delegate = AppDelegate()
 let app = NSApplication.shared
-app.delegate = delegate
 app.setActivationPolicy(.regular)
+let missingHelpers = Muxd.missingHelpers()
+if !missingHelpers.isEmpty {
+    let alert = NSAlert()
+    alert.messageText = "Mux is missing required components"
+    alert.informativeText = "Reinstall or rebuild the complete Mux.app. Missing: "
+        + missingHelpers.joined(separator: ", ") + "."
+    alert.runModal()
+    exit(EXIT_FAILURE)
+}
+
+app.delegate = App.delegate
 app.run()

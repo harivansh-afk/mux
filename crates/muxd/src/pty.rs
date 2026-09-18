@@ -125,6 +125,20 @@ pub fn window_size(master: &AsyncFd<OwnedFd>) -> WindowSize {
     }
 }
 
+/// Whether a variable in the daemon's environment is passed to a pane.
+///
+/// Set `TERM`/`COLORTERM` per pane. Agent session markers belong to the
+/// daemon's launcher; inheriting them can disable transcript saving.
+/// Service-manager variables belong to the daemon: with `NotifyAccess=all`,
+/// a pane inheriting `NOTIFY_SOCKET` can stop the entire muxd unit.
+fn pane_inherits(key: &str) -> bool {
+    !matches!(
+        key,
+        "TERM" | "COLORTERM" | "AI_AGENT" | "NOTIFY_SOCKET" | "INVOCATION_ID"
+    ) && !key.starts_with("CLAUDE")
+        && !key.starts_with("LISTEN_")
+}
+
 pub fn spawn(params: &Spawn) -> Result<Pty> {
     let pty =
         nix::pty::openpty(Some(&winsize(params.cols, params.rows)), None).context("openpty")?;
@@ -166,15 +180,7 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
     // PATH search, and building pointer tables after the fork.
     let exec_path = resolve_in_path(exec_path);
     let mut env: Vec<CString> = std::env::vars_os()
-        .filter(|(k, _)| match k.to_str() {
-            // TERM/COLORTERM are re-added below. CLAUDE*/AI_AGENT are
-            // per-session markers of whatever agent happened to start the
-            // daemon; leaking them makes every pane shell look like a
-            // nested agent session (e.g. claude disables transcript
-            // saving under CLAUDE_CODE_CHILD_SESSION).
-            Some(k) => !matches!(k, "TERM" | "COLORTERM" | "AI_AGENT") && !k.starts_with("CLAUDE"),
-            None => true,
-        })
+        .filter(|(k, _)| k.to_str().is_none_or(pane_inherits))
         .filter_map(|(k, v)| {
             use std::os::unix::ffi::OsStringExt;
             let mut bytes = k.into_vec();
@@ -213,6 +219,10 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
                 if libc::setsid() < 0 {
                     libc::_exit(127);
                 }
+                #[allow(
+                    clippy::useless_conversion,
+                    reason = "ioctl request constants differ across host architectures"
+                )]
                 if libc::ioctl(slave, u64::from(libc::TIOCSCTTY), 0) < 0 {
                     libc::_exit(127);
                 }
@@ -259,4 +269,104 @@ pub fn resize(master: &AsyncFd<OwnedFd>, cols: u16, rows: u16) -> Result<()> {
         return Err(std::io::Error::last_os_error()).context("TIOCSWINSZ");
     }
     Ok(())
+}
+
+/// End every job-control group in this terminal's Unix session. Background
+/// jobs may ignore SIGHUP, so killing only the shell/foreground is insufficient.
+pub fn terminate_session(child: Pid) {
+    use nix::sys::signal::{kill, killpg, Signal};
+    use nix::unistd::{getpgid, getsid};
+
+    let mut groups = std::collections::BTreeSet::new();
+    for pid in process_ids() {
+        if getsid(Some(pid)).ok() == Some(child) {
+            if let Ok(group) = getpgid(Some(pid)) {
+                if group.as_raw() > 0 && group != child {
+                    groups.insert(group);
+                }
+            }
+        }
+    }
+    // Keep the session leader alive until its jobs have been signalled.
+    for group in groups {
+        let _ = killpg(group, Signal::SIGKILL);
+    }
+    let _ = killpg(child, Signal::SIGKILL);
+    // Covers the interval between fork and setsid too.
+    let _ = kill(child, Signal::SIGKILL);
+}
+
+#[cfg(target_os = "linux")]
+fn process_ids() -> Vec<Pid> {
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
+        .map(Pid::from_raw)
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn process_ids() -> Vec<Pid> {
+    // SAFETY: null/zero asks libproc for the required PID count.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    let Ok(count) = usize::try_from(count) else {
+        return Vec::new();
+    };
+    let mut pids = vec![0_i32; count + 512];
+    let Ok(bytes) = i32::try_from(pids.len() * std::mem::size_of::<i32>()) else {
+        return Vec::new();
+    };
+    // SAFETY: the buffer has exactly 'bytes' writable bytes. libproc returns
+    // the number of PIDs written; extra capacity accommodates concurrent forks.
+    let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    pids.truncate(usize::try_from(count).unwrap_or(0));
+    pids.into_iter()
+        .filter(|pid| *pid > 0)
+        .map(Pid::from_raw)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pane_inherits;
+
+    #[test]
+    fn panes_keep_the_ordinary_environment() {
+        for key in [
+            "HOME",
+            "PATH",
+            "SHELL",
+            "LANG",
+            "SSH_AUTH_SOCK",
+            "LISTENER",
+            "TERMINFO",
+        ] {
+            assert!(pane_inherits(key), "{key} should reach the pane");
+        }
+    }
+
+    #[test]
+    fn panes_never_see_the_service_manager() {
+        for key in [
+            "NOTIFY_SOCKET",
+            "INVOCATION_ID",
+            "LISTEN_PID",
+            "LISTEN_FDS",
+            "LISTEN_FDNAMES",
+        ] {
+            assert!(
+                !pane_inherits(key),
+                "{key} would let a pane speak for the unit"
+            );
+        }
+    }
+
+    #[test]
+    fn panes_never_look_like_a_nested_agent_session() {
+        for key in ["CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "AI_AGENT"] {
+            assert!(!pane_inherits(key));
+        }
+    }
 }
