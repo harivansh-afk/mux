@@ -25,6 +25,7 @@ final class PaneScrollView: NSView {
     private let scrollView: NSScrollView
     private let documentView: NSView
     private let pane: PaneView
+    lazy var searchBar = PaneSearchBar(pane: pane)
     private var observers: [NSObjectProtocol] = []
     private var isLiveScrolling = false
 
@@ -131,9 +132,11 @@ final class PaneScrollView: NSView {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
-    // The entire bounds is a safe area; override any default insets so
-    // the content view always matches the pane.
-    override var safeAreaInsets: NSEdgeInsets { NSEdgeInsetsZero }
+    /// The entire bounds is a safe area; override any default insets so
+    /// the content view always matches the pane.
+    override var safeAreaInsets: NSEdgeInsets {
+        NSEdgeInsetsZero
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
@@ -152,6 +155,25 @@ final class PaneScrollView: NSView {
 
         synchronizeScrollView()
         synchronizePane()
+        if searchBar.superview != nil {
+            searchBar.frame = NSRect(x: 0, y: max(0, bounds.height - 40), width: bounds.width, height: 40)
+        }
+    }
+
+    func showSearch(needle: String) {
+        if searchBar.superview == nil {
+            addSubview(searchBar)
+            needsLayout = true
+        }
+        searchBar.start(needle: needle)
+    }
+
+    func hideSearch() {
+        let hadFocus = searchBar.ownsFirstResponder
+        searchBar.end()
+        if hadFocus {
+            window?.makeFirstResponder(pane)
+        }
     }
 
     /// The core reported new scrollback dimensions (SCROLLBAR action).

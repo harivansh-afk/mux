@@ -36,6 +36,13 @@ Splits and new sessions inherit their source pane's target. A working
 directory is inherited only when targets match. Prefix `t` opens the
 target picker.
 
+## Terminal search
+
+Cmd-F opens a search bar in the focused pane, backed by Ghostty's native
+search engine. Cmd-G / Shift-Cmd-G (or Return / Shift-Return in the field)
+navigate matches; Escape in the field closes search. Search covers the
+scrollback currently held by that pane's Ghostty surface.
+
 ## GhosttyKit
 
 `GhosttyKit/` contains the fetched xcframework and module map. The bundle
