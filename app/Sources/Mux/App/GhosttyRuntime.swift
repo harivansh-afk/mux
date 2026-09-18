@@ -1,6 +1,6 @@
 import AppKit
-import Tiling
 import GhosttyKit
+import Tiling
 
 /// Owns the single ghostty_app_t and the runtime callbacks. Adapted from
 /// ghostty's Ghostty.App.swift (MIT), reduced to what a multiplexer needs:
@@ -140,10 +140,10 @@ final class GhosttyRuntime {
         }
         return String(cString: v) != "never"
     }
-
 }
 
 // MARK: - Callbacks
+
 //
 // These are file-scope functions, not members: Swift can only form a C
 // function pointer from a top-level func or a literal closure, so making
@@ -337,7 +337,7 @@ private func action(
         return true
 
     default:
-        return false
+        return searchAction(view, action: action)
     }
 }
 

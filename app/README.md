@@ -50,5 +50,10 @@ to choose, enter to split right into the chosen host.
 
 ## GhosttyKit
 
+Terminal search uses Ghostty's native search engine: Cmd-F opens a search
+bar in the focused pane, Cmd-G / Shift-Cmd-G (or Return / Shift-Return in
+the field) navigate matches, and Escape in the field closes search.
+Search covers the scrollback currently held by that pane's Ghostty surface.
+
 `GhosttyKit/` holds module.modulemap + the fetched xcframework + resources
 (see ../scripts/fetch-ghosttykit.sh). Set GHOSTTY_RESOURCES_DIR at launch.

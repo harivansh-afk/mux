@@ -66,11 +66,15 @@ final class HelpOverlayView: PanelView {
             Section(title: "app", rows: [
                 ("cmd+n", "new window"),
                 ("cmd+c / cmd+v", "copy / paste"),
+                ("cmd+f", "find in terminal"),
+                ("cmd+g / shift+cmd+g", "next / previous match"),
             ]),
         ],
     ]
 
-    override class var inset: CGFloat { 16 }
+    override class var inset: CGFloat {
+        16
+    }
 
     private static let columnGap: CGFloat = 30
     /// Key column width in characters; descriptions start after it.

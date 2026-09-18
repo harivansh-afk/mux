@@ -229,11 +229,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func copyFromPane(_: Any?) {
+        if let editor = controller?.window.firstResponder as? NSTextView {
+            editor.copy(nil)
+            return
+        }
         controller?.activeSession?.focusedPane?.bindingAction("copy_to_clipboard")
     }
 
     @objc func pasteToPane(_: Any?) {
+        if let editor = controller?.window.firstResponder as? NSTextView {
+            editor.paste(nil)
+            return
+        }
         controller?.activeSession?.focusedPane?.bindingAction("paste_from_clipboard")
+    }
+
+    @objc func findInPane(_: Any?) {
+        controller?.activeSession?.focusedPane?.bindingAction("start_search")
+    }
+
+    @objc func findNextInPane(_: Any?) {
+        controller?.activeSession?.focusedPane?.bindingAction("navigate_search:next")
+    }
+
+    @objc func findPreviousInPane(_: Any?) {
+        controller?.activeSession?.focusedPane?.bindingAction("navigate_search:previous")
     }
 
     // MARK: - Menu
@@ -265,6 +285,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let editMenu = NSMenu(title: "Edit")
         editMenu.addItem(withTitle: "Copy", action: #selector(copyFromPane(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(pasteToPane(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Find…", action: #selector(findInPane(_:)), keyEquivalent: "f")
+        editMenu.addItem(withTitle: "Find Next", action: #selector(findNextInPane(_:)), keyEquivalent: "g")
+        let previous = editMenu.addItem(
+            withTitle: "Find Previous", action: #selector(findPreviousInPane(_:)), keyEquivalent: "g"
+        )
+        previous.keyEquivalentModifierMask = [.command, .shift]
         editMenuItem.submenu = editMenu
         main.addItem(editMenuItem)
 
