@@ -156,7 +156,14 @@ final class PaneScrollView: NSView {
         synchronizeScrollView()
         synchronizePane()
         if searchBar.superview != nil {
-            searchBar.frame = NSRect(x: 0, y: max(0, bounds.height - 40), width: bounds.width, height: 40)
+            let size = PaneSearchBar.preferredSize
+            let width = min(size.width, max(0, bounds.width - 16))
+            searchBar.frame = NSRect(
+                x: max(0, bounds.width - width - 8),
+                y: max(0, bounds.height - size.height - 8),
+                width: width,
+                height: size.height
+            )
         }
     }
 
