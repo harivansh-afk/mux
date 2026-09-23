@@ -24,6 +24,7 @@
 
 pub mod broker;
 pub mod control;
+pub mod forward;
 pub mod manager;
 pub mod migrate;
 pub mod paths;

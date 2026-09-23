@@ -14,13 +14,87 @@ bearer token is refused (`token-rejected`) - both classified by probe.
 import json
 import os
 import shutil
+import socket
+import subprocess
 import sys
 import tempfile
+import threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from muxd_harness import Daemon, Pty, fail, find_binaries, list_ptys, log, run, sandbox_env
 TAG = "quic"
 QUIC_ADDR = "127.0.0.1:14433"
 MARKER = b"RMARKER-42"
+
+def exercise_forward(muxd_bin, env, local_home, remote_home):
+    """Real CLI + broker: opaque binary bytes and a response after half-close."""
+    service_path = os.path.join(remote_home, "service.sock")
+    forwarded = os.path.join(local_home, "forward.sock")
+    errors = []
+    with socket.socket(socket.AF_UNIX) as service:
+        service.bind(service_path)
+        service.listen()
+        service.settimeout(10)
+
+        def respond():
+            try:
+                for _ in range(2):
+                    connection, _ = service.accept()
+                    with connection:
+                        connection.settimeout(10)
+                        connection.sendall(b"server-first\x00")
+                        data = bytearray()
+                        while chunk := connection.recv(65536):
+                            data.extend(chunk)
+                        connection.sendall(bytes(data)[::-1])
+            except Exception as error:
+                errors.append(error)
+
+        worker = threading.Thread(target=respond, daemon=True)
+        worker.start()
+        process = subprocess.Popen(
+            [muxd_bin, "forward", "testbox", service_path, forwarded],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            import select
+            if not select.select([process.stdout], [], [], 10)[0]:
+                fail("forward CLI did not announce its listener")
+            if process.stdout.readline().strip() != f"unix://{forwarded}":
+                fail("forward CLI failed to bind")
+            if os.stat(forwarded).st_mode & 0o777 != 0o600:
+                fail("forwarded socket is not private")
+            occupied = run([muxd_bin, "forward", "testbox", service_path, forwarded], env, check=False)
+            if occupied.returncode == 0 or not os.path.exists(forwarded):
+                fail("a second forward replaced the existing listener")
+            for _ in range(2):
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.settimeout(10)
+                    client.connect(forwarded)
+                    greeting = bytearray()
+                    while len(greeting) < len(b"server-first\x00"):
+                        chunk = client.recv(len(b"server-first\x00") - len(greeting))
+                        if not chunk:
+                            fail("forward closed before server-first bytes")
+                        greeting.extend(chunk)
+                    if greeting != b"server-first\x00":
+                        fail("Mux framing leaked into the forwarded service")
+                    payload = bytes(range(256)) * 4096
+                    client.sendall(payload)
+                    client.shutdown(socket.SHUT_WR)
+                    received = bytearray()
+                    while chunk := client.recv(65536):
+                        received.extend(chunk)
+                    if received != payload[::-1]:
+                        fail("forward lost binary bytes or truncated the response after half-close")
+            worker.join(10)
+            if worker.is_alive() or errors:
+                fail(f"service did not complete: {errors}")
+        finally:
+            process.terminate()
+            process.communicate(timeout=10)
+        if process.returncode != 0 or os.path.exists(forwarded):
+            fail("forward did not exit cleanly and remove its own socket")
+    log(TAG, "forward: server-first binary traffic, half-close, reconnect and listener ownership passed")
 
 def probe(muxd_bin, env, alias):
     """One JSON line, the health check Mux.app runs per host."""
@@ -83,6 +157,15 @@ def main():
             if "remote-pane-1" not in names_remote or "remote-pane-1" in names_local:
                 fail(f"pty not owned by the remote daemon alone: remote={names_remote} local={names_local}")
             log(TAG, "pty owned by the remote daemon, absent from the local one")
+            connections_before = open(os.path.join(remote_home, "muxd.log")).read().count("quic client connected")
+            if connections_before < 1:
+                fail("missing evidence of the terminal's QUIC connection")
+            exercise_forward(muxd_bin, env_local, local_home, remote_home)
+            connections_after = open(os.path.join(remote_home, "muxd.log")).read().count("quic client connected")
+            if connections_after != connections_before:
+                fail("forward opened another QUIC connection instead of reusing the terminal connection")
+            client.send(b"echo STILL-$((20+2))\n")
+            client.expect(b"STILL-22", 10, "the original pane after forwarding")
             client.kill()
             client.close()
             client = Pty([mux_attach_bin, "--require-existing", "testbox:remote-pane-1"], env_local)

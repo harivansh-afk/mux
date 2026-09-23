@@ -63,6 +63,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSMicrophoneUsageDescription</key><string>A program running in Mux would like to use your microphone.</string>
 </dict>
 </plist>
 PLIST

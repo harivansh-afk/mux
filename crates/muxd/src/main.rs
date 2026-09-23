@@ -9,6 +9,7 @@
 //!   muxd watch [alias] [--json] one JSON object per pty, then per change
 //!   muxd kill [host|local]:<name>
 //!   muxd probe <alias>         check a host, one JSON line, exit 1 on failure
+//!   muxd forward <alias> <remote-socket> <local-socket>
 //!   muxd upgrade               replace the running daemon with this binary
 //!   muxd client-digest         print this user's client token digest and exit
 //!
@@ -531,6 +532,19 @@ async fn main() -> Result<()> {
         Some("client-digest") => return client_digest(),
         Some("ls") => return ls(&args[1..]),
         Some("watch") => return watch(&args[1..]),
+        Some("forward") => {
+            let [_, alias, remote, local] = args.as_slice() else {
+                bail!("usage: muxd forward <alias> <remote-socket> <local-socket>");
+            };
+            drop(connect()?);
+            return muxd::forward::serve(
+                &paths::control_socket(),
+                host(alias),
+                remote,
+                Path::new(local),
+            )
+            .await;
+        }
         Some(command @ ("inspect" | "observe" | "input")) => {
             return terminal_control(command, &args[1..])
         }

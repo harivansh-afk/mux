@@ -64,3 +64,7 @@ preservation of live processes, not disk hibernation.
 
 See [closed-terminal design and research](docs/closed-tabs.md) for persistence,
 upgrade compatibility, resource costs, and failure behavior.
+
+For a local interface with remote execution, `muxd forward` carries a Unix
+service socket over the existing host connection. See [remote clients and
+Codex voice](docs/remote-clients.md) for setup and microphone permissions.
