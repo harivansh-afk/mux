@@ -181,6 +181,9 @@ where
     }
 
     match request.mode {
+        OpenMode::Connect { ref path } => {
+            return crate::forward::connect(path, reader, writer).await;
+        }
         OpenMode::List => {
             return reply(
                 &mut writer,
@@ -444,9 +447,9 @@ type Handshake = std::result::Result<OpenRequest, u32>;
 async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Handshake> {
     let buf = frame::aio::read_message(reader).await.context("request")?;
     let version = peer::decode_prefix::<u32>(&buf).context("request version")?;
-    // v8-v10 append variants; existing v7-v9 requests and replies retain
+    // v8-v11 append variants; existing v7-v10 requests and replies retain
     // their byte layout, including the interactive input/output lanes.
-    if version != peer::PROTOCOL_VERSION && version != 7 && version != 8 && version != 9 {
+    if !(7..=peer::PROTOCOL_VERSION).contains(&version) {
         return Ok(Err(version));
     }
     let request: OpenRequest = peer::decode(&buf).context("request decode")?;
@@ -455,6 +458,7 @@ async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Handshake>
         OpenMode::Attach { .. } => 8,
         OpenMode::Close { .. } | OpenMode::Reopen { .. } => 10,
         OpenMode::Inspect { .. } | OpenMode::Observe { .. } | OpenMode::Input { .. } => 9,
+        OpenMode::Connect { .. } => 11,
     };
     if version < minimum {
         return Ok(Err(version));

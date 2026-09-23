@@ -139,6 +139,7 @@ impl Broker {
         let Some(alias) = request.target.clone() else {
             bail!("relay called on a request with no target");
         };
+        let forward = matches!(request.mode, peer::OpenMode::Connect { .. });
         let stream = match self.open_stream(&alias, request).await {
             Ok(stream) => stream,
             Err(error) => {
@@ -146,7 +147,17 @@ impl Broker {
                 return server::reply(&mut writer, &Err(error)).await;
             }
         };
-        splice(reader, &mut writer, stream).await
+        if forward {
+            let (send, recv) = stream;
+            tokio::io::copy_bidirectional(
+                &mut tokio::io::join(reader, writer),
+                &mut tokio::io::join(recv, send),
+            )
+            .await?;
+            Ok(())
+        } else {
+            splice(reader, &mut writer, stream).await
+        }
     }
 
     /// Dial (or reuse) the host's connection, open a stream on it and send
