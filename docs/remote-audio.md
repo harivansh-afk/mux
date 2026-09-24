@@ -101,12 +101,6 @@ PTY and native device IPC: two-way PCM, the same QUIC connection as the terminal
 stop notifications, caller/pane isolation, and terminal survival after audio
 closes. It needs no physical device or model account.
 
-`uv run python scripts/test-muxd-audio-auto.py` adds automatic acquisition,
-concurrent hardened helper opens, delayed readiness, pane handoff, busy and
-stale-request rejection, provider revocation and re-registration, and new-pane
-reuse. macOS Rust tests exercise the actual provider supervisor with synthetic
-hardware, including provider loss and device-open failures.
-
 For the original explicit bridge, the actual unmodified Codex 0.156.1 voice
 helper was separately tested with the
 built plugin inside a remote test PTY, a local ICE-lite WebRTC peer, and the Mac

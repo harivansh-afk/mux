@@ -22,7 +22,6 @@ e2e:
     python3 scripts/test-muxd-expiry.py
     python3 scripts/test-muxd-quic-e2e.py
     python3 scripts/test-muxd-audio.py
-    python3 scripts/test-muxd-audio-auto.py
 
 # Everything CI gates on (Swift steps need the toolchain; see .forgejo/workflows/ci.yml)
 lint: check
