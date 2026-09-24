@@ -63,14 +63,19 @@ import socket,sys,time,select,subprocess
 if len(sys.argv)>2:
  sys.exit(subprocess.call([sys.executable,__file__,sys.argv[1]],start_new_session=True))
 path=sys.argv[1]
+# The shipped Codex voice helper disables process dumping before opening audio.
+import ctypes,threading
+assert ctypes.CDLL(None).prctl(4,0,0,0,0)==0
 def connect(direction):
  s=socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET);s.settimeout(3);s.connect(path)
  s.send(bytes([1,direction]));assert s.recv(1)==b'\0';s.send(b'\1');return s
-capture,playback=connect(1),connect(0)
-data=capture.recv(960);assert data and any(data)
-playback.send(b'\2'+data)
-capture.send(b'\0');playback.send(b'\0');capture.close();playback.close()
-print('AUDIO-ROUNDTRIP-OK',flush=True)
+def audio():
+ capture,playback=connect(1),connect(0)
+ data=capture.recv(960);assert data and any(data)
+ playback.send(b'\2'+data)
+ capture.send(b'\0');playback.send(b'\0');capture.close();playback.close()
+ print('AUDIO-ROUNDTRIP-OK',flush=True)
+worker=threading.Thread(target=audio);worker.start();worker.join()
 '''
 
 def main():

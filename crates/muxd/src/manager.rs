@@ -203,7 +203,10 @@ impl Default for Manager {
 
 impl Manager {
     #[cfg(target_os = "linux")]
-    pub(crate) fn audio_for_pid(&self, pid: i32) -> Option<Arc<crate::audio::Route>> {
+    pub(crate) fn audio_for_process(
+        &self,
+        peer: &crate::audio::process::Process,
+    ) -> Option<Arc<crate::audio::Route>> {
         let roots: HashMap<_, _> = self
             .ptys
             .lock()
@@ -211,7 +214,7 @@ impl Manager {
             .filter(|session| !session.exited.load(Ordering::Acquire))
             .map(|session| (session.child.as_raw(), session.clone()))
             .collect();
-        let owner = crate::audio::process::ancestor(pid, |pid| roots.contains_key(&pid))?;
+        let owner = crate::audio::process::ancestor(peer, |pid| roots.contains_key(&pid))?;
         let session = roots.get(&owner)?;
         if session.exited.load(Ordering::Acquire) {
             return None;

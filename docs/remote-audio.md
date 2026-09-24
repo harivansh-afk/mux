@@ -45,7 +45,9 @@ claimed equivalent to a fully local audio path.
   a lock. Media queues have fixed bounds.
 - A Linux ALSA ioplug opens a private `SOCK_SEQPACKET` socket beside muxd's control
   socket. Peer credentials and same-user process ancestry bind the plugin to
-  its real terminal. Every observed parent/start-time identity is rechecked.
+  its real terminal. Kernel pidfds pin the observed processes and public PID/UID
+  metadata is rechecked, including for non-dumpable helpers hidden by procfs.
+  This requires Linux 6.13 or newer; no ptrace permission is needed.
   Helpers that start a new Unix session remain associated with their parent
   terminal; unrelated or reparented processes cannot claim its route. No
   environment marker or focused-pane guess is trusted.

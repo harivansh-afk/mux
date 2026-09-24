@@ -18,7 +18,7 @@ agents.workspace = true
 ghostty-vt.workspace = true
 # `uio` adds sendmsg/recvmsg + SCM_RIGHTS, which the self-upgrade handoff
 # (src/migrate.rs) is built on; only muxd needs it.
-nix = { workspace = true, features = ["uio"] }
+nix = { workspace = true, features = ["uio", "ioctl"] }
 parking_lot.workspace = true
 libc.workspace = true
 quinn.workspace = true
