@@ -19,6 +19,9 @@ pub mod linux;
 #[cfg(target_os = "macos")]
 #[path = "audio/mac.rs"]
 pub mod mac;
+#[cfg(target_os = "linux")]
+#[path = "audio/process.rs"]
+pub(crate) mod process;
 
 #[derive(Default)]
 pub struct Registry {
