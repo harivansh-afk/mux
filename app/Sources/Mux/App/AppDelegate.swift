@@ -14,6 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// for no capability.
     private(set) var controller: MuxWindowController?
     let prefixEngine = PrefixEngine()
+    var audioSharing: Subprocess.Stream?
+    var audioGeneration = UUID()
+    var audioStatus = ""
 
     func applicationDidFinishLaunching(_: Notification) {
         // Before the snapshot is loaded: an unclean previous exit freezes
@@ -130,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppLog.log("terminating (\(reason))")
         saveSnapshot()
         isTerminating = true
+        stopAudioSharing()
         controller?.stopWatches()
         CrashMarker.disarm()
         AppLog.drain()
@@ -301,6 +305,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         reopen.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(withTitle: "Kill Terminal", action: #selector(killTerminal(_:)), keyEquivalent: "")
+        fileMenu.addItem(.separator())
+        fileMenu.addItem(
+            withTitle: "Share Mac Audio with This Pane",
+            action: #selector(toggleAudioSharing(_:)), keyEquivalent: ""
+        )
         fileMenuItem.submenu = fileMenu
         main.addItem(fileMenuItem)
 

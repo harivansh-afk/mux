@@ -19,8 +19,9 @@ use serde::{Deserialize, Serialize};
 /// v4: `cwd_from`; v5: `PtyInfo::cwd`; v6: typed `OpenError`; v7:
 /// `PtyInfo::agent`, `OpenMode::Watch`; v8: attach-only reopen;
 /// v9: non-attaching inspection, observation and checked input;
-/// v10: bounded close and explicit reopen; v11: Unix socket forwarding.
-pub const PROTOCOL_VERSION: u32 = 11;
+/// v10: bounded close and explicit reopen; v11: Unix socket forwarding;
+/// v12: native audio control and datagrams.
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// ALPN for muxd's QUIC listener. Each bidirectional stream carries
 /// exactly one protocol run: the same handshake + lane frames as a unix
@@ -91,6 +92,8 @@ pub enum OpenMode {
     Reopen { name: String },
     /// Connect to a same-user Unix socket. After the reply, bytes are unframed.
     Connect { path: String },
+    /// One explicit audio owner for a terminal, on this connection.
+    Audio { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -104,6 +107,7 @@ pub enum Opened {
     InputWritten { bytes: usize, input_revision: u64 },
     Closed { expires_at_ms: u64 },
     Connected,
+    Audio { token: u64 },
 }
 
 /// An incarnation is deliberately renewed at daemon handoff: stale writes fail
@@ -355,7 +359,7 @@ mod tests {
         assert_eq!(
             encode(&req),
             [
-                0x0b, // version = PROTOCOL_VERSION (varint)
+                0x0c, // version = PROTOCOL_VERSION (varint)
                 0x78, // cols = 120 (varint)
                 0x28, // rows = 40
                 0x01, 0x0d, // term: Some, len 13

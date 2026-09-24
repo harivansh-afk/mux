@@ -63,6 +63,7 @@ use mux_proto::peer::{self, ErrorKind, OpenError, OpenMode, OpenReply, OpenReque
 use muxd::{manager, migrate, paths, quic, server, systemd, tls};
 
 struct Args {
+    audio: bool,
     socket: PathBuf,
     listen_quic: Option<SocketAddr>,
     authorized_tokens: Option<PathBuf>,
@@ -71,12 +72,19 @@ struct Args {
 
 fn parse_args() -> Result<Args> {
     let mut socket = None;
+    let mut audio = false;
     let mut listen_quic = None;
     let mut authorized_tokens = None;
     let mut upgrade = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--audio" => {
+                if !cfg!(target_os = "linux") {
+                    bail!("--audio exposes Linux ALSA devices only");
+                }
+                audio = true;
+            }
             "--socket" => {
                 socket = Some(PathBuf::from(args.next().context("--socket needs a path")?));
             }
@@ -93,6 +101,7 @@ fn parse_args() -> Result<Args> {
         }
     }
     Ok(Args {
+        audio,
         socket: socket.unwrap_or_else(paths::control_socket),
         listen_quic,
         authorized_tokens,
@@ -522,6 +531,21 @@ fn parse_listen(value: &str) -> Result<SocketAddr> {
     Ok(SocketAddr::new(ip, mux_proto::peer::DEFAULT_QUIC_PORT))
 }
 
+fn start_audio(args: &Args, audio_manager: &manager::Manager) {
+    #[cfg(target_os = "linux")]
+    if args.audio {
+        let audio_manager = audio_manager.clone();
+        let audio_socket = PathBuf::from(format!("{}.audio", args.socket.display()));
+        tokio::spawn(async move {
+            if let Err(error) = muxd::audio::linux::serve(audio_manager, &audio_socket).await {
+                tracing::error!(%error, "audio device listener failed");
+            }
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (audio_manager, args.audio);
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     init_logging();
@@ -529,6 +553,26 @@ async fn main() -> Result<()> {
     // Subcommands before flags: each answers on stdout and exits.
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        #[cfg(target_os = "macos")]
+        Some("audio") => {
+            let [_, address] = args.as_slice() else {
+                bail!("usage: muxd audio <host>:<pane>");
+            };
+            let (target, name) = parse_target(address)?;
+            if target.is_none() {
+                bail!("audio sharing requires a remote pane");
+            }
+            drop(connect()?);
+            let result = muxd::audio::mac::run(
+                &paths::control_socket(),
+                query(target, OpenMode::Audio { name }),
+            )
+            .await;
+            if let Err(error) = &result {
+                println!("Audio error: {error:#}");
+            }
+            return result;
+        }
         Some("client-digest") => return client_digest(),
         Some("ls") => return ls(&args[1..]),
         Some("watch") => return watch(&args[1..]),
@@ -588,6 +632,7 @@ async fn main() -> Result<()> {
         migrate::adopt_from_predecessor(&manager, &args.socket).await;
     }
     let listener = server::bind(&args.socket).await?;
+    start_audio(&args, &manager);
     migrate::spawn_handoff_task(manager.clone());
     systemd::notify("READY=1");
 

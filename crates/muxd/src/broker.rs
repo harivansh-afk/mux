@@ -140,6 +140,7 @@ impl Broker {
             bail!("relay called on a request with no target");
         };
         let forward = matches!(request.mode, peer::OpenMode::Connect { .. });
+        let audio = matches!(request.mode, peer::OpenMode::Audio { .. });
         let stream = match self.open_stream(&alias, request).await {
             Ok(stream) => stream,
             Err(error) => {
@@ -147,7 +148,11 @@ impl Broker {
                 return server::reply(&mut writer, &Err(error)).await;
             }
         };
-        if forward {
+        if audio {
+            let connection = self.live(&alias).await.context("audio connection closed")?;
+            let (send, recv) = stream;
+            crate::audio::bridge(connection, reader, writer, send, recv).await
+        } else if forward {
             let (send, recv) = stream;
             tokio::io::copy_bidirectional(
                 &mut tokio::io::join(reader, writer),
@@ -286,6 +291,8 @@ impl Broker {
         let mut endpoint = quinn::Endpoint::client(bind).context("bind QUIC socket")?;
         let mut client = quinn::ClientConfig::new(Arc::new(crypto));
         let mut transport = quinn::TransportConfig::default();
+        transport.datagram_receive_buffer_size(Some(64 * 1024));
+        transport.datagram_send_buffer_size(16 * mux_proto::audio::MAX_PACKET);
         transport.keep_alive_interval(Some(KEEP_ALIVE));
         transport.max_idle_timeout(Some(MAX_IDLE.try_into().context("idle timeout")?));
         client.transport_config(Arc::new(transport));
