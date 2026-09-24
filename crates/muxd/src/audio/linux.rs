@@ -19,6 +19,10 @@ fn io(error: nix::errno::Errno) -> std::io::Error {
 }
 
 pub async fn serve(manager: Manager, path: &Path) -> Result<()> {
+    ensure!(
+        super::process::Process::supported(),
+        "native audio requires Linux 6.13+ pidfd metadata"
+    );
     let fd = socket::socket(
         AddressFamily::Unix,
         SockType::SeqPacket,
@@ -142,6 +146,7 @@ async fn device(manager: Manager, fd: OwnedFd) -> Result<()> {
         credentials.uid() == nix::unistd::geteuid().as_raw(),
         "audio peer uid mismatch"
     );
+    let peer = super::process::Process::peer(&fd)?;
     let fd = AsyncFd::new(fd)?;
     let mut data = [0u8; mux_proto::audio::MAX_PCM + 1];
     let size = tokio::time::timeout(Duration::from_secs(3), receive(&fd, &mut data)).await??;
@@ -150,7 +155,7 @@ async fn device(manager: Manager, fd: OwnedFd) -> Result<()> {
         "invalid audio device handshake"
     );
     let capture = data[1] == 1;
-    let Some(route) = manager.audio_for_pid(credentials.pid()) else {
+    let Some(route) = manager.audio_for_process(&peer) else {
         send(&fd, &[1])?;
         anyhow::bail!("no Mac audio owner for this terminal");
     };
