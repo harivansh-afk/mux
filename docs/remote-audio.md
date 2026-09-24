@@ -44,9 +44,11 @@ claimed equivalent to a fully local audio path.
   working devices and enable it again. Callbacks never do network IO or wait for
   a lock. Media queues have fixed bounds.
 - A Linux ALSA ioplug opens a private `SOCK_SEQPACKET` socket beside muxd's control
-  socket. Peer credentials and the process's Unix session ID bind the plugin to
-  its real terminal. No environment marker or focused-pane guess is trusted.
-  Detached processes with a different Unix session ID cannot use the route.
+  socket. Peer credentials and same-user process ancestry bind the plugin to
+  its real terminal. Every observed parent/start-time identity is rechecked.
+  Helpers that start a new Unix session remain associated with their parent
+  terminal; unrelated or reparented processes cannot claim its route. No
+  environment marker or focused-pane guess is trusted.
 - One reliable audio control stream uses the host's cached QUIC connection and
   existing authentication. PCM uses QUIC datagrams on that same connection/port.
   A random lease token, per-direction start epoch and sample sequence reject

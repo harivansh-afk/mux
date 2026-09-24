@@ -204,13 +204,18 @@ impl Default for Manager {
 impl Manager {
     #[cfg(target_os = "linux")]
     pub(crate) fn audio_for_pid(&self, pid: i32) -> Option<Arc<crate::audio::Route>> {
-        let sid = nix::unistd::getsid(Some(nix::unistd::Pid::from_raw(pid))).ok()?;
-        let session = self
+        let roots: HashMap<_, _> = self
             .ptys
             .lock()
             .values()
-            .find(|session| session.child == sid && !session.exited.load(Ordering::Acquire))
-            .cloned()?;
+            .filter(|session| !session.exited.load(Ordering::Acquire))
+            .map(|session| (session.child.as_raw(), session.clone()))
+            .collect();
+        let owner = crate::audio::process::ancestor(pid, |pid| roots.contains_key(&pid))?;
+        let session = roots.get(&owner)?;
+        if session.exited.load(Ordering::Acquire) {
+            return None;
+        }
         self.audio.get(&session.name)
     }
     /// Every pty as one event, for a watch that just opened or fell

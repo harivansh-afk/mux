@@ -59,7 +59,9 @@ def driver(control, pane):
     return stream
 
 DEVICE = r'''
-import socket,sys,time,select
+import socket,sys,time,select,subprocess
+if len(sys.argv)>2:
+ sys.exit(subprocess.call([sys.executable,__file__,sys.argv[1]],start_new_session=True))
 path=sys.argv[1]
 def connect(direction):
  s=socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET);s.settimeout(3);s.connect(path)
@@ -99,32 +101,34 @@ def main():
                 outsider=socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET)
                 outsider.connect(str(remote/'mux.sock.audio'));outsider.send(b'\1\1')
                 assert outsider.recv(1)==b'\1';outsider.close()
-                pane.send(f'{sys.executable} {device} {remote}/mux.sock.audio\n'.encode())
-                capture=False; epoch=0; received=False; ended=False; deadline=time.monotonic()+8
-                pcm=struct.pack('<h',4000)*480
-                while time.monotonic()<deadline:
-                    if select.select([stream],[],[],.01)[0]:
-                        kind,payload=lane(stream)
-                        if kind==2:
-                            assert len(payload)>=4
-                            capture=payload[0]!=0
-                            epoch=payload[2]
-                            ended=received and payload[:2]==b'\0\0'
-                        elif kind==1:
-                            assert payload[8:]==pcm;received=True
-                        else: raise AssertionError(kind)
-                    if capture: message(stream,struct.pack('<Q',epoch)+pcm)
-                    if ended: break
-                assert received and ended, 'audio or stop notification missing'
-                pane.expect(b'AUDIO-ROUNDTRIP-OK',5,'audio device roundtrip')
+                for mode in ['', '--detached']:
+                    pane.buffer.clear()
+                    pane.send(f'{sys.executable} {device} {remote}/mux.sock.audio {mode}\n'.encode())
+                    capture=False; epoch=0; received=False; ended=False; deadline=time.monotonic()+8
+                    pcm=struct.pack('<h',4000)*480
+                    while time.monotonic()<deadline:
+                        if select.select([stream],[],[],.01)[0]:
+                            kind,payload=lane(stream)
+                            if kind==2:
+                                assert len(payload)>=4
+                                capture=payload[0]!=0
+                                epoch=payload[2]
+                                ended=received and payload[:2]==b'\0\0'
+                            elif kind==1:
+                                assert payload[8:]==pcm;received=True
+                            else: raise AssertionError(kind)
+                        if capture: message(stream,struct.pack('<Q',epoch)+pcm)
+                        if ended: break
+                    assert received and ended, 'audio or stop notification missing'
+                    pane.expect(b'AUDIO-ROUNDTRIP-OK',5,'audio device roundtrip')
                 assert (remote/'muxd.log').read_text().count('quic client connected') == count_before
                 # The lease belongs to one pane, not to keyboard focus or the host.
-                other.send(f'{sys.executable} {device} {remote}/mux.sock.audio\n'.encode())
+                other.send(f'{sys.executable} {device} {remote}/mux.sock.audio --detached\n'.encode())
                 other.expect(b'AssertionError',5,'other pane denied audio')
                 stream.close()
                 pane.send(b'echo TERMINAL-STILL-ALIVE\n')
                 pane.expect(b'TERMINAL-STILL-ALIVE',5,'terminal after audio disconnect')
-                print('PASS: native capture/playback, same QUIC connection, stop, PID binding and pane isolation')
+                print('PASS: detached-helper capture/playback, same QUIC connection, stop, PID binding and pane isolation')
             finally:
                 pane.kill();pane.close();other.kill();other.close()
     return 0

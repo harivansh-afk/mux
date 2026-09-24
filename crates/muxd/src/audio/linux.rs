@@ -1,5 +1,5 @@
 //! ALSA's local device endpoint. `SOCK_SEQPACKET` preserves PCM packet boundaries;
-//! `SO_PEERCRED` + getsid binds the caller to a terminal owned by this daemon.
+//! `SO_PEERCRED` + process ancestry binds the caller to its owning terminal.
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
