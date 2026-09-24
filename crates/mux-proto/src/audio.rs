@@ -10,6 +10,20 @@ pub const MAX_PCM: usize = SAMPLES * 2;
 pub const HEADER: usize = 24;
 pub const MAX_PACKET: usize = HEADER + MAX_PCM;
 
+/// Identifies a single acquisition, including the terminal attachment it names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Request {
+    pub id: u64,
+    pub name: String,
+    pub attachment: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Ready {
+    pub id: u64,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub capture: bool,

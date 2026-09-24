@@ -126,6 +126,9 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// Follow one daemon's ptys: every agent and directory change it
     /// reports lands on the pane it names. Idempotent per daemon.
     func watch(_ host: String?) {
+        if let host {
+            App.delegate.automaticAudio.watch(host)
+        }
         guard watches[host] == nil else { return }
         watches[host] = Muxd.Watch(host: host) { [weak self] event in
             guard let self, let id = UUID(uuidString: event.name) else { return }
@@ -426,7 +429,6 @@ final class PaneContainerView: NSView {
         controller?.layoutPanes()
     }
 }
-
 
 /// Borderless, square-cornered window. Borderless windows refuse
 /// key/main status by default, so both are overridden.

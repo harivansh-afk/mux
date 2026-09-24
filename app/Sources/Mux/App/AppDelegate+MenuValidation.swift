@@ -3,9 +3,11 @@ import AppKit
 extension AppDelegate: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleAudioSharing(_:)) {
-            menuItem.title = audioSharing == nil ? "Share Mac Audio with This Pane" : "Stop Sharing Mac Audio"
-            menuItem.state = audioSharing == nil ? .off : .on
-            return audioSharing != nil || controller?.activeSession?.focusedPane?.daemon != nil
+            menuItem.state = automaticAudio.enabled ? .on : .off
+            let host = controller?.activeSession?.focusedPane?.daemon
+            menuItem.toolTip = host.flatMap { automaticAudio.statuses[$0] }
+                ?? "Let applications in attached remote panes request Mac audio."
+            return true
         }
         if menuItem.action == #selector(reopenClosedTab(_:)) {
             return controller.map { !$0.closedPanes.isEmpty } ?? false

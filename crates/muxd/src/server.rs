@@ -185,9 +185,11 @@ where
     }
 
     match request.mode {
-        OpenMode::Audio { ref name } => {
+        mode @ (OpenMode::AudioProvider
+        | OpenMode::AudioAcquire { .. }
+        | OpenMode::Audio { .. }) => {
             if let Policy::RemoteConnection { connection, .. } = policy {
-                return crate::audio::serve(manager, connection.clone(), name, reader, writer)
+                return crate::audio::handle(manager, connection.clone(), &mode, reader, writer)
                     .await;
             }
             return reply(
@@ -243,7 +245,11 @@ where
         }
         OpenMode::Open { .. } | OpenMode::Attach { .. } | OpenMode::Reopen { .. } => {}
     }
-    handle_open(manager, request, reader, writer).await
+    let connection = match policy {
+        Policy::RemoteConnection { connection, .. } => Some(connection.stable_id()),
+        _ => None,
+    };
+    handle_open(manager, request, reader, writer, connection).await
 }
 
 /// Stream pty events on the events lane until the client hangs up. A subscriber
@@ -323,6 +329,7 @@ async fn handle_open<R, W>(
     request: OpenRequest,
     mut reader: R,
     mut writer: BufWriter<W>,
+    connection: Option<usize>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin + Send,
@@ -339,7 +346,7 @@ where
     };
 
     let name = session.name.clone();
-    let attachment = manager::attach(&session, cols, rows);
+    let attachment = manager::attach_on(&session, cols, rows, connection);
     let client_id = attachment.id;
     let _client = ClientGuard {
         session: session.clone(),
@@ -478,6 +485,7 @@ async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Handshake>
         OpenMode::Inspect { .. } | OpenMode::Observe { .. } | OpenMode::Input { .. } => 9,
         OpenMode::Connect { .. } => 11,
         OpenMode::Audio { .. } => 12,
+        OpenMode::AudioProvider | OpenMode::AudioAcquire { .. } => 13,
     };
     if version < minimum {
         return Ok(Err(version));

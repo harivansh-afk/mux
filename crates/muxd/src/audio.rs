@@ -2,6 +2,7 @@
 //! lives in the Mac driver; Linux clients are bound by their peer PID/session.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
@@ -12,6 +13,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::manager::Manager;
+
+#[cfg(target_os = "macos")]
+#[path = "audio/automatic.rs"]
+pub mod automatic;
+pub mod provider;
 
 #[cfg(target_os = "linux")]
 #[path = "audio/linux.rs"]
@@ -27,6 +33,7 @@ pub(crate) mod process;
 pub struct Registry {
     routes: Mutex<HashMap<String, Weak<Route>>>,
     pub(crate) enabled: std::sync::atomic::AtomicBool,
+    pub(crate) providers: Mutex<HashMap<usize, Weak<provider::Provider>>>,
 }
 
 #[cfg_attr(
@@ -50,21 +57,84 @@ pub(crate) enum Event {
 pub(crate) struct Route {
     pub events: mpsc::Sender<Event>,
     pub capture: broadcast::Sender<Vec<u8>>,
+    #[cfg_attr(
+        target_os = "macos",
+        allow(dead_code, reason = "ALSA admission runs on Linux")
+    )]
+    pub attachment: u64,
+    pub users: AtomicUsize,
+    pub accepting: AtomicBool,
+    #[cfg_attr(
+        target_os = "macos",
+        allow(dead_code, reason = "ALSA admission runs on Linux")
+    )]
+    pub ready: AtomicBool,
     #[cfg(target_os = "linux")]
     pub playback_owner: Mutex<Option<u64>>,
 }
 
-impl Registry {
-    #[cfg(target_os = "linux")]
-    pub(crate) fn get(&self, name: &str) -> Option<Arc<Route>> {
-        self.routes
-            .lock()
-            .get(name)
-            .and_then(Weak::upgrade)
-            .filter(|route| !route.events.is_closed())
+impl Route {
+    fn expired(
+        &self,
+        registry: &Registry,
+        permit: Option<&provider::Permit>,
+        idle: &mut Option<std::time::Instant>,
+    ) -> bool {
+        let Some(permit) = permit else {
+            return false;
+        };
+        if !permit.connected.load(Ordering::Acquire)
+            || (!permit.valid.load(Ordering::Acquire) && !permit.claimed.load(Ordering::Acquire))
+        {
+            return true;
+        }
+        if !permit.claimed.load(Ordering::Acquire) || self.users.load(Ordering::Acquire) != 0 {
+            *idle = None;
+            return false;
+        }
+        if idle.get_or_insert_with(std::time::Instant::now).elapsed() < Duration::from_millis(300) {
+            return false;
+        }
+        // Serialize expiry with joining an existing route.
+        let _routes = registry.routes.lock();
+        if self.users.load(Ordering::Acquire) != 0 {
+            return false;
+        }
+        self.accepting.store(false, Ordering::Release);
+        true
     }
+}
 
-    fn open(&self, name: &str) -> Result<(Arc<Route>, mpsc::Receiver<Event>)> {
+pub async fn handle<R, W>(
+    manager: Manager,
+    connection: quinn::Connection,
+    mode: &peer::OpenMode,
+    reader: R,
+    writer: W,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    match mode {
+        peer::OpenMode::AudioProvider => {
+            provider::serve(manager, connection.stable_id(), reader, writer).await
+        }
+        peer::OpenMode::AudioAcquire { request } => {
+            serve_auto(manager, connection, request, reader, writer).await
+        }
+        peer::OpenMode::Audio { name } => serve(manager, connection, name, reader, writer).await,
+        _ => bail!("not an audio request"),
+    }
+}
+
+impl Registry {
+    fn open(
+        &self,
+        name: &str,
+        attachment: u64,
+        ready: bool,
+    ) -> Result<(Arc<Route>, mpsc::Receiver<Event>)> {
         ensure!(
             self.enabled.load(std::sync::atomic::Ordering::Acquire),
             "Linux audio devices are not enabled on this host"
@@ -79,6 +149,10 @@ impl Registry {
         );
         let (events, rx) = mpsc::channel(32);
         let route = Arc::new(Route {
+            attachment,
+            users: AtomicUsize::new(0),
+            accepting: AtomicBool::new(true),
+            ready: AtomicBool::new(ready),
             events,
             capture: broadcast::channel(16).0,
             #[cfg(target_os = "linux")]
@@ -119,6 +193,60 @@ pub async fn serve<R, W>(
     manager: Manager,
     connection: quinn::Connection,
     name: &str,
+    reader: R,
+    writer: W,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    serve_route(manager, connection, name, None, reader, writer).await
+}
+
+pub async fn serve_auto<R, W>(
+    manager: Manager,
+    connection: quinn::Connection,
+    request: &audio::Request,
+    reader: R,
+    mut writer: W,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    let permit = manager
+        .audio
+        .providers
+        .lock()
+        .get(&connection.stable_id())
+        .and_then(Weak::upgrade)
+        .and_then(|provider| provider.permit(request));
+    let Some(permit) = permit else {
+        return crate::server::reply(
+            &mut writer,
+            &Err(peer::OpenError::new(
+                peer::ErrorKind::Other,
+                "audio request expired",
+            )),
+        )
+        .await;
+    };
+    serve_route(
+        manager,
+        connection,
+        &request.name,
+        Some(permit),
+        reader,
+        writer,
+    )
+    .await
+}
+
+async fn serve_route<R, W>(
+    manager: Manager,
+    connection: quinn::Connection,
+    name: &str,
+    permit: Option<Arc<provider::Permit>>,
     mut reader: R,
     mut writer: W,
 ) -> Result<()>
@@ -134,6 +262,17 @@ where
             .as_ref()
             .map(|client| client.id)
             .context("terminal is not attached")?;
+        if let Some(permit) = &permit {
+            ensure!(
+                permit.request.attachment == owner.raw()
+                    && session
+                        .client
+                        .lock()
+                        .as_ref()
+                        .is_some_and(|client| client.connection == Some(connection.stable_id())),
+                "audio attachment changed"
+            );
+        }
         let lease = ConnectionLease::take(&connection)?;
         ensure!(
             connection
@@ -141,7 +280,7 @@ where
                 .is_some_and(|size| size >= audio::MAX_PACKET),
             "peer does not support audio datagrams"
         );
-        let (route, events) = manager.audio.open(name)?;
+        let (route, events) = manager.audio.open(name, owner.raw(), permit.is_none())?;
         Ok::<_, anyhow::Error>((session, owner, lease, route, events))
     })();
     let (session, owner, _lease, route, mut events) = match opened {
@@ -166,6 +305,7 @@ where
     let mut check = tokio::time::interval(Duration::from_millis(100));
     let mut heartbeat = tokio::time::interval(Duration::from_millis(500));
     let mut closed = [0];
+    let mut idle_since = None;
     loop {
         tokio::select! {
             _ = reader.read(&mut closed) => break,
@@ -176,6 +316,7 @@ where
             _ = check.tick() => {
                 if session.exited.load(std::sync::atomic::Ordering::Acquire)
                     || session.client.lock().as_ref().is_none_or(|client| client.id != owner) { break; }
+                if route.expired(&manager.audio, permit.as_deref(), &mut idle_since) { break; }
             }
             event = events.recv() => match event {
                 Some(Event::Running { id, capture, running }) => {
@@ -226,7 +367,6 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let _lease = ConnectionLease::take(&connection)?;
     let (_, payload) = frame::aio::read_lane(&mut recv)
         .await?
         .context("audio open closed")?;
@@ -238,6 +378,7 @@ where
         }
         other => bail!("unexpected audio reply: {other:?}"),
     };
+    let _lease = ConnectionLease::take(&connection)?;
     crate::server::reply(&mut writer, &Ok(peer::Opened::Audio { token })).await?;
     let writer = tokio::sync::Mutex::new(writer);
     let latest = Mutex::new(audio::State::default());

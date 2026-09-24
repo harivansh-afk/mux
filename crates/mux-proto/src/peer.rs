@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 /// `PtyInfo::agent`, `OpenMode::Watch`; v8: attach-only reopen;
 /// v9: non-attaching inspection, observation and checked input;
 /// v10: bounded close and explicit reopen; v11: Unix socket forwarding;
-/// v12: native audio control and datagrams.
-pub const PROTOCOL_VERSION: u32 = 12;
+/// v12: native audio control and datagrams; v13: automatic audio acquisition.
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// ALPN for muxd's QUIC listener. Each bidirectional stream carries
 /// exactly one protocol run: the same handshake + lane frames as a unix
@@ -94,6 +94,10 @@ pub enum OpenMode {
     Connect { path: String },
     /// One explicit audio owner for a terminal, on this connection.
     Audio { name: String },
+    /// Offer this connection's Mac devices to its attached terminals on demand.
+    AudioProvider,
+    /// Media for one outstanding provider request. Never opens an arbitrary pane.
+    AudioAcquire { request: crate::audio::Request },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,6 +112,7 @@ pub enum Opened {
     Closed { expires_at_ms: u64 },
     Connected,
     Audio { token: u64 },
+    AudioProvider,
 }
 
 /// An incarnation is deliberately renewed at daemon handoff: stale writes fail
@@ -359,7 +364,7 @@ mod tests {
         assert_eq!(
             encode(&req),
             [
-                0x0c, // version = PROTOCOL_VERSION (varint)
+                0x0d, // version = PROTOCOL_VERSION (varint)
                 0x78, // cols = 120 (varint)
                 0x28, // rows = 40
                 0x01, 0x0d, // term: Some, len 13

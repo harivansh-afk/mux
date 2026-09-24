@@ -161,8 +161,24 @@ async fn connect_route(socket: &Path, request: peer::OpenRequest) -> Result<Unix
 }
 
 pub async fn run(socket: &Path, request: peer::OpenRequest) -> Result<()> {
+    run_ready(socket, request, None).await
+}
+
+pub(super) async fn run_ready(
+    socket: &Path,
+    request: peer::OpenRequest,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+) -> Result<()> {
+    // Across host supervisors and explicit CLI clients there is only one
+    // hardware owner. The OS releases this lock even after a helper crash.
+    let _owner = super::automatic::hardware_owner()?;
     let stream = connect_route(socket, request).await?;
     let (device, mut captured) = Device::open()?;
+    if let Some(ready) = ready {
+        ready
+            .send(())
+            .map_err(|()| anyhow::anyhow!("audio acquisition cancelled"))?;
+    }
     println!("Audio ready; microphone starts only when the remote app records.");
     let (mut reader, mut writer) = stream.into_split();
     let upload = async {

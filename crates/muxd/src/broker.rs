@@ -140,7 +140,10 @@ impl Broker {
             bail!("relay called on a request with no target");
         };
         let forward = matches!(request.mode, peer::OpenMode::Connect { .. });
-        let audio = matches!(request.mode, peer::OpenMode::Audio { .. });
+        let audio = matches!(
+            request.mode,
+            peer::OpenMode::Audio { .. } | peer::OpenMode::AudioAcquire { .. }
+        );
         let stream = match self.open_stream(&alias, request).await {
             Ok(stream) => stream,
             Err(error) => {
