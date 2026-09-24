@@ -40,6 +40,10 @@ pub enum Policy {
     /// and none relays onward - dialing peers is the *local* daemon's
     /// job, so panes never touch the network themselves.
     Remote { admitted: tls::Admitted },
+    RemoteConnection {
+        admitted: tls::Admitted,
+        connection: quinn::Connection,
+    },
 }
 
 impl Policy {
@@ -49,7 +53,7 @@ impl Policy {
             // The 0600 socket is the auth boundary, and requests naming a
             // remote target were handed to the broker before admission.
             Self::Local => Ok(()),
-            Self::Remote { admitted } => {
+            Self::Remote { admitted } | Self::RemoteConnection { admitted, .. } => {
                 // Digests, not the secrets: fixed-size and preimage
                 // resistant, so a short circuit leaks nothing useful.
                 let presented = request.token.as_deref().map(tls::digest);
@@ -181,6 +185,20 @@ where
     }
 
     match request.mode {
+        OpenMode::Audio { ref name } => {
+            if let Policy::RemoteConnection { connection, .. } = policy {
+                return crate::audio::serve(manager, connection.clone(), name, reader, writer)
+                    .await;
+            }
+            return reply(
+                &mut writer,
+                &Err(OpenError::new(
+                    ErrorKind::Other,
+                    "audio requires a remote host connection",
+                )),
+            )
+            .await;
+        }
         OpenMode::Connect { ref path } => {
             return crate::forward::connect(path, reader, writer).await;
         }
@@ -459,6 +477,7 @@ async fn read_request<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Handshake>
         OpenMode::Close { .. } | OpenMode::Reopen { .. } => 10,
         OpenMode::Inspect { .. } | OpenMode::Observe { .. } | OpenMode::Input { .. } => 9,
         OpenMode::Connect { .. } => 11,
+        OpenMode::Audio { .. } => 12,
     };
     if version < minimum {
         return Ok(Err(version));

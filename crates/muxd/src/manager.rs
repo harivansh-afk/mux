@@ -186,6 +186,7 @@ impl PtySession {
 
 #[derive(Clone)]
 pub struct Manager {
+    pub(crate) audio: Arc<crate::audio::Registry>,
     ptys: Arc<Mutex<HashMap<String, Arc<PtySession>>>>,
     events: broadcast::Sender<PtyEvent>,
 }
@@ -193,6 +194,7 @@ pub struct Manager {
 impl Default for Manager {
     fn default() -> Self {
         Self {
+            audio: Arc::default(),
             ptys: Arc::default(),
             events: broadcast::channel(EVENT_BACKLOG).0,
         }
@@ -200,6 +202,17 @@ impl Default for Manager {
 }
 
 impl Manager {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn audio_for_pid(&self, pid: i32) -> Option<Arc<crate::audio::Route>> {
+        let sid = nix::unistd::getsid(Some(nix::unistd::Pid::from_raw(pid))).ok()?;
+        let session = self
+            .ptys
+            .lock()
+            .values()
+            .find(|session| session.child == sid && !session.exited.load(Ordering::Acquire))
+            .cloned()?;
+        self.audio.get(&session.name)
+    }
     /// Every pty as one event, for a watch that just opened or fell
     /// behind, then the live feed.
     pub fn watch(&self) -> (Vec<PtyEvent>, broadcast::Receiver<PtyEvent>) {

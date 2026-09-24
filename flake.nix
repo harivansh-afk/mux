@@ -97,6 +97,20 @@
           platforms = systems;
         };
       };
+      alsaPlugin = pkgs.stdenv.mkDerivation {
+        pname = "mux-alsa";
+        version = "0.1.0";
+        src = ./alsa;
+        nativeBuildInputs = [pkgs.pkg-config];
+        buildInputs = [pkgs.alsa-lib];
+        buildPhase = ''
+          $CC -std=c11 -O2 -Wall -Wextra -Werror -fPIC -DPIC -shared \
+            pcm_mux.c $(pkg-config --cflags --libs alsa) -o libasound_module_pcm_mux.so
+        '';
+        installPhase = ''
+          install -Dm755 libasound_module_pcm_mux.so $out/lib/alsa-lib/libasound_module_pcm_mux.so
+        '';
+      };
     in {
       # muxd and mux-attach are the two binaries of one build; both attrs point
       # at the derivation that carries them.
@@ -104,7 +118,7 @@
         muxd = mux;
         mux-attach = mux;
         default = mux;
-      };
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux { alsa-plugin = alsaPlugin; };
     })
     // {
       # NixOS module: run muxd as a systemd service exposing its QUIC listener.

@@ -540,6 +540,7 @@ dependencies = [
  "agents",
  "anyhow",
  "base64",
+ "cc",
  "ghostty-vt",
  "hex",
  "libc",

@@ -22,6 +22,7 @@
 //! The daemon is a binary; this library exists so integration tests can
 //! drive the listeners in-process on ephemeral ports.
 
+pub mod audio;
 pub mod broker;
 pub mod control;
 pub mod forward;

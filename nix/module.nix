@@ -15,9 +15,14 @@ self: {
   authorizedTokens =
     pkgs.writeText "muxd-authorized-tokens"
     (lib.concatMapStrings (digest: digest + "\n") cfg.authorizedTokenDigests);
+  audioConfig = pkgs.writeTextDir "alsa.conf" ''
+    pcm_type.mux { lib "${self.packages.${pkgs.stdenv.hostPlatform.system}.alsa-plugin}/lib/alsa-lib/libasound_module_pcm_mux.so" }
+    pcm.!default { type mux }
+  '';
 in {
   options.services.muxd = {
     enable = lib.mkEnableOption "the mux session daemon (muxd) QUIC listener";
+    audio.enable = lib.mkEnableOption "native Mac audio devices for remote Mux terminals";
 
     package = lib.mkOption {
       type = lib.types.package;
@@ -99,6 +104,12 @@ in {
     ];
 
     networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall [port];
+    environment.etc."alsa/conf.d/99-mux.conf" = lib.mkIf cfg.audio.enable {
+      source = "${audioConfig}/alsa.conf";
+    };
+    systemd.tmpfiles.rules = lib.optionals cfg.audio.enable [
+      "L+ /usr/share/alsa - - - - ${audioConfig}"
+    ];
 
     systemd.services.muxd = {
       description = "mux session daemon (QUIC listener)";
@@ -121,6 +132,7 @@ in {
             "--listen-quic"
             cfg.listen
           ]
+          ++ lib.optionals cfg.audio.enable ["--audio"]
           ++ lib.optionals (cfg.authorizedTokenDigests != []) [
             "--authorized-tokens"
             "${authorizedTokens}"

@@ -68,3 +68,8 @@ upgrade compatibility, resource costs, and failure behavior.
 For a local interface with remote execution, `muxd forward` carries a Unix
 service socket over the existing host connection. See [remote clients and
 Codex voice](docs/remote-clients.md) for setup and microphone permissions.
+
+To keep the entire application inside a remote terminal, enable the host's
+native audio support and choose **File → Share Mac Audio with This Pane**.
+The Mac microphone and speakers then act as that pane's Linux audio devices,
+over the existing QUIC connection. See [remote audio](docs/remote-audio.md).

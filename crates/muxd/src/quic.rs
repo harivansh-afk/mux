@@ -72,6 +72,8 @@ pub fn endpoint(addr: SocketAddr, identity: &Identity) -> Result<Endpoint> {
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls).context("quic tls")?;
     let mut config = ServerConfig::with_crypto(Arc::new(crypto));
     let mut transport = quinn::TransportConfig::default();
+    transport.datagram_receive_buffer_size(Some(64 * 1024));
+    transport.datagram_send_buffer_size(16 * mux_proto::audio::MAX_PACKET);
     transport.max_idle_timeout(Some(MAX_IDLE.try_into().context("idle timeout")?));
     // The handshake is certificate-less (admission is the bearer token,
     // checked per stream after up to MAX_REQUEST_BYTES are buffered):
@@ -112,8 +114,12 @@ async fn handle_connection(manager: Manager, incoming: Incoming, admitted: Admit
         };
         let manager = manager.clone();
         let admitted = admitted.clone();
+        let connection = connection.clone();
         tokio::spawn(async move {
-            let policy = Policy::Remote { admitted };
+            let policy = Policy::RemoteConnection {
+                admitted,
+                connection,
+            };
             let served = server::handle_connection(manager, &mut recv, &mut send, &policy).await;
             // A one-shot caller (list, kill, a rejection) reads until
             // EOF, so finish even when the handler failed.
