@@ -14,9 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// for no capability.
     private(set) var controller: MuxWindowController?
     let prefixEngine = PrefixEngine()
-    var audioSharing: Subprocess.Stream?
-    var audioGeneration = UUID()
-    var audioStatus = ""
+    let automaticAudio = AutomaticAudio()
 
     func applicationDidFinishLaunching(_: Notification) {
         // Before the snapshot is loaded: an unclean previous exit freezes
@@ -307,7 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "Kill Terminal", action: #selector(killTerminal(_:)), keyEquivalent: "")
         fileMenu.addItem(.separator())
         fileMenu.addItem(
-            withTitle: "Share Mac Audio with This Pane",
+            withTitle: "Automatic Remote Audio",
             action: #selector(toggleAudioSharing(_:)), keyEquivalent: ""
         )
         fileMenuItem.submenu = fileMenu

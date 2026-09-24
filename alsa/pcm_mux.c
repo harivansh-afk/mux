@@ -276,7 +276,8 @@ SND_PCM_PLUGIN_DEFINE_FUNC(mux) {
   memcpy(address.sun_path, path, strlen(path) + 1);
   if (p->timer < 0 || p->sock < 0)
     goto failed;
-  struct timeval timeout = {.tv_sec = 2};
+  /* Remote acquisition is bounded at eight seconds, including hardware setup. */
+  struct timeval timeout = {.tv_sec = 10};
   int queue_bytes = PACKET * 2 * 8;
   if (setsockopt(p->sock, SOL_SOCKET, SO_RCVBUF, &queue_bytes,
                  sizeof(queue_bytes)) < 0)

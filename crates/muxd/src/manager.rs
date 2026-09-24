@@ -68,6 +68,7 @@ static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 pub struct AttachedClient {
     pub id: ClientId,
     pub tx: mpsc::Sender<ClientMsg>,
+    pub connection: Option<usize>,
 }
 
 pub struct PtySession {
@@ -203,10 +204,10 @@ impl Default for Manager {
 
 impl Manager {
     #[cfg(target_os = "linux")]
-    pub(crate) fn audio_for_process(
+    pub(crate) fn audio_session(
         &self,
         peer: &crate::audio::process::Process,
-    ) -> Option<Arc<crate::audio::Route>> {
+    ) -> Option<Arc<PtySession>> {
         let roots: HashMap<_, _> = self
             .ptys
             .lock()
@@ -219,7 +220,7 @@ impl Manager {
         if session.exited.load(Ordering::Acquire) {
             return None;
         }
-        self.audio.get(&session.name)
+        Some(session.clone())
     }
     /// Every pty as one event, for a watch that just opened or fell
     /// behind, then the live feed.
@@ -699,6 +700,15 @@ pub struct Attachment {
 /// Resize + install the client channel + render the reattach dump under
 /// one terminal lock. See module docs for why the order is load-bearing.
 pub fn attach(session: &Arc<PtySession>, cols: u16, rows: u16) -> Attachment {
+    attach_on(session, cols, rows, None)
+}
+
+pub fn attach_on(
+    session: &Arc<PtySession>,
+    cols: u16,
+    rows: u16,
+    connection: Option<usize>,
+) -> Attachment {
     let (tx, rx) = mpsc::channel(CLIENT_CHANNEL_DEPTH);
     let id = ClientId(NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed));
     let dump = {
@@ -708,7 +718,7 @@ pub fn attach(session: &Arc<PtySession>, cols: u16, rows: u16) -> Attachment {
         let _ = pty::resize(&session.master, cols, rows);
         // Evict any previous client (its forwarder ends when tx drops)
         // and publish the new channel BEFORE rendering.
-        *session.client.lock() = Some(AttachedClient { id, tx });
+        *session.client.lock() = Some(AttachedClient { id, tx, connection });
         term.render_screen_bytes()
     };
     Attachment { id, rx, dump }

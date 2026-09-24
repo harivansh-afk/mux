@@ -554,6 +554,18 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         #[cfg(target_os = "macos")]
+        Some("audio-auto") => {
+            let [_, host] = args.as_slice() else {
+                bail!("usage: muxd audio-auto <host>");
+            };
+            drop(connect()?);
+            return muxd::audio::automatic::run(
+                &paths::control_socket(),
+                query(Some(host.clone()), OpenMode::AudioProvider),
+            )
+            .await;
+        }
+        #[cfg(target_os = "macos")]
         Some("audio") => {
             let [_, address] = args.as_slice() else {
                 bail!("usage: muxd audio <host>:<pane>");

@@ -155,10 +155,35 @@ async fn device(manager: Manager, fd: OwnedFd) -> Result<()> {
         "invalid audio device handshake"
     );
     let capture = data[1] == 1;
-    let Some(route) = manager.audio_for_process(&peer) else {
+    let Some(session) = manager.audio_session(&peer) else {
         send(&fd, &[1])?;
-        anyhow::bail!("no Mac audio owner for this terminal");
+        anyhow::bail!("audio client has no terminal");
     };
+    let acquired = tokio::time::timeout(
+        super::provider::ACQUIRE_TIMEOUT,
+        manager.audio.acquire(&session),
+    )
+    .await;
+    let lease = match acquired {
+        Ok(Ok(lease)) => lease,
+        error => {
+            let detail = match error {
+                Ok(Err(error)) => error.to_string(),
+                _ => "Mac audio acquisition timed out".to_owned(),
+            };
+            tracing::warn!(pane = %session.name, %detail, "audio acquisition failed");
+            send(&fd, &[1])?;
+            return Ok(());
+        }
+    };
+    if manager
+        .audio_session(&peer)
+        .is_none_or(|current| !std::sync::Arc::ptr_eq(&current, &session))
+    {
+        send(&fd, &[1])?;
+        return Ok(());
+    }
+    let route = lease.0.clone();
     send(&fd, &[0])?;
     let mut pcm = route.capture.subscribe();
     let running = Running {
