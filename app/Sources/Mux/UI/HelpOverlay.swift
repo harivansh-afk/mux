@@ -67,7 +67,11 @@ final class HelpOverlayView: PanelView {
                 ("esc / q", "cancel"),
             ]),
             Section(title: "app", rows: [
-                ("cmd+n", "new window"),
+                ("cmd+n", "new session"),
+                ("cmd+shift+n", "new window"),
+                ("cmd+option+n", "session to new window"),
+                ("cmd+shift+w", "close window (keep sessions)"),
+                ("cmd+`", "next window"),
                 ("cmd+shift+t", "reopen closed tab"),
                 ("cmd+w", "close tab (keep shell)"),
                 ("cmd+1 .. 9", "select session"),

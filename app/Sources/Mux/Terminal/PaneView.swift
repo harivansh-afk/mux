@@ -290,7 +290,7 @@ final class PaneView: NSView {
         switch event.type {
         case .keyUp:
             guard event.modifierFlags.contains(.command) else { return event }
-            guard focused else { return event }
+            guard focused, event.window === window, window?.isKeyWindow == true else { return event }
             keyUp(with: event)
             return nil
 
@@ -371,20 +371,6 @@ final class PaneView: NSView {
         if save {
             controller?.saveState()
         }
-    }
-
-    /// Apply the same zoom step to every pane in every session (the
-    /// shift variants of the zoom keys): all terminals move by the same
-    /// exact increment, so per-pane zoom differences are preserved. 0
-    /// resets every pane to the config default.
-    static func adjustAllFontSizes(_ step: Int) {
-        guard let controller = App.delegate.controller else { return }
-        for session in controller.sessions {
-            for (_, pane) in session.panes {
-                pane.adjustFontSize(step, save: false)
-            }
-        }
-        App.delegate.saveSnapshot()
     }
 
     /// The one call into ghostty's binding actions: font zoom, the
@@ -553,7 +539,8 @@ final class PaneView: NSView {
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
         if ok {
-            setFocus(true)
+            controller?.noteFocused(self)
+            updateWindowFocus()
         }
         return ok
     }
@@ -564,6 +551,10 @@ final class PaneView: NSView {
             setFocus(false)
         }
         return ok
+    }
+
+    func updateWindowFocus() {
+        setFocus(window?.isKeyWindow == true && window?.firstResponder === self)
     }
 
     private func setFocus(_ value: Bool) {

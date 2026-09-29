@@ -207,10 +207,9 @@ private func action(
         DispatchQueue.main.async { NSApp.terminate(nil) }
         return true
 
-    // mux is single-window: a new-window request means a new session.
     case GHOSTTY_ACTION_NEW_WINDOW:
         DispatchQueue.main.async {
-            App.delegate.controller?.newSession()
+            App.delegate.newWindow(nil)
         }
         return true
 

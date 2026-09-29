@@ -25,36 +25,97 @@ struct SessionSnapshot: Codable {
     var zoomed: UUID?
 }
 
-/// The whole app: one window's frame and its ordered sessions.
-struct AppSnapshot: Codable {
-    static let currentVersion = 3
-    var version: Int = AppSnapshot.currentVersion
-    var frame: [Double] // x, y, w, h
+/// Stable window identity keeps focus and session ownership across launches.
+struct WindowSnapshot: Codable {
+    let id: UUID
+    var frame: [Double]
     var sessions: [SessionSnapshot]
     var activeSession: Int
-    /// Optional for compatibility with existing v3 snapshots.
     var closedPanes: [ClosedPaneHistory.Entry]?
-}
 
-/// v2: an array of windows, each with its own sessions. mux is
-/// single-window, so every window's sessions fold into the one window
-/// and nothing is dropped on the way through; the frame and the active
-/// index come from the first window.
-private struct AppSnapshotV2: Decodable {
-    struct Window: Decodable {
-        var frame: [Double]
-        var sessions: [SessionSnapshot]
-        var activeSession: Int
+    init(
+        id: UUID = UUID(), frame: [Double], sessions: [SessionSnapshot],
+        activeSession: Int, closedPanes: [ClosedPaneHistory.Entry]? = nil
+    ) {
+        self.id = id
+        self.frame = frame
+        self.sessions = sessions
+        self.activeSession = activeSession
+        self.closedPanes = closedPanes
     }
 
-    var windows: [Window]
+    private enum CodingKeys: String, CodingKey {
+        case id, frame, sessions, activeSession, closedPanes
+    }
 
-    var folded: AppSnapshot {
-        AppSnapshot(
-            frame: windows.first?.frame ?? [],
-            sessions: windows.flatMap(\.sessions),
-            activeSession: windows.first?.activeSession ?? 0
-        )
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        frame = try values.decode([Double].self, forKey: .frame)
+        sessions = try values.decode([SessionSnapshot].self, forKey: .sessions)
+        activeSession = try values.decode(Int.self, forKey: .activeSession)
+        closedPanes = try values.decodeIfPresent([ClosedPaneHistory.Entry].self, forKey: .closedPanes)
+    }
+}
+
+/// A pane UUID is scoped to its daemon; ix panes belong to the local daemon.
+struct TerminalIdentity: Hashable {
+    let id: UUID
+    let host: String?
+}
+
+struct AppSnapshot: Codable {
+    static let currentVersion = 4
+    var version = AppSnapshot.currentVersion
+    var windows: [WindowSnapshot]
+    var activeWindow: UUID?
+
+    init(windows: [WindowSnapshot], activeWindow: UUID? = nil) {
+        self.windows = windows
+        self.activeWindow = activeWindow
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, windows, activeWindow
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let storedVersion = try values.decode(Int.self, forKey: .version)
+        switch storedVersion {
+        case 2, Self.currentVersion:
+            windows = try values.decode([WindowSnapshot].self, forKey: .windows)
+            activeWindow = try values.decodeIfPresent(UUID.self, forKey: .activeWindow) ?? windows.first?.id
+        case 3:
+            // The former single-window format becomes exactly one window.
+            windows = try [WindowSnapshot(from: decoder)]
+            activeWindow = windows.first?.id
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .version, in: values, debugDescription: "Unsupported snapshot version"
+            )
+        }
+    }
+
+    /// Includes closed windows and closed terminals. Reconciliation must never
+    /// adopt their detached PTYs into a different window's recovery session.
+    var knownTerminals: Set<TerminalIdentity> {
+        var known: Set<TerminalIdentity> = []
+        for window in windows {
+            for session in window.sessions {
+                for id in session.tree.leaves {
+                    known.insert(TerminalIdentity(id: id, host: session.panes[id]?.daemon))
+                }
+            }
+            for entry in window.closedPanes ?? [] {
+                known.insert(TerminalIdentity(id: entry.id, host: entry.pane.daemon))
+            }
+        }
+        return known
+    }
+
+    var hosts: Set<String?> {
+        Set(knownTerminals.map(\.host))
     }
 }
 
@@ -126,13 +187,9 @@ enum SnapshotStore {
         return load(from: backupURL, quarantineOnFailure: false)
     }
 
-    /// Every format this build reads: the current one, else a v2 file
-    /// folded into the single window. Anything older or damaged is
-    /// undecodable both ways and is quarantined by the caller.
+    /// Decode current windows or migrate v2/v3 without losing their grouping.
     static func decode(_ data: Data) -> AppSnapshot? {
-        let decoder = JSONDecoder()
-        return (try? decoder.decode(AppSnapshot.self, from: data))
-            ?? (try? decoder.decode(AppSnapshotV2.self, from: data))?.folded
+        try? JSONDecoder().decode(AppSnapshot.self, from: data)
     }
 
     private static func load(from source: URL, quarantineOnFailure: Bool) -> AppSnapshot? {

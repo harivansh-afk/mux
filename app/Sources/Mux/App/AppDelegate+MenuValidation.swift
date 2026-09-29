@@ -2,6 +2,12 @@ import AppKit
 
 extension AppDelegate: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(moveSessionToNewWindow(_:)) {
+            return controller?.canMoveSessionToNewWindow ?? false
+        }
+        if menuItem.action == #selector(closeWindow(_:)) {
+            return controller != nil
+        }
         if menuItem.action == #selector(toggleAudioSharing(_:)) {
             menuItem.state = automaticAudio.enabled ? .on : .off
             let host = controller?.activeSession?.focusedPane?.daemon

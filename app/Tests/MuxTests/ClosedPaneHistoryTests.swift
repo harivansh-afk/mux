@@ -28,18 +28,22 @@ final class ClosedPaneHistoryTests: XCTestCase {
         var history = ClosedPaneHistory()
         let id = UUID()
         history.record(id: id, pane: PaneSnapshot(target: "ix:dev"))
-        let snapshot = AppSnapshot(frame: [], sessions: [], activeSession: 0, closedPanes: history.entries)
+        let snapshot = AppSnapshot(windows: [
+            WindowSnapshot(frame: [], sessions: [], activeSession: 0, closedPanes: history.entries),
+        ])
         let decoded = try XCTUnwrap(SnapshotStore.decode(JSONEncoder().encode(snapshot)))
-        var restored = ClosedPaneHistory(entries: decoded.closedPanes ?? [])
+        var restored = ClosedPaneHistory(entries: decoded.windows[0].closedPanes ?? [])
         XCTAssertTrue(restored.contains(id, on: nil))
         XCTAssertFalse(restored.contains(id, on: "spark"))
         let entry = try XCTUnwrap(restored.popLast())
         XCTAssertEqual(entry.id, id)
         XCTAssertEqual(entry.pane.requireExisting, true)
         XCTAssertEqual(entry.pane.target, "ix:dev")
-        let reopened = AppSnapshot(frame: [], sessions: [entry.snapshot], activeSession: 0)
+        let reopened = AppSnapshot(windows: [
+            WindowSnapshot(frame: [], sessions: [entry.snapshot], activeSession: 0),
+        ])
         let active = try XCTUnwrap(SnapshotStore.decode(JSONEncoder().encode(reopened)))
-        XCTAssertEqual(active.sessions[0].panes[id]?.requireExisting, true)
+        XCTAssertEqual(active.windows[0].sessions[0].panes[id]?.requireExisting, true)
     }
 
     func testHistoryDoesNotEvictLiveTerminals() {

@@ -23,6 +23,7 @@ final class PrefixEngine {
 
     private(set) var mode: Mode = .normal
     private var monitor: Any?
+    private weak var modeController: MuxWindowController?
 
     /// Overlay span grammar: badge, then key/description pairs. Bars stay
     /// clean: the full keybinding list lives in the keybinds overlay (?).
@@ -64,7 +65,7 @@ final class PrefixEngine {
         }
     }
 
-    /// The single window's controller.
+    /// Commands follow the focused window; mode chrome remembers its owner.
     private var controller: MuxWindowController? {
         App.delegate.controller
     }
@@ -72,7 +73,23 @@ final class PrefixEngine {
     func install() {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
+            guard let self, let controller, event.window === controller.window else { return event }
+            // Let AppKit cycle windows even while a prefix/overlay is active.
+            if event.modifierFlags.contains(.command),
+               ["`", "~"].contains(event.charactersIgnoringModifiers ?? "")
+            {
+                cancel()
+                return event
+            }
+            if let action = Self.windowShortcut(event) {
+                switch action {
+                case .newSession: App.delegate.newSession(nil)
+                case .newWindow: App.delegate.newWindow(nil)
+                case .moveSession: App.delegate.moveSessionToNewWindow(nil)
+                case .closeWindow: App.delegate.closeWindow(nil)
+                }
+                return nil
+            }
             if Self.isReopenClosedTab(event) {
                 reopenClosedTab()
                 return nil
@@ -107,13 +124,19 @@ final class PrefixEngine {
         }
     }
 
+    func cancel() {
+        setMode(.normal)
+    }
+
     /// Every mode change clears the chrome first, so nothing the old mode
     /// put up outlives it; then this mode puts up its own.
     private func setMode(_ newMode: Mode) {
         let previous = mode
         mode = newMode
-        controller?.dismissAllChrome()
+        modeController?.dismissAllChrome()
+        modeController = nil
         guard let controller, newMode != .normal else { return }
+        modeController = controller
         controller.setModeIndicator(Self.segments(for: newMode))
         switch newMode {
         case .normal:
