@@ -281,6 +281,19 @@ final class Session {
         commit(focus: pane)
     }
 
+    /// Reparent the existing scroll hosts and Ghostty surfaces as one session.
+    /// The tree, pane IDs, focus, and zoom remain unchanged.
+    func move(to destination: MuxWindowController) {
+        controller = destination
+        for pane in panes.values {
+            pane.controller = destination
+            if let host = pane.scrollHost {
+                destination.workspace.addSubview(host)
+            }
+            destination.watch(pane.daemon)
+        }
+    }
+
     func destroyAllSurfaces() {
         for (_, pane) in panes {
             pane.destroySurface()

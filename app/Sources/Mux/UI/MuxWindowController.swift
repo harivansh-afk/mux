@@ -9,6 +9,7 @@ import Tiling
 ///
 /// The chrome itself lives in MuxWindowController+Overlays.swift.
 final class MuxWindowController: NSObject, NSWindowDelegate {
+    let id: UUID
     private(set) var window: NSWindow!
 
     /// Internal (not private): the overlay chrome is managed by
@@ -26,8 +27,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// Managed by `present` / `dismiss`; layout walks it.
     var presented: [ChromeOverlay] = []
 
-    private(set) var sessions: [Session] = []
-    private(set) var activeSessionIndex = 0
+    var sessions: [Session] = []
+    var activeSessionIndex = 0
     var closedPanes = ClosedPaneHistory()
 
     /// Canvas state (managed by MuxWindowController+Overlays.swift):
@@ -51,16 +52,12 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     /// mode is up.
     weak var resizeOutlineHost: PaneScrollView?
 
-    /// One `muxd watch` per daemon this window has panes on, keyed by
-    /// host alias (nil = local). Started for local at launch and for a
-    /// host the first time a pane lands there; stopped at termination.
-    private var watches: [String?: Muxd.Watch] = [:]
-
     var activeSession: Session? {
         sessions.indices.contains(activeSessionIndex) ? sessions[activeSessionIndex] : nil
     }
 
-    override init() {
+    init(id: UUID = UUID()) {
+        self.id = id
         super.init()
         watch(nil)
 
@@ -73,6 +70,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = "mux"
+        window.isReleasedWhenClosed = false
+        window.isExcludedFromWindowsMenu = false
         window.isMovableByWindowBackground = true
         window.hasShadow = true
         window.center()
@@ -123,25 +122,8 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         watch(pane.daemon)
     }
 
-    /// Follow one daemon's ptys: every agent and directory change it
-    /// reports lands on the pane it names. Idempotent per daemon.
     func watch(_ host: String?) {
-        if let host {
-            App.delegate.automaticAudio.watch(host)
-        }
-        guard watches[host] == nil else { return }
-        watches[host] = Muxd.Watch(host: host) { [weak self] event in
-            guard let self, let id = UUID(uuidString: event.name) else { return }
-            if event.exited, closedPanes.remove(id, on: host) {
-                saveState()
-            }
-            pane(id, on: host)?.apply(agent: event.agent, cwd: event.cwd)
-        }
-    }
-
-    func stopWatches() {
-        watches.values.forEach { $0.stop() }
-        watches.removeAll()
+        App.delegate.watch(host)
     }
 
     /// The pane whose pty `host`'s daemon calls `id`, if this window has
@@ -351,9 +333,7 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
         }
         // applyLayout re-occludes hidden panes; while the canvas is up
         // they must keep rendering for their thumbnails.
-        if canvasOverlay.superview != nil {
-            applyCanvasOcclusion()
-        }
+        applyCanvasOcclusion()
     }
 
     // MARK: - Theme
@@ -378,7 +358,14 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     func windowDidBecomeKey(_: Notification) {
         if let pane = activeSession?.focusedPane {
             focus(pane)
+            pane.updateWindowFocus()
         }
+        saveStateSoon()
+    }
+
+    func windowDidResignKey(_: Notification) {
+        App.delegate.prefixEngine.cancel()
+        activeSession?.focusedPane?.updateWindowFocus()
     }
 
     func windowDidChangeOcclusionState(_: Notification) {
@@ -386,16 +373,11 @@ final class MuxWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_: Notification) {
-        // The window is the app, so closing it is quitting: save while
-        // the sessions are still alive, then detach - every pty survives
-        // for the next launch. Killing ptys is only ever a per-pane act
-        // (prefix X), never a side effect of the app going away.
-        App.delegate.beginTermination(reason: "window closed")
+        App.delegate.windowControllerWillClose(self)
         for session in sessions {
             session.destroyAllSurfaces()
         }
         sessions.removeAll()
-        App.delegate.windowControllerDidClose(self)
     }
 
     /// Frame changes fire continuously during drags and live resizes;

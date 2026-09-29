@@ -7,12 +7,20 @@ enum App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// The one window. mux is deliberately single-window: sessions are
-    /// the unit of grouping (prefix c / 1..9 / canvas), and a second
-    /// window would only add a second copy of every window-scoped
-    /// invariant (focus routing, snapshot identity, close semantics)
-    /// for no capability.
-    private(set) var controller: MuxWindowController?
+    var controllers: [MuxWindowController] = []
+    /// Closed windows keep their layout while their terminals remain on muxd.
+    var closedWindows: [WindowSnapshot] = []
+    var isRestoring = true
+    var pendingSave: DispatchWorkItem?
+    var watches: [String?: Muxd.Watch] = [:]
+
+    /// Menu actions follow the key window; mainWindow covers menu/alert focus.
+    var controller: MuxWindowController? {
+        controllers.first { $0.window === NSApp.keyWindow }
+            ?? controllers.first { $0.window === NSApp.mainWindow }
+            ?? controllers.last
+    }
+
     let prefixEngine = PrefixEngine()
     let automaticAudio = AutomaticAudio()
 
@@ -50,17 +58,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // previous install may not speak this build's protocol.
         Muxd.upgradeStaleDaemon()
 
-        if let snapshot = SnapshotStore.load(),
-           !snapshot.sessions.isEmpty || !(snapshot.closedPanes ?? []).isEmpty
-        {
-            let panes = snapshot.sessions.flatMap { $0.panes.keys.map(\.uuidString) }
-            AppLog.log("restoring sessions=\(snapshot.sessions.count) panes=\(panes.joined(separator: ","))")
+        if let snapshot = SnapshotStore.load(), !snapshot.windows.isEmpty {
+            AppLog.log("restoring windows=\(snapshot.windows.count)")
             restore(snapshot)
         } else {
             AppLog.log("no restorable snapshot; starting fresh")
-            makeWindow()?.activeSession?.addInitialPane()
+            newWindow(nil)
         }
-
+        isRestoring = false
+        saveSnapshot()
         adoptOrphanedPanes()
 
         NSApp.activate(ignoringOtherApps: true)
@@ -71,22 +77,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// what makes a lost or stale state.json recoverable: the shells
     /// are alive on the daemon either way.
     private func adoptOrphanedPanes() {
-        let savedHosts = controller?.closedPanes.entries.map(\.pane.daemon) ?? []
-        let targets = Set([nil] + HostsConfig.aliases().map(Optional.some) + savedHosts)
+        let targets = snapshot.hosts.union([nil]).union(HostsConfig.aliases().map(Optional.some))
         for host in targets {
             Muxd.list(host: host) { [weak self] listings in
-                guard let self, let controller, let listings, !listings.isEmpty else { return }
+                guard let self, !isTerminating, let listings, !listings.isEmpty else { return }
                 // The same answer that finds orphans also carries every
                 // known pane's live cwd and agent.
-                controller.applyListings(listings, host: host)
-                let known = Set(controller.sessions.flatMap(\.panes.keys))
+                controllers.forEach { $0.applyListings(listings, host: host) }
+                // Read ownership when the reply arrives: windows may have moved or closed.
+                let known = snapshot.knownTerminals
                 var orphans: [UUID: PaneSnapshot] = [:]
                 for listing in listings {
                     // Only pane-shaped names: the pane UUID namespace is
                     // the app's, anything else is not ours to adopt.
                     guard let id = UUID(uuidString: listing.name),
-                          !listing.exited, !listing.attached, !known.contains(id),
-                          !controller.closedPanes.contains(id, on: host)
+                          !listing.exited, !listing.attached,
+                          !known.contains(TerminalIdentity(id: id, host: host))
                     else { continue }
                     orphans[id] = PaneSnapshot(
                         cwd: listing.cwd,
@@ -96,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !orphans.isEmpty else { return }
                 let names = orphans.keys.map(\.uuidString).joined(separator: ",")
                 AppLog.log("adopting \(orphans.count) orphaned pty(s) from \(host ?? "local"): \(names)")
-                controller.addRecoverySession(orphans)
+                controllers.first?.addRecoverySession(orphans)
             }
         }
     }
@@ -132,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         saveSnapshot()
         isTerminating = true
         stopAudioSharing()
-        controller?.stopWatches()
+        stopWatches()
         CrashMarker.disarm()
         AppLog.drain()
     }
@@ -150,89 +156,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
-    // MARK: - The window
-
-    /// Create the single window. Returns nil if it already exists;
-    /// there is never a second one.
-    @discardableResult
-    private func makeWindow() -> MuxWindowController? {
-        guard controller == nil else { return nil }
-        let controller = MuxWindowController()
-        self.controller = controller
-        controller.window.makeKeyAndOrderFront(nil)
-        return controller
-    }
-
-    func windowControllerDidClose(_: MuxWindowController) {
-        controller = nil
-    }
-
-    // MARK: - Snapshot
-
-    private var pendingSave: DispatchWorkItem?
-
-    func saveSnapshotSoon() {
-        guard !isTerminating else { return }
-        pendingSave?.cancel()
-        let item = DispatchWorkItem { [weak self] in self?.saveSnapshot() }
-        pendingSave = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
-    }
-
-    func saveSnapshot() {
-        guard !isTerminating else { return }
-        pendingSave?.cancel()
-        pendingSave = nil
-        guard let controller else { return }
-        let sessions = controller.sessions.compactMap(\.snapshot)
-        AppLog.log("save sessions=\(sessions.count) panes=\(sessions.map(\.panes.count).reduce(0, +))")
-        SnapshotStore.save(AppSnapshot(
-            frame: controller.window.frame.values,
-            sessions: sessions,
-            activeSession: controller.activeSessionIndex,
-            closedPanes: controller.closedPanes.entries
-        ))
-    }
-
-    /// Rebuild the single window from a snapshot.
-    private func restore(_ snapshot: AppSnapshot) {
-        guard let controller = makeWindow() else { return }
-        controller.closedPanes = ClosedPaneHistory(entries: snapshot.closedPanes ?? [])
-        for entry in controller.closedPanes.entries {
-            controller.watch(entry.pane.daemon)
-        }
-        if let frame = NSRect(values: snapshot.frame) {
-            restoreFrame(frame, on: controller.window)
-        }
-        controller.restoreSessions(snapshot.sessions, active: snapshot.activeSession)
-    }
-
-    /// Frames saved under a different display arrangement can land
-    /// off-screen, and borderless windows get no AppKit constraining.
-    /// Require a meaningful visible intersection, else recenter on the
-    /// main screen (clamped to fit).
-    private func restoreFrame(_ saved: NSRect, on window: NSWindow) {
-        var rect = saved
-        let visible = NSScreen.screens.contains { screen in
-            let overlap = screen.visibleFrame.intersection(rect)
-            return overlap.width >= 200 && overlap.height >= 200
-        }
-        if !visible, let screen = NSScreen.main {
-            let vf = screen.visibleFrame
-            rect.size.width = min(rect.width, vf.width)
-            rect.size.height = min(rect.height, vf.height)
-            rect.origin = NSPoint(
-                x: vf.midX - rect.width / 2,
-                y: vf.midY - rect.height / 2
-            )
-        }
-        window.setFrame(rect, display: false)
-    }
-
     // MARK: - Menu actions
 
     @objc func newSession(_: Any?) {
-        controller?.newSession()
+        prefixEngine.cancel()
+        if let controller {
+            controller.newSession()
+        } else {
+            newWindow(nil)
+        }
     }
 
     @objc func reopenClosedTab(_: Any?) {
@@ -297,6 +229,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenuItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "n")
+        let newWindow = fileMenu.addItem(
+            withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "n"
+        )
+        newWindow.keyEquivalentModifierMask = [.command, .shift]
+        let detach = fileMenu.addItem(
+            withTitle: "Move Session to New Window",
+            action: #selector(moveSessionToNewWindow(_:)), keyEquivalent: "n"
+        )
+        detach.keyEquivalentModifierMask = [.command, .option]
+        let closeWindow = fileMenu.addItem(
+            withTitle: "Close Window", action: #selector(closeWindow(_:)), keyEquivalent: "w"
+        )
+        closeWindow.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeTab(_:)), keyEquivalent: "w")
         let reopen = fileMenu.addItem(
             withTitle: "Reopen Closed Tab", action: #selector(reopenClosedTab(_:)), keyEquivalent: "t"
@@ -327,6 +272,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenuItem.submenu = editMenu
         main.addItem(editMenuItem)
 
+        let windowMenuItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(
+            withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: ""
+        )
+        windowMenuItem.submenu = windowMenu
+        main.addItem(windowMenuItem)
+        NSApp.windowsMenu = windowMenu
         NSApp.mainMenu = main
     }
 }

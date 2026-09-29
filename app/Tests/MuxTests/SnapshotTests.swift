@@ -1,7 +1,6 @@
+@testable import Mux
 import Tiling
 import XCTest
-
-@testable import Mux
 
 /// The state file is the only thing between a crash and a lost session,
 /// so the formats it can be found in are pinned here: what this build
@@ -12,7 +11,7 @@ final class SnapshotTests: XCTestCase {
         {"version":3,"frame":[],"sessions":[],"activeSession":0}
         """
         let snapshot = try XCTUnwrap(SnapshotStore.decode(Data(json.utf8)))
-        XCTAssertNil(snapshot.closedPanes)
+        XCTAssertNil(snapshot.windows[0].closedPanes)
     }
 
     private let paneA = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
@@ -21,10 +20,8 @@ final class SnapshotTests: XCTestCase {
 
     /// The pane map is keyed by UUID, which JSONCoder writes as a flat
     /// [key, value, ...] array; the JSON here is the real on-disk shape.
-    /// A v2 file could hold several windows. mux is single-window now,
-    /// so every window's sessions fold into the one window and none is
-    /// dropped; the frame and the active index come from the first.
-    func testV2FoldsEveryWindowIntoOneSnapshot() throws {
+    /// Older multi-window saves retain each window's grouping.
+    func testV2PreservesWindowGroups() throws {
         let json = """
         {
           "version": 2,
@@ -60,19 +57,25 @@ final class SnapshotTests: XCTestCase {
         """
 
         let snapshot = try XCTUnwrap(SnapshotStore.decode(Data(json.utf8)))
-        XCTAssertEqual(snapshot.sessions.count, 3)
-        XCTAssertEqual(snapshot.sessions.flatMap(\.tree.leaves), [paneA, paneB, paneC])
-        XCTAssertEqual(snapshot.frame, [10, 20, 800, 600])
-        XCTAssertEqual(snapshot.activeSession, 1)
-        XCTAssertEqual(snapshot.sessions[0].panes[paneA]?.cwd, "/tmp")
-        XCTAssertEqual(snapshot.sessions[0].panes[paneA]?.fontDelta, 2)
-        XCTAssertEqual(snapshot.sessions[0].focused, paneA)
-        XCTAssertEqual(snapshot.sessions[1].panes[paneB]?.target, "spark")
-        XCTAssertEqual(snapshot.sessions[2].zoomed, paneC)
+        XCTAssertEqual(snapshot.version, 4)
+        XCTAssertEqual(snapshot.windows.count, 2)
+        let first = snapshot.windows[0]
+        let second = snapshot.windows[1]
+        XCTAssertEqual(first.sessions.flatMap(\.tree.leaves), [paneA, paneB])
+        XCTAssertEqual(second.sessions.flatMap(\.tree.leaves), [paneC])
+        XCTAssertEqual(first.frame, [10, 20, 800, 600])
+        XCTAssertEqual(first.activeSession, 1)
+        XCTAssertEqual(second.frame, [0, 0, 400, 300])
+        XCTAssertEqual(first.sessions[0].panes[paneA]?.cwd, "/tmp")
+        XCTAssertEqual(first.sessions[0].panes[paneA]?.fontDelta, 2)
+        XCTAssertEqual(first.sessions[0].focused, paneA)
+        XCTAssertEqual(first.sessions[1].panes[paneB]?.target, "spark")
+        XCTAssertEqual(second.sessions[0].zoomed, paneC)
+        XCTAssertNotEqual(first.id, second.id)
     }
 
     func testCurrentVersionRoundTrips() throws {
-        let written = AppSnapshot(
+        let window = WindowSnapshot(
             frame: [1, 2, 3, 4],
             sessions: [SessionSnapshot(
                 tree: .split(SplitBranch(
@@ -89,16 +92,21 @@ final class SnapshotTests: XCTestCase {
             activeSession: 0
         )
 
+        let other = WindowSnapshot(frame: [50, 60, 800, 600], sessions: [], activeSession: 0)
+        let written = AppSnapshot(windows: [window, other], activeWindow: other.id)
         let data = try JSONEncoder().encode(written)
         let read = try XCTUnwrap(SnapshotStore.decode(data))
-        XCTAssertEqual(read.version, 3)
-        XCTAssertEqual(read.frame, written.frame)
-        XCTAssertEqual(read.activeSession, 0)
-        XCTAssertEqual(read.sessions.count, 1)
-        XCTAssertEqual(read.sessions[0].tree.leaves, [paneA, paneB])
-        XCTAssertEqual(read.sessions[0].focused, paneB)
-        XCTAssertEqual(read.sessions[0].panes[paneB]?.target, "spark")
-        XCTAssertEqual(read.sessions[0].panes[paneB]?.fontDelta, -1)
+        XCTAssertEqual(read.version, 4)
+        XCTAssertEqual(read.windows.count, 2)
+        XCTAssertEqual(read.activeWindow, other.id)
+        XCTAssertEqual(read.windows[0].id, window.id)
+        XCTAssertEqual(read.windows[0].frame, window.frame)
+        XCTAssertEqual(read.windows[0].activeSession, 0)
+        XCTAssertEqual(read.windows[0].sessions.count, 1)
+        XCTAssertEqual(read.windows[0].sessions[0].tree.leaves, [paneA, paneB])
+        XCTAssertEqual(read.windows[0].sessions[0].focused, paneB)
+        XCTAssertEqual(read.windows[0].sessions[0].panes[paneB]?.target, "spark")
+        XCTAssertEqual(read.windows[0].sessions[0].panes[paneB]?.fontDelta, -1)
     }
 
     /// v1 put one implicit session's fields inline on the window. It is
@@ -119,5 +127,57 @@ final class SnapshotTests: XCTestCase {
         }
         """
         XCTAssertNil(SnapshotStore.decode(Data(json.utf8)))
+    }
+}
+
+extension SnapshotTests {
+    func testV3MigratesItsSessionAndCloseDeadlineIntoOneWindow() throws {
+        let id = UUID()
+        let deadline = Date().addingTimeInterval(20)
+        let window = WindowSnapshot(
+            frame: [1, 2, 900, 700],
+            sessions: [.init(tree: .leaf(id), panes: [id: PaneSnapshot(target: "spark")], focused: id)],
+            activeSession: 0,
+            closedPanes: [.init(id: UUID(), pane: PaneSnapshot(target: "ix:dev"), expiresAt: deadline)]
+        )
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(window)) as? [String: Any])
+        legacy.removeValue(forKey: "id")
+        legacy["version"] = 3
+        let read = try XCTUnwrap(SnapshotStore.decode(JSONSerialization.data(withJSONObject: legacy)))
+        XCTAssertEqual(read.windows.count, 1)
+        XCTAssertEqual(read.windows[0].frame, window.frame)
+        XCTAssertEqual(read.windows[0].sessions[0].focused, id)
+        XCTAssertEqual(read.windows[0].sessions[0].panes[id]?.target, "spark")
+        XCTAssertEqual(read.windows[0].closedPanes?.first?.expiresAt, deadline)
+        XCTAssertEqual(read.activeWindow, read.windows[0].id)
+    }
+
+    func testRecoveryChecksEveryWindowAndScopesIdentityToDaemon() {
+        let local = UUID()
+        let remote = UUID()
+        let closed = UUID()
+        let snapshots = [
+            WindowSnapshot(frame: [], sessions: [
+                .init(tree: .leaf(local), panes: [local: PaneSnapshot(target: "ix:vm")]),
+            ], activeSession: 0),
+            WindowSnapshot(frame: [], sessions: [
+                .init(tree: .leaf(remote), panes: [remote: PaneSnapshot(target: "spark")]),
+            ], activeSession: 0, closedPanes: [
+                .init(id: closed, pane: PaneSnapshot(target: "other"), expiresAt: .distantFuture),
+            ]),
+        ]
+        let snapshot = AppSnapshot(windows: snapshots)
+        XCTAssertEqual(snapshot.knownTerminals, [
+            TerminalIdentity(id: local, host: nil),
+            TerminalIdentity(id: remote, host: "spark"),
+            TerminalIdentity(id: closed, host: "other"),
+        ])
+        XCTAssertFalse(snapshot.knownTerminals.contains(.init(id: remote, host: nil)))
+        XCTAssertFalse(snapshot.knownTerminals.contains(.init(id: local, host: "spark")))
+        XCTAssertEqual(snapshot.hosts, [nil, "spark", "other"])
+    }
+
+    func testFutureSnapshotVersionIsNotSilentlyOverwritten() {
+        XCTAssertNil(SnapshotStore.decode(Data("{\"version\":99,\"windows\":[]}".utf8)))
     }
 }

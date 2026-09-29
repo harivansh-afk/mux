@@ -20,6 +20,20 @@ for the app and tiling tests on macOS.
 - `Sources/Mux/UI/`: the window controller, Canvas, overlays, host editor,
   and theme.
 
+## Windows and sessions
+
+Cmd-N creates a session in the current window. Cmd-Shift-N creates a window,
+inheriting the focused terminal's host and directory. Cmd-Option-N moves the
+current session, with its existing terminals and split layout, into a new window.
+The move action is disabled when the session already has its own window.
+Cmd-backtick cycles windows; session numbers and the canvas stay local to each window.
+
+Cmd-Shift-W closes a window, detaching its terminals and keeping its session group
+for the next launch. Cmd-Q saves all open and closed window groups. Neither action
+starts the individual-terminal close countdown. The last window closing quits.
+On launch, all saved windows restore, and reconciliation recovers only terminals
+that belong to none of those groups. Older single-window saves become one window.
+
 ## Pane targets
 
 Sessions own client-side layout; muxd owns each persistent PTY. Restoring

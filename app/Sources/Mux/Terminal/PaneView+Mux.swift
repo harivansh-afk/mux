@@ -178,3 +178,18 @@ extension PaneView {
         }
     }
 }
+
+extension PaneView {
+    /// Apply the same zoom step to every pane in every session (the
+    /// shift variants of the zoom keys): all terminals move by the same
+    /// exact increment, so per-pane zoom differences are preserved. 0
+    /// resets every pane to the config default.
+    static func adjustAllFontSizes(_ step: Int) {
+        for session in App.delegate.controllers.flatMap(\.sessions) {
+            for (_, pane) in session.panes {
+                pane.adjustFontSize(step, save: false)
+            }
+        }
+        App.delegate.saveSnapshot()
+    }
+}
