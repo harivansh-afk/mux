@@ -17,6 +17,16 @@
 //! `--require-existing` is stricter: reopen a closed terminal by identity,
 //! never create a replacement, and keep its pane open on connection failure.
 //!
+//! `--mirror-foreground` makes the relay present itself to the terminal
+//! that runs it as the program in the pty's foreground. A terminal that
+//! inspects its child (Rex draws a coding agent's status from the process
+//! it finds in the foreground) sees `claude` while the pty runs claude on
+//! another machine, and `zsh` once that is back at the prompt. The daemon
+//! reports every change on the events lane; the relay then execs
+//! `<state>/mux/as/<name>`, a link to its own binary, on the same socket,
+//! so nothing is reattached or replayed. The socket crosses the exec in
+//! [`SOCKET_FD_ENV`] and the current name in [`ALIAS_ENV`].
+//!
 //! Plain threads, no async: stdin pump, winsize poll (200ms - coalesces
 //! during drags), and the main thread draining the socket to stdout.
 //! Exit code mirrors the remote process.
@@ -28,8 +38,12 @@
 //! threads and a thread blocked in `read` cannot be cancelled - so they
 //! write through an [`Uplink`] whose socket the main loop swaps.
 
+use std::ffi::{CString, OsString};
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -41,8 +55,17 @@ use mux_proto::frame::{
     OUT_LANE_OUTPUT,
 };
 use mux_proto::peer::{self, ClientControl, OpenMode, OpenRequest, Opened, ServerEvent};
+use nix::fcntl::{fcntl, FcntlArg, FdFlag};
 use nix::sys::termios;
 use parking_lot::Mutex;
+
+/// The socket a predecessor image of this relay hands over across an
+/// exec, as a file descriptor number.
+const SOCKET_FD_ENV: &str = "MUX_ATTACH_SOCKET_FD";
+/// The name this image was exec'd under, so a repeat is not re-exec'd.
+const ALIAS_ENV: &str = "MUX_ATTACH_AS";
+/// What a foreground name may look like to become a path component.
+const ALIAS_MAX_LEN: usize = 64;
 
 fn socket_path() -> std::path::PathBuf {
     std::env::var_os(peer::SOCKET_ENV).map_or_else(
@@ -138,20 +161,34 @@ impl RawModeGuard {
         let Ok(original) = termios::tcgetattr(&stdin) else {
             return Self { original: None };
         };
-        let mut raw = original.clone();
-        termios::cfmakeraw(&mut raw);
-        let _ = termios::tcsetattr(&stdin, termios::SetArg::TCSANOW, &raw);
-        Self {
+        let guard = Self {
             original: Some(original),
+        };
+        guard.raw();
+        guard
+    }
+
+    fn raw(&self) {
+        if let Some(original) = &self.original {
+            let mut raw = original.clone();
+            termios::cfmakeraw(&mut raw);
+            let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &raw);
+        }
+    }
+
+    /// Back to the mode the pane started in. The image that replaces
+    /// this one enables raw mode from there, so it restores the same
+    /// settings on its way out.
+    fn restore(&self) {
+        if let Some(original) = &self.original {
+            let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, original);
         }
     }
 }
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        if let Some(original) = &self.original {
-            let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, original);
-        }
+        self.restore();
     }
 }
 
@@ -178,11 +215,13 @@ fn main() -> Result<()> {
     let mut command: Vec<String> = vec![];
     let mut expect_existing = false;
     let mut require_existing = false;
+    let mut mirror = false;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--expect-existing" => expect_existing = true,
+            "--mirror-foreground" => mirror = true,
             "--require-existing" => {
                 require_existing = true;
                 expect_existing = true;
@@ -205,15 +244,31 @@ fn main() -> Result<()> {
     }
 
     let (host, name) = parse_target(&target.context("usage: mux-attach [host|local]:<name>")?)?;
-    run_attach(&Attach {
-        target: host,
-        name,
-        cwd,
-        cwd_from,
-        command,
-        expect_existing,
-        require_existing,
-    })
+    let inherited = inherited_socket();
+    run_attach(
+        &Attach {
+            target: host,
+            name,
+            cwd,
+            cwd_from,
+            command,
+            expect_existing,
+            require_existing,
+            mirror,
+        },
+        inherited,
+    )
+}
+
+/// The socket a predecessor image left for us, if this is a re-exec.
+fn inherited_socket() -> Option<UnixStream> {
+    let fd = std::env::var(SOCKET_FD_ENV).ok()?.parse::<i32>().ok()?;
+    std::env::remove_var(SOCKET_FD_ENV);
+    // SAFETY: the predecessor duplicated this descriptor for the exec
+    // and nothing else in this process owns it.
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    let _ = fcntl(fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC));
+    Some(UnixStream::from(owned))
 }
 
 /// The socket the input threads currently write to. `None` between a
@@ -257,6 +312,9 @@ enum Relay {
     /// Socket EOF with no `Exit` event: the daemon went away (upgrade or
     /// crash) and the pty may well still be running under its successor.
     DaemonGone,
+    /// The foreground program changed and this relay mirrors it: exec
+    /// under this name on the same socket.
+    Mirror(String),
 }
 
 /// What every (re)attach handshake repeats. Unchanged across a
@@ -275,12 +333,21 @@ struct Attach {
     expect_existing: bool,
     /// A reopened closed terminal must never fall back to creating a shell.
     require_existing: bool,
+    /// Re-exec under the foreground program's name as it changes.
+    mirror: bool,
 }
 
-fn run_attach(attach: &Attach) -> Result<()> {
+fn run_attach(attach: &Attach, inherited: Option<UnixStream>) -> Result<()> {
     let size = winsize();
     let uplink = Uplink::new();
     let stdin_closed = Arc::new(AtomicBool::new(false));
+
+    // A re-exec'd image continues on the socket its predecessor opened.
+    if let Some(stream) = inherited {
+        let raw = RawModeGuard::enable();
+        spawn_input_threads(&uplink, &stdin_closed, size);
+        return relay_loop(attach, stream, &uplink, &stdin_closed, &raw);
+    }
 
     // The first connection is the user's command: for a fresh pane its
     // errors print normally, with no raw mode and no retry. A restored
@@ -292,15 +359,15 @@ fn run_attach(attach: &Attach) -> Result<()> {
         Ok(opened) => opened,
         Err(e) if attach.expect_existing => {
             print_notice(&format!("cannot attach ({e:#}); retrying"));
-            let _raw = RawModeGuard::enable();
+            let raw = RawModeGuard::enable();
             spawn_input_threads(&uplink, &stdin_closed, size);
             let stream = reconnect(attach, &stdin_closed, true);
-            return relay_loop(attach, stream, &uplink, &stdin_closed);
+            return relay_loop(attach, stream, &uplink, &stdin_closed, &raw);
         }
         Err(e) => return Err(e),
     };
 
-    let _raw = RawModeGuard::enable();
+    let raw = RawModeGuard::enable();
     if created && attach.expect_existing {
         print_recreated_notice();
     }
@@ -308,7 +375,7 @@ fn run_attach(attach: &Attach) -> Result<()> {
     // fresh read: a resize landing between the two reads would otherwise
     // never be sent, leaving the daemon pty stuck at the handshake size.
     spawn_input_threads(&uplink, &stdin_closed, size);
-    relay_loop(attach, stream, &uplink, &stdin_closed)
+    relay_loop(attach, stream, &uplink, &stdin_closed, &raw)
 }
 
 /// Pump connections until the pane's process exits (or the pane itself
@@ -318,10 +385,11 @@ fn relay_loop(
     mut stream: UnixStream,
     uplink: &Uplink,
     stdin_closed: &Arc<AtomicBool>,
+    raw: &RawModeGuard,
 ) -> Result<()> {
     loop {
         uplink.set(Some(stream.try_clone()?));
-        let relay = pump(&mut stream);
+        let relay = pump(&mut stream, attach.mirror);
         uplink.set(None);
         match relay {
             Relay::Exited(code) => exit(code),
@@ -329,9 +397,106 @@ fn relay_loop(
             // reattach: the daemon keeps the pty for the next client.
             Relay::DaemonGone if stdin_closed.load(Ordering::SeqCst) => exit(0),
             Relay::DaemonGone => {}
+            // Returns only when the exec failed; the socket is intact,
+            // so carry on under the old name.
+            Relay::Mirror(name) => {
+                if let Err(e) = reexec_as(&name, &stream, raw) {
+                    eprintln!("mux-attach: cannot present as {name}: {e:#}");
+                }
+                continue;
+            }
         }
         stream = reconnect(attach, stdin_closed, false);
     }
+}
+
+/// Where the per-name links to this binary live.
+fn alias_dir() -> Option<PathBuf> {
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".local/state")))?;
+    Some(state.join("mux/as"))
+}
+
+/// A foreground name that can be a path component and a process name:
+/// short, plain characters, not hidden.
+fn valid_alias(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= ALIAS_MAX_LEN
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'))
+}
+
+/// The name this image presents as: the one it was exec'd under, else
+/// its own binary's.
+fn current_alias() -> String {
+    std::env::var(ALIAS_ENV).ok().unwrap_or_else(|| {
+        std::env::args_os()
+            .next()
+            .and_then(|arg0| {
+                Path::new(&arg0)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+            })
+            .unwrap_or_default()
+    })
+}
+
+fn cstring(value: impl Into<Vec<u8>>) -> Result<CString> {
+    CString::new(value).context("embedded NUL")
+}
+
+/// Become `<alias dir>/<name>`, a link to this binary, on the same
+/// socket and the same pty. Returns only when the exec failed, with the
+/// socket and the terminal mode as they were.
+fn reexec_as(name: &str, stream: &UnixStream, raw: &RawModeGuard) -> Result<()> {
+    let dir = alias_dir().context("no home directory for the alias links")?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let link = dir.join(name);
+    let exe = std::fs::canonicalize(std::env::current_exe()?)?;
+    if std::fs::read_link(&link).ok() != Some(exe.clone()) {
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&exe, &link)
+            .with_context(|| format!("link {}", link.display()))?;
+    }
+
+    // F_DUPFD leaves close-on-exec clear: the copy crosses the exec.
+    let fd = fcntl(stream.as_raw_fd(), FcntlArg::F_DUPFD(3)).context("dup socket")?;
+    let path = cstring(link.as_os_str().as_bytes())?;
+    let argv = std::iter::once(Ok(path.clone()))
+        .chain(
+            std::env::args_os()
+                .skip(1)
+                .map(|arg| cstring(arg.as_bytes())),
+        )
+        .collect::<Result<Vec<_>>>()?;
+    let env = std::env::vars_os()
+        .filter(|(key, _)| key != SOCKET_FD_ENV && key != ALIAS_ENV)
+        .chain([
+            (
+                OsString::from(SOCKET_FD_ENV),
+                OsString::from(fd.to_string()),
+            ),
+            (OsString::from(ALIAS_ENV), OsString::from(name)),
+        ])
+        .map(|(key, value)| {
+            let mut pair = key.into_vec();
+            pair.push(b'=');
+            pair.extend(value.into_vec());
+            cstring(pair)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    raw.restore();
+    let error = match nix::unistd::execve(&path, &argv, &env) {
+        Ok(never) => match never {},
+        Err(e) => e,
+    };
+    raw.raw();
+    let _ = nix::unistd::close(fd);
+    Err(anyhow!("exec {}: {error}", link.display()))
 }
 
 fn print_recreated_notice() {
@@ -485,7 +650,7 @@ fn spawn_input_threads(uplink: &Uplink, stdin_closed: &Arc<AtomicBool>, initial:
     });
 }
 
-fn pump(reader: &mut UnixStream) -> Relay {
+fn pump(reader: &mut UnixStream, mirror: bool) -> Relay {
     let mut stdout = std::io::stdout().lock();
     loop {
         // A read error mid-frame is a daemon that vanished, not a
@@ -501,9 +666,29 @@ fn pump(reader: &mut UnixStream) -> Relay {
             }
             OUT_LANE_EVENTS => match peer::decode::<ServerEvent>(&payload) {
                 Ok(ServerEvent::Exit { code }) => return Relay::Exited(code),
+                Ok(ServerEvent::Foreground { name }) => {
+                    if mirror && valid_alias(&name) && name != current_alias() {
+                        return Relay::Mirror(name);
+                    }
+                }
                 Err(_) => {}
             },
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_alias;
+
+    #[test]
+    fn aliases_are_plain_path_components() {
+        for ok in ["zsh", "claude", "nvim", "python3.14", "c++", "a_b-c"] {
+            assert!(valid_alias(ok), "{ok}");
+        }
+        for bad in ["", ".hidden", "..", "a/b", "a b", "é", &"x".repeat(65)] {
+            assert!(!valid_alias(bad), "{bad:?}");
         }
     }
 }

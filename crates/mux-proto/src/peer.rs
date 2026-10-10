@@ -255,9 +255,22 @@ pub enum ClientControl {
     Resize { cols: u16, rows: u16 },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+/// What the daemon tells an attached client besides its output. A relay
+/// skips an event it cannot decode, so a variant added at the end reaches
+/// only clients that know it and breaks none that do not.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ServerEvent {
-    Exit { code: i32 },
+    Exit {
+        code: i32,
+    },
+    /// The pty's foreground program changed: the agent's label when a
+    /// coding agent is up (`claude`), else the basename of what was run
+    /// (`zsh`, `nvim`). Sent once on attach and on every change, so a
+    /// relay can present itself to the terminal it runs in as that
+    /// program.
+    Foreground {
+        name: String,
+    },
 }
 
 pub fn encode<T: Serialize>(value: &T) -> Vec<u8> {
@@ -390,6 +403,10 @@ mod tests {
         // Event frame payload: clean exit (i32 zigzag varint).
         let exit = ServerEvent::Exit { code: 0 };
         assert_eq!(encode(&exit), [0x00, 0x00]);
+
+        // Event frame payload: the foreground program is now zsh.
+        let foreground = ServerEvent::Foreground { name: "zsh".into() };
+        assert_eq!(encode(&foreground), [0x01, 0x03, b'z', b's', b'h']);
 
         // Failed reply: Err, then the detail string, then the kind. A v5
         // client stops after the string, which is exactly its error type.

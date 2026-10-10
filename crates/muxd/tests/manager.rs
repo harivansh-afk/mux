@@ -556,6 +556,7 @@ async fn recv_output_until(rx: &mut Receiver<ClientMsg>, needle: &[u8]) -> Vec<u
         while !contains(&seen, needle) {
             match rx.recv().await {
                 Some(ClientMsg::Output(bytes)) => seen.extend_from_slice(&bytes),
+                Some(ClientMsg::Foreground(_)) => {}
                 Some(ClientMsg::Exit(code)) => panic!("pty exited {code} before {needle:?}"),
                 None => panic!("client channel closed before {needle:?}"),
             }
@@ -572,7 +573,7 @@ async fn recv_exit(rx: &mut Receiver<ClientMsg>) -> i32 {
     let drain = async {
         loop {
             match rx.recv().await {
-                Some(ClientMsg::Output(_)) => {}
+                Some(ClientMsg::Output(_) | ClientMsg::Foreground(_)) => {}
                 Some(ClientMsg::Exit(code)) => return code,
                 None => panic!("client channel closed before the exit event"),
             }
