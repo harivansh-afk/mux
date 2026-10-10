@@ -393,6 +393,11 @@ where
                     frame::aio::write_lane(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event))
                         .await?;
                 }
+                ClientMsg::Foreground(name) => {
+                    let event = ServerEvent::Foreground { name };
+                    frame::aio::write_lane(&mut writer, OUT_LANE_EVENTS, &peer::encode(&event))
+                        .await?;
+                }
             }
             writer.flush().await?;
         }

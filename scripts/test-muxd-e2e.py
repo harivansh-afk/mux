@@ -9,14 +9,17 @@ process, so this keeps only what needs the real binaries:
   2. `muxd ls --json` shows the pane while it is attached
   3. `--expect-existing` against a pty the daemon does not have prints
      the recreated-shell notice
+  4. `--mirror-foreground` re-execs the relay under the name of the pty's
+     foreground program, on the same connection, as that program changes
 """
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from muxd_harness import Daemon, Pty, fail, find_binaries, list_ptys, log, sandbox_env
+from muxd_harness import Daemon, Pty, fail, find_binaries, list_ptys, log, sandbox_env, wait_until
 TAG = "e2e"
 MARKER = b"MARKER-42"
 COMMAND = b"echo MARKER-$((40+2))\n"
@@ -86,6 +89,38 @@ def expect_existing_notice(muxd_bin, mux_attach_bin, home, socket_path):
         client.kill()
         client.close()
 
+def mirror_foreground(muxd_bin, mux_attach_bin, home, socket_path):
+    state = os.path.join(home, "state")
+    env = sandbox_env(home, socket_path, XDG_STATE_HOME=state)
+    with Daemon(muxd_bin, home, socket_path, env=env):
+        client = Pty([mux_attach_bin, "--mirror-foreground", "local:m1"], env)
+        pid = client.proc.pid
+
+        def presented_as(name: str) -> bool:
+            args = subprocess.run(["ps", "-o", "args=", "-p", str(pid)], capture_output=True, text=True).stdout
+            argv0 = args.strip().split(" ", 1)[0] if args.strip() else ""
+            return argv0 == os.path.join(state, "mux", "as", name)
+
+        def expect_presented_as(name: str) -> None:
+            wait_until(lambda: presented_as(name), f"the relay to present as {name}", 10)
+            log(TAG, f"relay presents as {name}")
+
+        try:
+            expect_presented_as("bash")
+            client.send(b"sleep 30\n")
+            expect_presented_as("sleep")
+            client.send(b"\x03")
+            expect_presented_as("bash")
+            client.send(b"echo STILL-$((40+2))\n")
+            client.expect(b"STILL-42", 20, "the same connection to still carry output after the re-execs")
+            client.send(b"exit\n")
+            code = client.wait_for_exit(20)
+            if code != 0:
+                fail(f"mirroring client exited {code} after a clean shell exit; last output:\n{client.tail()}")
+        finally:
+            client.kill()
+            client.close()
+
 def main():
     binaries = find_binaries()
     if binaries is None:
@@ -99,6 +134,7 @@ def main():
         attach_kill_reattach(muxd_bin, mux_attach_bin, home, socket_path)
         expect_existing_notice(muxd_bin, mux_attach_bin, home, socket_path)
         require_existing_never_creates(muxd_bin, mux_attach_bin, home, socket_path)
+        mirror_foreground(muxd_bin, mux_attach_bin, home, socket_path)
     except AssertionError as error:
         print(f"[{TAG}] FAIL: {error} (sandbox left at {tmp})", file=sys.stderr)
         return 1

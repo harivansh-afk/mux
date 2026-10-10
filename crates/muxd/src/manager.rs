@@ -47,6 +47,8 @@ const EVENT_BACKLOG: usize = 256;
 pub enum ClientMsg {
     Output(Vec<u8>),
     Exit(i32),
+    /// The foreground program's name, once on attach and on every change.
+    Foreground(String),
 }
 
 /// Which client is in a pty's slot. Attach evicts the previous client, so
@@ -92,6 +94,8 @@ pub struct PtySession {
     /// The detector's last reading, and the input it read, so a settled
     /// pty that wrote nothing new costs nothing.
     pub agent: Mutex<Option<AgentInfo>>,
+    /// What the foreground process presents as, from the same reading.
+    pub foreground: Mutex<Option<String>>,
     /// An evaluation is scheduled; output that lands meanwhile rides it.
     agent_pending: AtomicBool,
     last_event: Mutex<Option<PtyEvent>>,
@@ -143,18 +147,21 @@ impl PtySession {
         }
     }
 
-    /// The coding agent in the foreground, by what it was run as: the
+    /// What runs in the foreground, by what it was run as: the
     /// foreground process group's leader (`tcgetpgrp`), else the child.
-    fn foreground_agent(&self) -> Option<agents::Agent> {
+    fn foreground_argv(&self) -> Option<Vec<String>> {
         let pid = nix::unistd::tcgetpgrp(self.master.get_ref())
             .map_or_else(|_| self.child.as_raw(), nix::unistd::Pid::as_raw);
-        process_args(pid).and_then(|argv| agents::Agent::from_command(&argv))
+        process_args(pid)
     }
 
     /// Read the pty once: who is in the foreground, and what the title
-    /// and the screen tail say it is doing.
-    fn refresh_agent(&self) {
-        let next = self.foreground_agent().map(|agent| {
+    /// and the screen tail say it is doing. Returns the foreground
+    /// program's name when it differs from the last reading.
+    fn refresh_agent(&self) -> Option<String> {
+        let argv = self.foreground_argv();
+        let agent = argv.as_deref().and_then(agents::Agent::from_command);
+        let next = agent.map(|agent| {
             let (title, screen) = {
                 let term = self.terminal.lock();
                 let rows = term.row_texts();
@@ -182,7 +189,44 @@ impl PtySession {
             }
         });
         *self.agent.lock() = next;
+        let name = argv.as_deref().and_then(foreground_label);
+        let mut foreground = self.foreground.lock();
+        if *foreground == name {
+            return None;
+        }
+        foreground.clone_from(&name);
+        name
     }
+
+    /// Hand the attached client the foreground program's name. Bounded
+    /// like output: a client that stopped reading is detached, never
+    /// waited on.
+    async fn tell_foreground(&self, name: String) {
+        let client = {
+            let client = self.client.lock();
+            client.as_ref().map(|c| (c.id, c.tx.clone()))
+        };
+        let Some((id, tx)) = client else { return };
+        let send = tx.send_timeout(ClientMsg::Foreground(name), CLIENT_SEND_TIMEOUT);
+        if send.await.is_err() {
+            tracing::warn!(name = %self.name, "client too slow; detaching");
+            self.detach(id);
+        }
+    }
+}
+
+/// What the foreground process presents as: the agent's label when a
+/// coding agent is up, else the basename of what was run, with a login
+/// shell's leading dash removed. None when there is nothing to name.
+#[must_use]
+pub fn foreground_label(argv: &[String]) -> Option<String> {
+    if let Some(agent) = agents::Agent::from_command(argv) {
+        return Some(agent.label().to_string());
+    }
+    let executable = argv.first()?;
+    let name = executable.rsplit('/').next().unwrap_or(executable);
+    let name = name.strip_prefix('-').unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 #[derive(Clone)]
@@ -255,8 +299,11 @@ impl Manager {
             session.agent_pending.store(false, Ordering::Release);
             // A pty that exited meanwhile was reported by its reaper.
             if !session.exited.load(Ordering::SeqCst) {
-                session.refresh_agent();
+                let foreground = session.refresh_agent();
                 manager.emit(&session);
+                if let Some(name) = foreground {
+                    session.tell_foreground(name).await;
+                }
             }
         });
     }
@@ -341,6 +388,7 @@ impl Manager {
             exited: AtomicBool::new(false),
             close_deadline: Mutex::new(None),
             agent: Mutex::new(None),
+            foreground: Mutex::new(None),
             agent_pending: AtomicBool::new(false),
             last_event: Mutex::new(None),
         });
@@ -716,6 +764,11 @@ pub fn attach_on(
         term.resize(rows, cols);
         session.changed();
         let _ = pty::resize(&session.master, cols, rows);
+        // The foreground as last read, behind the dump the server writes
+        // first; the channel is empty, so this never waits.
+        if let Some(name) = session.foreground.lock().clone() {
+            let _ = tx.try_send(ClientMsg::Foreground(name));
+        }
         // Evict any previous client (its forwarder ends when tx drops)
         // and publish the new channel BEFORE rendering.
         *session.client.lock() = Some(AttachedClient { id, tx, connection });
@@ -989,5 +1042,42 @@ mod expiry_tests {
         gone(&session).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(new.get("adopted").is_none());
+    }
+}
+
+#[cfg(test)]
+mod foreground_tests {
+    use super::foreground_label;
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn agents_present_as_their_label() {
+        assert_eq!(
+            foreground_label(&argv(&["/home/u/.local/bin/claude", "--resume"])).as_deref(),
+            Some("claude")
+        );
+        assert_eq!(
+            foreground_label(&argv(&["node", "/opt/codex", "exec"])).as_deref(),
+            Some("codex")
+        );
+    }
+
+    #[test]
+    fn everything_else_presents_as_its_basename() {
+        assert_eq!(foreground_label(&argv(&["-zsh"])).as_deref(), Some("zsh"));
+        assert_eq!(
+            foreground_label(&argv(&["/run/current-system/sw/bin/nvim", "x.rs"])).as_deref(),
+            Some("nvim")
+        );
+        assert_eq!(
+            foreground_label(&argv(&["node", "server.js"])).as_deref(),
+            Some("node")
+        );
+        assert_eq!(foreground_label(&argv(&["-"])), None);
+        assert_eq!(foreground_label(&argv(&[""])), None);
+        assert_eq!(foreground_label(&[]), None);
     }
 }
