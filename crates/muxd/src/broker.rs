@@ -594,7 +594,7 @@ mod tests {
 
     use super::*;
 
-    fn cert() -> rcgen::CertifiedKey {
+    fn cert() -> rcgen::CertifiedKey<rcgen::KeyPair> {
         rcgen::generate_simple_self_signed(vec!["muxd".to_string()]).unwrap()
     }
 
@@ -823,17 +823,18 @@ mod tests {
     /// A minimal QUIC listener presenting `key`: enough of a peer to prove
     /// the dial, the pin, the rewritten handshake and the byte pump. Built
     /// through `quic::endpoint` so the two halves cannot drift apart.
-    fn listener(key: &rcgen::CertifiedKey) -> quinn::Endpoint {
+    fn listener(key: &rcgen::CertifiedKey<rcgen::KeyPair>) -> quinn::Endpoint {
         let identity = tls::Identity {
             cert: key.cert.der().clone(),
-            key: rustls::pki_types::PrivatePkcs8KeyDer::from(key.key_pair.serialize_der()).into(),
+            key: rustls::pki_types::PrivatePkcs8KeyDer::from(key.signing_key.serialize_der())
+                .into(),
         };
         crate::quic::endpoint(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), &identity).unwrap()
     }
 
     /// A listener on loopback, plus the `hosts.json` and token file a
     /// broker over `dir` needs to reach it.
-    fn quic_fixture(dir: &TempDir, key: &rcgen::CertifiedKey) -> quinn::Endpoint {
+    fn quic_fixture(dir: &TempDir, key: &rcgen::CertifiedKey<rcgen::KeyPair>) -> quinn::Endpoint {
         let endpoint = listener(key);
         let addr = endpoint.local_addr().unwrap();
         std::fs::write(

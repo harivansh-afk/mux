@@ -47,7 +47,8 @@ pub async fn serve(manager: Manager, path: &Path) -> Result<()> {
     socket::bind(fd.as_raw_fd(), &address)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     socket::listen(&fd, Backlog::new(32)?)?;
-    let listener = AsyncFd::new(fd)?;
+    // SAFETY: OwnedFd keeps this descriptor open and stable until AsyncFd releases it.
+    let listener = unsafe { AsyncFd::register(fd) }?;
     manager
         .audio
         .enabled
@@ -147,7 +148,8 @@ async fn device(manager: Manager, fd: OwnedFd) -> Result<()> {
         "audio peer uid mismatch"
     );
     let peer = super::process::Process::peer(&fd)?;
-    let fd = AsyncFd::new(fd)?;
+    // SAFETY: OwnedFd keeps this descriptor open and stable until AsyncFd releases it.
+    let fd = unsafe { AsyncFd::register(fd) }?;
     let mut data = [0u8; mux_proto::audio::MAX_PCM + 1];
     let size = tokio::time::timeout(Duration::from_secs(3), receive(&fd, &mut data)).await??;
     ensure!(

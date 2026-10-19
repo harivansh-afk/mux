@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
-use rand::RngCore as _;
+use rand::Rng as _;
 use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sha2::{Digest as _, Sha256};
@@ -110,7 +110,7 @@ pub fn load_or_generate_token(path: &Path) -> Result<String> {
         }
     }
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     let token = hex::encode(bytes);
     write_secret(path, token.as_bytes())?;
     tracing::info!(path = %path.display(), "generated bearer token");
@@ -174,7 +174,7 @@ fn generate(cert_path: &Path, key_path: &Path) -> Result<(String, String)> {
     let certified = rcgen::generate_simple_self_signed(vec!["muxd".into(), "localhost".into()])
         .context("generate self-signed certificate")?;
     let cert_pem = certified.cert.pem();
-    let key_pem = certified.key_pair.serialize_pem();
+    let key_pem = certified.signing_key.serialize_pem();
     write_secret(cert_path, cert_pem.as_bytes())?;
     write_secret(key_path, key_pem.as_bytes())?;
     tracing::info!(cert = %cert_path.display(), "generated self-signed certificate");
