@@ -470,7 +470,9 @@ impl Manager {
             let mut terminal =
                 ghostty_vt::Terminal::new(pty.rows, pty.cols).context("terminal alloc")?;
             terminal.feed(&pty.screen);
-            let master = tokio::io::unix::AsyncFd::new(master).context("AsyncFd")?;
+            // SAFETY: OwnedFd keeps this descriptor open and stable until AsyncFd releases it.
+            let master =
+                unsafe { tokio::io::unix::AsyncFd::register(master) }.context("AsyncFd")?;
 
             let deadline = pty.close_deadline;
             let session = Self::insert_locked(
@@ -614,7 +616,7 @@ async fn read_loop(manager: Manager, session: Arc<PtySession>) {
         let fed = {
             let mut term = session.terminal.lock();
             let read = guard.try_io(|fd| {
-                nix::unistd::read(std::os::fd::AsRawFd::as_raw_fd(fd.get_ref()), &mut buf)
+                nix::unistd::read(fd.get_ref(), &mut buf)
                     .map_err(|e| std::io::Error::from_raw_os_error(e as i32))
             });
             match read {

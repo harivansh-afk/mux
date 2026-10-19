@@ -93,10 +93,10 @@ fn user_home() -> String {
 /// The tokio reactor requires it, and an inherited fd (migrate.rs) may
 /// arrive without it.
 pub fn set_nonblocking(fd: &OwnedFd) -> Result<()> {
-    let flags = nix::fcntl::fcntl(fd.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFL)?;
+    let flags = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETFL)?;
     let mut oflags = nix::fcntl::OFlag::from_bits_truncate(flags);
     oflags.insert(nix::fcntl::OFlag::O_NONBLOCK);
-    nix::fcntl::fcntl(fd.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(oflags))?;
+    nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFL(oflags))?;
     Ok(())
 }
 
@@ -208,7 +208,8 @@ pub fn spawn(params: &Spawn) -> Result<Pty> {
             let master = pty.master;
             set_nonblocking(&master)?;
             Ok(Pty {
-                master: AsyncFd::new(master).context("AsyncFd")?,
+                // SAFETY: OwnedFd keeps this descriptor open and stable until AsyncFd releases it.
+                master: unsafe { AsyncFd::register(master) }.context("AsyncFd")?,
                 child,
             })
         }

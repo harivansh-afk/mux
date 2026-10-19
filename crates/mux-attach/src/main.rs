@@ -40,7 +40,7 @@
 
 use std::ffi::{CString, OsString};
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -267,7 +267,7 @@ fn inherited_socket() -> Option<UnixStream> {
     // SAFETY: the predecessor duplicated this descriptor for the exec
     // and nothing else in this process owns it.
     let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-    let _ = fcntl(fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC));
+    let _ = fcntl(&owned, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC));
     Some(UnixStream::from(owned))
 }
 
@@ -463,7 +463,7 @@ fn reexec_as(name: &str, stream: &UnixStream, raw: &RawModeGuard) -> Result<()> 
     }
 
     // F_DUPFD leaves close-on-exec clear: the copy crosses the exec.
-    let fd = fcntl(stream.as_raw_fd(), FcntlArg::F_DUPFD(3)).context("dup socket")?;
+    let fd = fcntl(stream, FcntlArg::F_DUPFD(3)).context("dup socket")?;
     let path = cstring(link.as_os_str().as_bytes())?;
     let argv = std::iter::once(Ok(path.clone()))
         .chain(

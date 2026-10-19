@@ -346,7 +346,7 @@ fn recv_with_fds(stream: &UnixStream, fds: &mut Vec<OwnedFd>) -> std::io::Result
                 // SCM_RIGHTS does not carry CLOEXEC: without this the
                 // adopted masters leak into every shell muxd forks later.
                 let _ = nix::fcntl::fcntl(
-                    owned.as_raw_fd(),
+                    &owned,
                     nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
                 );
                 fds.push(owned);
